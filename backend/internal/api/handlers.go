@@ -146,6 +146,7 @@ func (h *Handler) createServer(c *gin.Context) {
 		Port:       req.Port,
 		Username:   req.Username,
 		AuthMethod: req.AuthMethod,
+		Metadata:   []byte("{}"),
 	}
 
 	if req.SSHKeyID != "" {
@@ -397,7 +398,7 @@ func (h *Handler) checkCompatibility(c *gin.Context) {
 		return
 	}
 
-	result, err := h.engine.CheckCompatibility(c.Request.Context(), 
+	result, err := h.engine.CheckCompatibility(c.Request.Context(),
 		req.SourceServerID, req.TargetServerID, req.Username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
