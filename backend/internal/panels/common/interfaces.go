@@ -29,6 +29,7 @@ type ConnectionConfig struct {
 	SSHKeyID    string            `json:"ssh_key_id,omitempty" db:"ssh_key_id"`
 	APIEndpoint string            `json:"api_endpoint,omitempty" db:"api_endpoint"`
 	APIKey      string            `json:"-" db:"api_key"` // Never expose in JSON
+	PrivateKey  []byte            `json:"-" db:"-"`       // SSH private key (runtime only)
 	Metadata    map[string]string `json:"metadata,omitempty" db:"metadata"`
 	CreatedAt   time.Time         `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time         `json:"updated_at" db:"updated_at"`

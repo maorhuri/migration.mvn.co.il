@@ -402,7 +402,7 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	return exportData, nil
 }
 
-// ExportFiles exports files for an account
+// ExportFiles exports files for an account using rsync (fastest method)
 func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputDir string, progress chan<- common.MigrationProgress) error {
 	if !da.connected {
 		return fmt.Errorf("not connected")
@@ -413,27 +413,24 @@ func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputD
 		return fmt.Errorf("failed to create files directory: %w", err)
 	}
 
-	// Download public_html
+	// Download using rsync (much faster than SFTP)
 	publicHtmlRemote := fmt.Sprintf("/home/%s/domains", username)
 	publicHtmlLocal := filepath.Join(filesDir, "domains")
 
-	progressChan := make(chan int64, 100)
-	go func() {
-		var totalBytes int64
-		for bytes := range progressChan {
-			totalBytes += bytes
-			if progress != nil {
-				progress <- common.MigrationProgress{
-					Status:           "running",
-					CurrentStep:      "Downloading files",
-					BytesTransferred: totalBytes,
-				}
-			}
-		}
-	}()
+	if err := os.MkdirAll(publicHtmlLocal, 0755); err != nil {
+		return fmt.Errorf("failed to create local directory: %w", err)
+	}
 
-	err := da.sshClient.DownloadDirectory(ctx, publicHtmlRemote, publicHtmlLocal, progressChan)
-	close(progressChan)
+	// Report progress
+	if progress != nil {
+		progress <- common.MigrationProgress{
+			Status:      "running",
+			CurrentStep: "Downloading files with rsync",
+		}
+	}
+
+	// Use rsync with compression for fastest transfer
+	err := da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal)
 	if err != nil {
 		return fmt.Errorf("failed to download domains: %w", err)
 	}

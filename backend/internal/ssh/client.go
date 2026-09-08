@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -14,6 +15,9 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
+
+// execCommand is a variable to allow mocking in tests
+var execCommand = exec.Command
 
 // Client manages SSH connections
 type Client struct {
@@ -65,7 +69,7 @@ func (c *Client) Connect(ctx context.Context, config *common.ConnectionConfig, p
 	}
 
 	addr := fmt.Sprintf("%s:%d", config.Host, port)
-	
+
 	client, err := ssh.Dial("tcp", addr, sshConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", addr, err)
@@ -73,6 +77,8 @@ func (c *Client) Connect(ctx context.Context, config *common.ConnectionConfig, p
 
 	c.sshClient = client
 	c.config = config
+	// Store private key for rsync
+	c.config.PrivateKey = privateKey
 
 	return nil
 }
@@ -534,4 +540,287 @@ func (c *Client) GetSFTPClient() *sftp.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sftpClient
+}
+
+// FastDownloadDirectory downloads a directory using tar+ssh (much faster than SFTP)
+// Falls back to SFTP if tar is not available
+func (c *Client) FastDownloadDirectory(ctx context.Context, remotePath, localPath string, progress chan<- int64) error {
+	c.mu.Lock()
+	if c.sshClient == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("SSH connection not established")
+	}
+	client := c.sshClient
+	c.mu.Unlock()
+
+	// Create local directory
+	if err := os.MkdirAll(localPath, 0755); err != nil {
+		return fmt.Errorf("failed to create local directory: %w", err)
+	}
+
+	// Try tar+ssh first (fastest method)
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	// Create tar archive on remote and stream to local
+	// Using pigz for parallel compression if available, fallback to gzip
+	tarCmd := fmt.Sprintf("cd %s && tar -cf - . 2>/dev/null | pigz -1 2>/dev/null || tar -czf - . 2>/dev/null", remotePath)
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
+	}
+
+	if err := session.Start(tarCmd); err != nil {
+		// Fallback to SFTP
+		return c.DownloadDirectory(ctx, remotePath, localPath, progress)
+	}
+
+	// Extract locally using tar
+	extractCmd := fmt.Sprintf("cd %s && tar -xzf - 2>/dev/null || tar -xf -", localPath)
+
+	// Use exec to run local tar
+	cmd := execCommand("sh", "-c", extractCmd)
+	cmd.Stdin = stdout
+
+	var totalBytes int64
+	go func() {
+		// Estimate progress based on time
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				totalBytes += 1024 * 1024 // Estimate 1MB per tick
+				if progress != nil {
+					progress <- 1024 * 1024
+				}
+			}
+		}
+	}()
+
+	if err := cmd.Run(); err != nil {
+		// Fallback to SFTP
+		session.Close()
+		return c.DownloadDirectory(ctx, remotePath, localPath, progress)
+	}
+
+	session.Wait()
+	return nil
+}
+
+// FastUploadDirectory uploads a directory using tar+ssh (much faster than SFTP)
+func (c *Client) FastUploadDirectory(ctx context.Context, localPath, remotePath string, progress chan<- int64) error {
+	c.mu.Lock()
+	if c.sshClient == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("SSH connection not established")
+	}
+	client := c.sshClient
+	c.mu.Unlock()
+
+	// Create remote directory
+	if _, err := c.RunCommand(ctx, fmt.Sprintf("mkdir -p %s", remotePath)); err != nil {
+		return fmt.Errorf("failed to create remote directory: %w", err)
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	// Extract on remote side
+	extractCmd := fmt.Sprintf("cd %s && tar -xzf - 2>/dev/null || tar -xf -", remotePath)
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	if err := session.Start(extractCmd); err != nil {
+		// Fallback to SFTP
+		return c.UploadDirectory(ctx, localPath, remotePath, progress)
+	}
+
+	// Create tar locally and stream to remote
+	tarCmd := fmt.Sprintf("cd %s && tar -cf - . | pigz -1 2>/dev/null || tar -czf - .", localPath)
+	cmd := execCommand("sh", "-c", tarCmd)
+	cmd.Stdout = stdin
+
+	var totalBytes int64
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				totalBytes += 1024 * 1024
+				if progress != nil {
+					progress <- 1024 * 1024
+				}
+			}
+		}
+	}()
+
+	if err := cmd.Run(); err != nil {
+		stdin.Close()
+		session.Close()
+		// Fallback to SFTP
+		return c.UploadDirectory(ctx, localPath, remotePath, progress)
+	}
+
+	stdin.Close()
+	session.Wait()
+	return nil
+}
+
+// RsyncDownload uses rsync for fastest transfer (if available)
+func (c *Client) RsyncDownload(ctx context.Context, remotePath, localPath, host, user string, port int, privateKeyPath string) error {
+	// Build rsync command with optimal settings
+	rsyncArgs := []string{
+		"-avz",               // archive, verbose, compress
+		"--compress-level=1", // fast compression
+		"--progress",         // show progress
+		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", port, privateKeyPath),
+		fmt.Sprintf("%s@%s:%s/", user, host, remotePath),
+		localPath + "/",
+	}
+
+	cmd := execCommand("rsync", rsyncArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// RsyncUpload uses rsync for fastest transfer (if available)
+func (c *Client) RsyncUpload(ctx context.Context, localPath, remotePath, host, user string, port int, privateKeyPath string) error {
+	rsyncArgs := []string{
+		"-avz",
+		"--compress-level=1",
+		"--progress",
+		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null", port, privateKeyPath),
+		localPath + "/",
+		fmt.Sprintf("%s@%s:%s/", user, host, remotePath),
+	}
+
+	cmd := execCommand("rsync", rsyncArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// RsyncDownloadWithKey uses rsync with the stored connection config
+func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath string) error {
+	c.mu.Lock()
+	config := c.config
+	c.mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("no connection config available")
+	}
+
+	// Write private key to temp file for rsync
+	tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp key file: %w", err)
+	}
+	defer os.Remove(tmpKeyFile.Name())
+
+	if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
+		tmpKeyFile.Close()
+		return fmt.Errorf("failed to write key: %w", err)
+	}
+	tmpKeyFile.Close()
+
+	if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
+		return fmt.Errorf("failed to chmod key: %w", err)
+	}
+
+	port := config.Port
+	if port == 0 {
+		port = 22
+	}
+
+	// rsync with optimal settings for speed
+	rsyncArgs := []string{
+		"-avz",               // archive, verbose, compress
+		"--compress-level=1", // fast compression
+		"--whole-file",       // don't use delta algorithm (faster for new files)
+		"--no-inc-recursive", // faster for large directories
+		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
+		fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
+		localPath + "/",
+	}
+
+	cmd := execCommand("rsync", rsyncArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// RsyncUploadWithKey uses rsync with the stored connection config
+func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath string) error {
+	c.mu.Lock()
+	config := c.config
+	c.mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("no connection config available")
+	}
+
+	// Write private key to temp file for rsync
+	tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp key file: %w", err)
+	}
+	defer os.Remove(tmpKeyFile.Name())
+
+	if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
+		tmpKeyFile.Close()
+		return fmt.Errorf("failed to write key: %w", err)
+	}
+	tmpKeyFile.Close()
+
+	if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
+		return fmt.Errorf("failed to chmod key: %w", err)
+	}
+
+	port := config.Port
+	if port == 0 {
+		port = 22
+	}
+
+	rsyncArgs := []string{
+		"-avz",
+		"--compress-level=1",
+		"--whole-file",
+		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
+		localPath + "/",
+		fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
+	}
+
+	cmd := execCommand("rsync", rsyncArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
 }
