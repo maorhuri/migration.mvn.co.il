@@ -86,8 +86,9 @@ func main() {
 	handler.SetupRoutes(r)
 
 	// Serve static files for frontend
-	r.Static("/static", "./frontend/dist/static")
+	r.Static("/assets", "./frontend/dist/assets")
 	r.StaticFile("/", "./frontend/dist/index.html")
+	r.StaticFile("/vite.svg", "./frontend/dist/vite.svg")
 	r.NoRoute(func(c *gin.Context) {
 		c.File("./frontend/dist/index.html")
 	})
