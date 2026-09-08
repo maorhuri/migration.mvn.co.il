@@ -779,6 +779,106 @@ func (e *Enhance) ImportEmails(ctx context.Context, username string, emails []co
 	return nil
 }
 
+// ImportCronJobs imports cron jobs to Enhance
+func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs []common.CronJob) error {
+	if !e.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	// Get org ID
+	accounts, err := e.ListAccounts(ctx)
+	if err != nil {
+		return err
+	}
+
+	var orgID string
+	for _, acc := range accounts {
+		if acc.Username == username {
+			orgID = acc.Metadata["org_id"]
+			break
+		}
+	}
+
+	if orgID == "" {
+		return fmt.Errorf("organization not found for user: %s", username)
+	}
+
+	// Get first website for this org
+	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
+	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	var websitesResp struct {
+		Items []EnhanceWebsite `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &websitesResp); err != nil {
+		return err
+	}
+
+	if len(websitesResp.Items) == 0 {
+		return fmt.Errorf("no websites found for organization")
+	}
+
+	website := websitesResp.Items[0]
+
+	for _, cron := range cronJobs {
+		// Create cron job via API
+		cronReq := map[string]interface{}{
+			"minute":  cron.Minute,
+			"hour":    cron.Hour,
+			"day":     cron.Day,
+			"month":   cron.Month,
+			"weekday": cron.Weekday,
+			"command": cron.Command,
+		}
+
+		cronEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/cron-jobs", orgID, website.ID)
+		if _, err := e.apiRequest(ctx, "POST", cronEndpoint, cronReq); err != nil {
+			fmt.Printf("Warning: failed to create cron job: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// ImportEmailData imports email maildir data to Enhance
+func (e *Enhance) ImportEmailData(ctx context.Context, website *EnhanceWebsite, emailUser string, localMailDir string) error {
+	if !e.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	// Upload maildir to the correct location
+	// Enhance uses /home/<unixuser>/mail/<domain>/<user>/
+	remoteMailDir := fmt.Sprintf("/home/%s/mail/%s/%s", website.UnixUser, website.Domain, emailUser)
+
+	// Create directory
+	mkdirCmd := fmt.Sprintf("mkdir -p %s", remoteMailDir)
+	if _, err := e.sshClient.RunCommand(ctx, mkdirCmd); err != nil {
+		return fmt.Errorf("failed to create mail directory: %w", err)
+	}
+
+	// Upload maildir
+	progressChan := make(chan int64, 100)
+	go func() {
+		for range progressChan {
+		}
+	}()
+
+	if err := e.sshClient.UploadDirectory(ctx, localMailDir, remoteMailDir, progressChan); err != nil {
+		close(progressChan)
+		return fmt.Errorf("failed to upload maildir: %w", err)
+	}
+	close(progressChan)
+
+	// Fix permissions
+	chownCmd := fmt.Sprintf("chown -R %s:%s %s", website.UnixUser, website.UnixUser, remoteMailDir)
+	e.sshClient.RunCommand(ctx, chownCmd)
+
+	return nil
+}
+
 // SetupDomain configures a domain in Enhance
 func (e *Enhance) SetupDomain(ctx context.Context, username string, domain *common.Domain) error {
 	if !e.connected {

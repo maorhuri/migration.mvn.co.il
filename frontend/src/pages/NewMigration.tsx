@@ -128,13 +128,17 @@ export default function NewMigration() {
 
     // Simulate migration progress
     const steps = [
-      { step: 'Exporting databases', progress: 10, details: 'Dumping MySQL databases...' },
-      { step: 'Compressing files', progress: 25, details: 'Creating archive...' },
-      { step: 'Transferring to migration server', progress: 40, details: 'Rsync in progress...' },
+      { step: 'Exporting databases', progress: 5, details: 'Dumping MySQL databases...' },
+      { step: 'Exporting emails', progress: 15, details: 'Backing up mailboxes...' },
+      { step: 'Exporting cron jobs', progress: 20, details: 'Saving scheduled tasks...' },
+      { step: 'Compressing files', progress: 30, details: 'Creating archive...' },
+      { step: 'Transferring to migration server', progress: 45, details: 'Rsync in progress...' },
       { step: 'Creating website on Enhance', progress: 55, details: 'API call to create website...' },
       { step: 'Uploading files', progress: 70, details: 'Rsync to target server...' },
-      { step: 'Importing databases', progress: 85, details: 'Restoring MySQL databases...' },
-      { step: 'Configuring PHP version', progress: 95, details: 'Setting PHP 8.1...' },
+      { step: 'Importing databases', progress: 80, details: 'Restoring MySQL databases...' },
+      { step: 'Importing emails', progress: 88, details: 'Restoring mailboxes...' },
+      { step: 'Importing cron jobs', progress: 92, details: 'Setting up scheduled tasks...' },
+      { step: 'Configuring PHP version', progress: 97, details: 'Setting PHP version...' },
       { step: 'Completed', progress: 100, details: 'Migration completed successfully!' },
     ];
 
@@ -512,11 +516,15 @@ export default function NewMigration() {
               <h3 className="font-medium mb-3">Migration Steps</h3>
               <ol className="list-decimal list-inside space-y-2 text-sm text-gray-600">
                 <li>Export databases from source server</li>
+                <li>Export email accounts and mailboxes</li>
+                <li>Export cron jobs (scheduled tasks)</li>
                 <li>Compress website files</li>
                 <li>Transfer files via rsync to migration server</li>
                 <li>Create website on Enhance via API</li>
                 <li>Upload files to target server</li>
                 <li>Import databases</li>
+                <li>Import email accounts and mailboxes</li>
+                <li>Import cron jobs</li>
                 <li>Configure PHP version</li>
                 <li>Generate hosts file entry for testing</li>
               </ol>
