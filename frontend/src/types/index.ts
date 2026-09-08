@@ -8,6 +8,8 @@ export interface Server {
   auth_method: 'password' | 'ssh_key' | 'api_key';
   ssh_key_id?: string;
   api_endpoint?: string;
+  // Enhance specific
+  enhance_org_id?: string;
   created_at: string;
   updated_at: string;
 }

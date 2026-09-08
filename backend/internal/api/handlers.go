@@ -3,6 +3,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -107,6 +108,8 @@ type CreateServerRequest struct {
 	APIKey      string            `json:"api_key,omitempty"`
 	Password    string            `json:"password,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Enhance specific
+	EnhanceOrgID string `json:"enhance_org_id,omitempty"`
 }
 
 func (h *Handler) listServers(c *gin.Context) {
@@ -140,6 +143,13 @@ func (h *Handler) createServer(c *gin.Context) {
 		req.Port = 22
 	}
 
+	// Build metadata with Enhance-specific fields
+	metadata := make(map[string]interface{})
+	if req.EnhanceOrgID != "" {
+		metadata["enhance_org_id"] = req.EnhanceOrgID
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
 	server := &storage.Server{
 		Name:       req.Name,
 		PanelType:  req.PanelType,
@@ -147,7 +157,7 @@ func (h *Handler) createServer(c *gin.Context) {
 		Port:       req.Port,
 		Username:   req.Username,
 		AuthMethod: req.AuthMethod,
-		Metadata:   []byte("{}"),
+		Metadata:   metadataJSON,
 	}
 
 	if req.SSHKeyID != "" {

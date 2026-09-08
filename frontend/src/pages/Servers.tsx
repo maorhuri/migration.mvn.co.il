@@ -31,6 +31,8 @@ export default function Servers() {
     ssh_key_id: '',
     api_endpoint: '',
     api_key: '',
+    // Enhance specific fields
+    enhance_org_id: '',
   });
 
   useEffect(() => {
@@ -69,6 +71,7 @@ export default function Servers() {
         ssh_key_id: '',
         api_endpoint: '',
         api_key: '',
+        enhance_org_id: '',
       });
       fetchData();
     } catch (error) {
@@ -264,42 +267,91 @@ export default function Servers() {
                   </select>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                {/* Enhance API Settings */}
+                {formData.panel_type === 'enhance' && (
+                  <div className="p-4 bg-purple-50 rounded-lg space-y-4">
+                    <h4 className="font-medium text-purple-900">Enhance API Settings</h4>
+                    <div>
+                      <label className="label">API URL</label>
+                      <input
+                        type="url"
+                        className="input"
+                        value={formData.api_endpoint}
+                        onChange={(e) => setFormData({ ...formData, api_endpoint: e.target.value })}
+                        placeholder="https://your-enhance-server.com:8443"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="label">API Token</label>
+                      <input
+                        type="password"
+                        className="input"
+                        value={formData.api_key}
+                        onChange={(e) => setFormData({ ...formData, api_key: e.target.value })}
+                        placeholder="Your API Token"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Organization ID</label>
+                      <input
+                        type="text"
+                        className="input"
+                        value={formData.enhance_org_id}
+                        onChange={(e) => setFormData({ ...formData, enhance_org_id: e.target.value })}
+                        placeholder="org_xxxxx"
+                        required
+                      />
+                    </div>
+                    <p className="text-xs text-purple-700">
+                      If this is a cluster, the system will automatically detect all servers and let you choose the target during migration.
+                    </p>
+                  </div>
+                )}
+
+                {/* SSH Settings */}
+                <div className="p-4 bg-gray-50 rounded-lg space-y-4">
+                  <h4 className="font-medium text-gray-900">
+                    {formData.panel_type === 'enhance' ? 'SSH Settings (for rsync)' : 'Connection Settings'}
+                  </h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">SSH Host</label>
+                      <input
+                        type="text"
+                        className="input"
+                        value={formData.host}
+                        onChange={(e) => setFormData({ ...formData, host: e.target.value })}
+                        placeholder="server.example.com"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="label">SSH Port</label>
+                      <input
+                        type="number"
+                        className="input"
+                        value={formData.port}
+                        onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+
                   <div>
-                    <label className="label">Host</label>
+                    <label className="label">Username</label>
                     <input
                       type="text"
                       className="input"
-                      value={formData.host}
-                      onChange={(e) => setFormData({ ...formData, host: e.target.value })}
-                      placeholder="server.example.com"
+                      value={formData.username}
+                      onChange={(e) => setFormData({ ...formData, username: e.target.value })}
                       required
                     />
                   </div>
-                  <div>
-                    <label className="label">Port</label>
-                    <input
-                      type="number"
-                      className="input"
-                      value={formData.port}
-                      onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) })}
-                    />
-                  </div>
                 </div>
 
                 <div>
-                  <label className="label">Username</label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={formData.username}
-                    onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="label">Authentication Method</label>
+                  <label className="label">SSH Authentication Method</label>
                   <select
                     className="input"
                     value={formData.auth_method}
@@ -339,7 +391,7 @@ export default function Servers() {
                   </div>
                 )}
 
-                {formData.auth_method === 'api_key' && (
+                {formData.auth_method === 'api_key' && formData.panel_type !== 'enhance' && (
                   <>
                     <div>
                       <label className="label">API Endpoint</label>
@@ -348,7 +400,7 @@ export default function Servers() {
                         className="input"
                         value={formData.api_endpoint}
                         onChange={(e) => setFormData({ ...formData, api_endpoint: e.target.value })}
-                        placeholder="https://api.enhance.com"
+                        placeholder="https://api.example.com"
                       />
                     </div>
                     <div>
