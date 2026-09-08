@@ -25,9 +25,15 @@ export interface Account {
   email: string;
   domain: string;
   package?: string;
-  disk_usage: number;
-  disk_limit: number;
+  disk_used: string;
+  disk_limit: string;
   suspended: boolean;
+  php_version?: string;
+  databases?: string[];
+  email_accounts?: string[];
+  addon_domains?: string[];
+  ssl_enabled?: boolean;
+  ssl_expiry?: string;
 }
 
 export interface Migration {

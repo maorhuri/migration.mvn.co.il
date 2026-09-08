@@ -45,7 +45,7 @@ export default function NewMigration() {
       const fetchAccounts = async () => {
         try {
           const data = await getServerAccounts(formData.source_server_id);
-          setAccounts(data);
+          setAccounts(data.accounts);
         } catch (error) {
           console.error('Failed to fetch accounts:', error);
           setAccounts([]);

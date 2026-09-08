@@ -12,22 +12,7 @@ import {
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServer, getServerAccounts, testServerConnection } from '../api/client';
-import type { Server } from '../types';
-
-interface Account {
-  username: string;
-  domain: string;
-  email: string;
-  disk_used: string;
-  disk_limit: string;
-  suspended: boolean;
-  php_version?: string;
-  databases?: string[];
-  email_accounts?: string[];
-  addon_domains?: string[];
-  ssl_enabled?: boolean;
-  ssl_expiry?: string;
-}
+import type { Server, Account } from '../types';
 
 interface ServerAccounts {
   accounts: Account[];
