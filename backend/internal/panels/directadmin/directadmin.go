@@ -132,6 +132,7 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 	script := fmt.Sprintf(`bash -c '
 USER="%s"
 USER_CONF="/usr/local/directadmin/data/users/$USER/user.conf"
+DA_MYSQL_CONF="/usr/local/directadmin/conf/mysql.conf"
 
 # User config
 cat "$USER_CONF" 2>/dev/null
@@ -141,10 +142,11 @@ echo "---SEPARATOR---"
 du -sh /home/$USER 2>/dev/null | cut -f1
 echo "---SEPARATOR---"
 
-# Databases list
-MYSQL_CONF="/usr/local/directadmin/data/users/$USER/mysql.conf"
-if [ -f "$MYSQL_CONF" ]; then
-    cat "$MYSQL_CONF" 2>/dev/null | grep -v "^#" | grep "=" | cut -d= -f1 | tr "\n" ","
+# Databases list - query MySQL directly by username prefix
+MYSQL_USER=$(grep "^user=" "$DA_MYSQL_CONF" 2>/dev/null | cut -d= -f2)
+MYSQL_PASS=$(grep "^passwd=" "$DA_MYSQL_CONF" 2>/dev/null | cut -d= -f2)
+if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASS" ]; then
+    mysql -u"$MYSQL_USER" -p"$MYSQL_PASS" -N -e "SHOW DATABASES LIKE '"'"'${USER}_%%'"'"'" 2>/dev/null | tr "\n" ","
 fi
 echo "---SEPARATOR---"
 
@@ -171,11 +173,12 @@ else
 fi
 echo "---SEPARATOR---"
 
-# PHP version
+# PHP version - extract from openlitespeed.conf or PATH
 PHP_VER=""
-DOMAIN_CONF="/usr/local/directadmin/data/users/$USER/domains/$DOMAIN.conf"
-if [ -f "$DOMAIN_CONF" ]; then
-    PHP_VER=$(grep -E "^php[12]_select=" "$DOMAIN_CONF" 2>/dev/null | head -1 | cut -d= -f2)
+OLS_CONF="/usr/local/directadmin/data/users/$USER/openlitespeed.conf"
+if [ -f "$OLS_CONF" ]; then
+    PHP_VER=$(grep -oE "php[0-9]+" "$OLS_CONF" 2>/dev/null | head -1 | sed "s/php//" | sed "s/\(.\)/\1./")
+    PHP_VER=${PHP_VER%%.}
 fi
 if [ -z "$PHP_VER" ]; then
     PHP_VER=$(php -v 2>/dev/null | head -1 | grep -oE "[0-9]+\.[0-9]+" | head -1)
@@ -183,18 +186,9 @@ fi
 echo "$PHP_VER"
 echo "---SEPARATOR---"
 
-# DB Size
-DA_MYSQL_CONF="/usr/local/directadmin/conf/mysql.conf"
-if [ -f "$MYSQL_CONF" ] && [ -f "$DA_MYSQL_CONF" ]; then
-    DBS=$(cat "$MYSQL_CONF" 2>/dev/null | grep -v "^#" | grep "=" | cut -d= -f1 | tr "\n" " " | xargs)
-    if [ -n "$DBS" ]; then
-        MYSQL_USER=$(grep "^user=" "$DA_MYSQL_CONF" | cut -d= -f2)
-        MYSQL_PASS=$(grep "^passwd=" "$DA_MYSQL_CONF" | cut -d= -f2)
-        IN_CLAUSE=$(echo "$DBS" | sed "s/ /\x27,\x27/g" | sed "s/^/\x27/" | sed "s/$/\x27/")
-        mysql -u"$MYSQL_USER" -p"$MYSQL_PASS" -N -e "SELECT COALESCE(ROUND(SUM(data_length + index_length) / 1024 / 1024, 1), 0) FROM information_schema.tables WHERE table_schema IN ($IN_CLAUSE)" 2>/dev/null || echo "0"
-    else
-        echo "0"
-    fi
+# DB Size - sum all databases for this user
+if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASS" ]; then
+    mysql -u"$MYSQL_USER" -p"$MYSQL_PASS" -N -e "SELECT COALESCE(ROUND(SUM(data_length + index_length) / 1024 / 1024, 1), 0) FROM information_schema.tables WHERE table_schema LIKE '"'"'${USER}_%%'"'"'" 2>/dev/null || echo "0"
 else
     echo "0"
 fi
