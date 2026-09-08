@@ -152,7 +152,7 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 			}
 		case "quota":
 			if q, err := strconv.ParseInt(value, 10, 64); err == nil {
-				account.DiskLimit = q * 1024 * 1024 // Convert MB to bytes
+				account.DiskLimit = fmt.Sprintf("%d MB", q)
 			}
 		default:
 			account.Metadata[key] = value
@@ -161,11 +161,9 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 
 	// Get disk usage
 	usageOutput, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("du -sb /home/%s 2>/dev/null | cut -f1", username))
+		fmt.Sprintf("du -sh /home/%s 2>/dev/null | cut -f1", username))
 	if err == nil {
-		if usage, err := strconv.ParseInt(strings.TrimSpace(usageOutput), 10, 64); err == nil {
-			account.DiskUsage = usage
-		}
+		account.DiskUsage = strings.TrimSpace(usageOutput)
 	}
 
 	return account, nil

@@ -45,17 +45,24 @@ const (
 
 // Account represents a hosting account/user
 type Account struct {
-	Username     string            `json:"username"`
-	Email        string            `json:"email"`
-	Domain       string            `json:"domain"`
-	Package      string            `json:"package,omitempty"`
-	DiskUsage    int64             `json:"disk_usage"`
-	DiskLimit    int64             `json:"disk_limit"`
-	BandwidthUsage int64           `json:"bandwidth_usage"`
-	BandwidthLimit int64           `json:"bandwidth_limit"`
-	Suspended    bool              `json:"suspended"`
-	CreatedAt    time.Time         `json:"created_at"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	Username       string            `json:"username"`
+	Email          string            `json:"email"`
+	Domain         string            `json:"domain"`
+	Package        string            `json:"package,omitempty"`
+	DiskUsage      string            `json:"disk_usage"`
+	DiskLimit      string            `json:"disk_limit"`
+	BandwidthUsage int64             `json:"bandwidth_usage"`
+	BandwidthLimit int64             `json:"bandwidth_limit"`
+	Suspended      bool              `json:"suspended"`
+	CreatedAt      time.Time         `json:"created_at"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	// Additional fields for detailed view
+	PHPVersion    string   `json:"php_version,omitempty"`
+	Databases     []string `json:"databases,omitempty"`
+	EmailAccounts []string `json:"email_accounts,omitempty"`
+	AddonDomains  []string `json:"addon_domains,omitempty"`
+	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
+	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
 }
 
 // Domain represents a domain configuration
@@ -78,26 +85,26 @@ type SSLCert struct {
 
 // Database represents a database
 type Database struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"` // mysql, postgresql
-	Size     int64    `json:"size"`
-	Users    []DBUser `json:"users"`
-	Charset  string   `json:"charset"`
+	Name    string   `json:"name"`
+	Type    string   `json:"type"` // mysql, postgresql
+	Size    int64    `json:"size"`
+	Users   []DBUser `json:"users"`
+	Charset string   `json:"charset"`
 }
 
 // DBUser represents a database user
 type DBUser struct {
-	Username    string   `json:"username"`
-	Host        string   `json:"host"`
-	Privileges  []string `json:"privileges"`
+	Username   string   `json:"username"`
+	Host       string   `json:"host"`
+	Privileges []string `json:"privileges"`
 }
 
 // EmailAccount represents an email account
 type EmailAccount struct {
-	Email       string `json:"email"`
-	Quota       int64  `json:"quota"`
-	QuotaUsed   int64  `json:"quota_used"`
-	ForwardTo   string `json:"forward_to,omitempty"`
+	Email     string `json:"email"`
+	Quota     int64  `json:"quota"`
+	QuotaUsed int64  `json:"quota_used"`
+	ForwardTo string `json:"forward_to,omitempty"`
 }
 
 // CronJob represents a cron job
@@ -134,48 +141,48 @@ type ExportData struct {
 
 // MigrationProgress tracks migration progress
 type MigrationProgress struct {
-	ID              string    `json:"id"`
-	Status          string    `json:"status"` // pending, running, completed, failed
-	CurrentStep     string    `json:"current_step"`
-	TotalSteps      int       `json:"total_steps"`
-	CompletedSteps  int       `json:"completed_steps"`
-	BytesTransferred int64    `json:"bytes_transferred"`
-	TotalBytes      int64     `json:"total_bytes"`
-	StartedAt       time.Time `json:"started_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	Error           string    `json:"error,omitempty"`
-	Logs            []string  `json:"logs"`
+	ID               string     `json:"id"`
+	Status           string     `json:"status"` // pending, running, completed, failed
+	CurrentStep      string     `json:"current_step"`
+	TotalSteps       int        `json:"total_steps"`
+	CompletedSteps   int        `json:"completed_steps"`
+	BytesTransferred int64      `json:"bytes_transferred"`
+	TotalBytes       int64      `json:"total_bytes"`
+	StartedAt        time.Time  `json:"started_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	Logs             []string   `json:"logs"`
 }
 
 // PanelExporter interface for exporting data from a panel
 type PanelExporter interface {
 	// Connect establishes connection to the panel
 	Connect(ctx context.Context, config *ConnectionConfig) error
-	
+
 	// Disconnect closes the connection
 	Disconnect() error
-	
+
 	// TestConnection tests if the connection is working
 	TestConnection(ctx context.Context) error
-	
+
 	// ListAccounts returns all accounts on the server
 	ListAccounts(ctx context.Context) ([]Account, error)
-	
+
 	// GetAccount returns details for a specific account
 	GetAccount(ctx context.Context, username string) (*Account, error)
-	
+
 	// ExportAccount exports all data for an account
 	ExportAccount(ctx context.Context, username string, outputDir string, progress chan<- MigrationProgress) (*ExportData, error)
-	
+
 	// ExportFiles exports files for an account
 	ExportFiles(ctx context.Context, username string, outputDir string, progress chan<- MigrationProgress) error
-	
+
 	// ExportDatabases exports databases for an account
 	ExportDatabases(ctx context.Context, username string, outputDir string) ([]Database, error)
-	
+
 	// ExportEmails exports email accounts and data
 	ExportEmails(ctx context.Context, username string, outputDir string) ([]EmailAccount, error)
-	
+
 	// GetPanelType returns the panel type
 	GetPanelType() PanelType
 }
@@ -184,34 +191,34 @@ type PanelExporter interface {
 type PanelImporter interface {
 	// Connect establishes connection to the panel
 	Connect(ctx context.Context, config *ConnectionConfig) error
-	
+
 	// Disconnect closes the connection
 	Disconnect() error
-	
+
 	// TestConnection tests if the connection is working
 	TestConnection(ctx context.Context) error
-	
+
 	// CreateAccount creates a new account
 	CreateAccount(ctx context.Context, account *Account, password string) error
-	
+
 	// ImportAccount imports all data for an account
 	ImportAccount(ctx context.Context, data *ExportData, password string, progress chan<- MigrationProgress) error
-	
+
 	// ImportFiles imports files to an account
 	ImportFiles(ctx context.Context, username string, sourcePath string, progress chan<- MigrationProgress) error
-	
+
 	// ImportDatabases imports databases
 	ImportDatabases(ctx context.Context, username string, databases []Database, dumpDir string) error
-	
+
 	// ImportEmails imports email accounts
 	ImportEmails(ctx context.Context, username string, emails []EmailAccount) error
-	
+
 	// SetupDomain configures a domain
 	SetupDomain(ctx context.Context, username string, domain *Domain) error
-	
+
 	// SetupSSL configures SSL for a domain
 	SetupSSL(ctx context.Context, domain string, cert *SSLCert) error
-	
+
 	// GetPanelType returns the panel type
 	GetPanelType() PanelType
 }
@@ -226,25 +233,25 @@ type Panel interface {
 type FileTransfer interface {
 	// Upload uploads a file
 	Upload(ctx context.Context, localPath, remotePath string) error
-	
+
 	// Download downloads a file
 	Download(ctx context.Context, remotePath, localPath string) error
-	
+
 	// UploadStream uploads from a reader
 	UploadStream(ctx context.Context, reader io.Reader, remotePath string, size int64) error
-	
+
 	// DownloadStream downloads to a writer
 	DownloadStream(ctx context.Context, remotePath string, writer io.Writer) error
-	
+
 	// List lists files in a directory
 	List(ctx context.Context, path string) ([]FileInfo, error)
-	
+
 	// Mkdir creates a directory
 	Mkdir(ctx context.Context, path string) error
-	
+
 	// Remove removes a file or directory
 	Remove(ctx context.Context, path string) error
-	
+
 	// Stat returns file info
 	Stat(ctx context.Context, path string) (*FileInfo, error)
 }

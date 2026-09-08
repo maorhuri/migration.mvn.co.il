@@ -38,9 +38,9 @@ export const testServerConnection = async (id: string): Promise<{ success: boole
   return data;
 };
 
-export const getServerAccounts = async (id: string): Promise<Account[]> => {
+export const getServerAccounts = async (id: string): Promise<{ accounts: Account[]; total: number }> => {
   const { data } = await api.get(`/servers/${id}/accounts`);
-  return data.items || [];
+  return { accounts: data.accounts || [], total: data.total || 0 };
 };
 
 // SSH Keys

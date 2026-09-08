@@ -23,13 +23,13 @@ type Database struct {
 
 // Config holds database configuration
 type Config struct {
-	Host          string
-	Port          int
-	User          string
-	Password      string
-	Database      string
-	SSLMode       string
-	MasterKey     string // For encrypting sensitive data
+	Host      string
+	Port      int
+	User      string
+	Password  string
+	Database  string
+	SSLMode   string
+	MasterKey string // For encrypting sensitive data
 }
 
 // NewDatabase creates a new database connection
@@ -142,31 +142,31 @@ func (d *Database) Migrate(ctx context.Context) error {
 
 // Server represents a server in the database
 type Server struct {
-	ID                string            `db:"id" json:"id"`
-	Name              string            `db:"name" json:"name"`
-	PanelType         string            `db:"panel_type" json:"panel_type"`
-	Host              string            `db:"host" json:"host"`
-	Port              int               `db:"port" json:"port"`
-	Username          string            `db:"username" json:"username"`
-	AuthMethod        string            `db:"auth_method" json:"auth_method"`
-	SSHKeyID          sql.NullString    `db:"ssh_key_id" json:"ssh_key_id,omitempty"`
-	APIEndpoint       sql.NullString    `db:"api_endpoint" json:"api_endpoint,omitempty"`
-	APIKeyEncrypted   sql.NullString    `db:"api_key_encrypted" json:"-"`
-	PasswordEncrypted sql.NullString    `db:"password_encrypted" json:"-"`
-	Metadata          json.RawMessage   `db:"metadata" json:"metadata,omitempty"`
-	CreatedAt         time.Time         `db:"created_at" json:"created_at"`
-	UpdatedAt         time.Time         `db:"updated_at" json:"updated_at"`
+	ID                string          `db:"id" json:"id"`
+	Name              string          `db:"name" json:"name"`
+	PanelType         string          `db:"panel_type" json:"panel_type"`
+	Host              string          `db:"host" json:"host"`
+	Port              int             `db:"port" json:"port"`
+	Username          string          `db:"username" json:"username"`
+	AuthMethod        string          `db:"auth_method" json:"auth_method"`
+	SSHKeyID          sql.NullString  `db:"ssh_key_id" json:"ssh_key_id,omitempty"`
+	APIEndpoint       sql.NullString  `db:"api_endpoint" json:"api_endpoint,omitempty"`
+	APIKeyEncrypted   sql.NullString  `db:"api_key_encrypted" json:"-"`
+	PasswordEncrypted sql.NullString  `db:"password_encrypted" json:"-"`
+	Metadata          json.RawMessage `db:"metadata" json:"metadata,omitempty"`
+	CreatedAt         time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt         time.Time       `db:"updated_at" json:"updated_at"`
 }
 
 // SSHKey represents an SSH key in the database
 type SSHKey struct {
-	ID                    string    `db:"id" json:"id"`
-	Name                  string    `db:"name" json:"name"`
-	PublicKey             string    `db:"public_key" json:"public_key"`
-	PrivateKeyEncrypted   string    `db:"private_key_encrypted" json:"-"`
-	PassphraseEncrypted   sql.NullString `db:"passphrase_encrypted" json:"-"`
-	Fingerprint           sql.NullString `db:"fingerprint" json:"fingerprint,omitempty"`
-	CreatedAt             time.Time `db:"created_at" json:"created_at"`
+	ID                  string         `db:"id" json:"id"`
+	Name                string         `db:"name" json:"name"`
+	PublicKey           string         `db:"public_key" json:"public_key"`
+	PrivateKeyEncrypted string         `db:"private_key_encrypted" json:"-"`
+	PassphraseEncrypted sql.NullString `db:"passphrase_encrypted" json:"-"`
+	Fingerprint         sql.NullString `db:"fingerprint" json:"fingerprint,omitempty"`
+	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
 }
 
 // Migration represents a migration record
@@ -267,7 +267,7 @@ func (d *Database) ListServers(ctx context.Context) ([]Server, error) {
 // ListServersByType lists servers by panel type
 func (d *Database) ListServersByType(ctx context.Context, panelType string) ([]Server, error) {
 	var servers []Server
-	err := d.db.SelectContext(ctx, &servers, 
+	err := d.db.SelectContext(ctx, &servers,
 		"SELECT * FROM servers WHERE panel_type = $1 ORDER BY name", panelType)
 	return servers, err
 }
@@ -321,7 +321,7 @@ func (d *Database) DeleteServer(ctx context.Context, id string) error {
 // GetServerPassword retrieves and decrypts the server password
 func (d *Database) GetServerPassword(ctx context.Context, id string) (string, error) {
 	var encrypted sql.NullString
-	err := d.db.GetContext(ctx, &encrypted, 
+	err := d.db.GetContext(ctx, &encrypted,
 		"SELECT password_encrypted FROM servers WHERE id = $1", id)
 	if err != nil {
 		return "", err
@@ -335,8 +335,22 @@ func (d *Database) GetServerPassword(ctx context.Context, id string) (string, er
 // GetServerAPIKey retrieves and decrypts the server API key
 func (d *Database) GetServerAPIKey(ctx context.Context, id string) (string, error) {
 	var encrypted sql.NullString
-	err := d.db.GetContext(ctx, &encrypted, 
+	err := d.db.GetContext(ctx, &encrypted,
 		"SELECT api_key_encrypted FROM servers WHERE id = $1", id)
+	if err != nil {
+		return "", err
+	}
+	if !encrypted.Valid {
+		return "", nil
+	}
+	return d.encryptor.DecryptString(encrypted.String)
+}
+
+// GetDecryptedPassword retrieves and decrypts the server password
+func (d *Database) GetDecryptedPassword(ctx context.Context, id string) (string, error) {
+	var encrypted sql.NullString
+	err := d.db.GetContext(ctx, &encrypted,
+		"SELECT password_encrypted FROM servers WHERE id = $1", id)
 	if err != nil {
 		return "", err
 	}
@@ -400,7 +414,7 @@ func (d *Database) ListSSHKeys(ctx context.Context) ([]SSHKey, error) {
 // GetSSHKeyPrivateKey retrieves and decrypts the private key
 func (d *Database) GetSSHKeyPrivateKey(ctx context.Context, id string) (string, error) {
 	var encrypted string
-	err := d.db.GetContext(ctx, &encrypted, 
+	err := d.db.GetContext(ctx, &encrypted,
 		"SELECT private_key_encrypted FROM ssh_keys WHERE id = $1", id)
 	if err != nil {
 		return "", err
@@ -411,7 +425,7 @@ func (d *Database) GetSSHKeyPrivateKey(ctx context.Context, id string) (string, 
 // GetSSHKeyPassphrase retrieves and decrypts the passphrase
 func (d *Database) GetSSHKeyPassphrase(ctx context.Context, id string) (string, error) {
 	var encrypted sql.NullString
-	err := d.db.GetContext(ctx, &encrypted, 
+	err := d.db.GetContext(ctx, &encrypted,
 		"SELECT passphrase_encrypted FROM ssh_keys WHERE id = $1", id)
 	if err != nil {
 		return "", err
@@ -461,7 +475,7 @@ func (d *Database) GetMigration(ctx context.Context, id string) (*Migration, err
 // ListMigrations lists all migrations
 func (d *Database) ListMigrations(ctx context.Context) ([]Migration, error) {
 	var migrations []Migration
-	err := d.db.SelectContext(ctx, &migrations, 
+	err := d.db.SelectContext(ctx, &migrations,
 		"SELECT * FROM migrations ORDER BY created_at DESC")
 	return migrations, err
 }
@@ -494,7 +508,7 @@ func (d *Database) UpdateMigrationProgress(ctx context.Context, id string, progr
 // AddMigrationLog adds a log entry for a migration
 func (d *Database) AddMigrationLog(ctx context.Context, migrationID, level, message string, metadata map[string]interface{}) error {
 	id := uuid.New().String()
-	
+
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		metadataJSON = []byte("{}")
@@ -515,7 +529,7 @@ func (d *Database) AddMigrationLog(ctx context.Context, migrationID, level, mess
 // GetMigrationLogs retrieves logs for a migration
 func (d *Database) GetMigrationLogs(ctx context.Context, migrationID string) ([]MigrationLog, error) {
 	var logs []MigrationLog
-	err := d.db.SelectContext(ctx, &logs, 
+	err := d.db.SelectContext(ctx, &logs,
 		"SELECT * FROM migration_logs WHERE migration_id = $1 ORDER BY created_at", migrationID)
 	return logs, err
 }

@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Dialog } from '@headlessui/react';
 import {
   PlusIcon,
   TrashIcon,
   ServerStackIcon,
   CheckCircleIcon,
+  EyeIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServers, createServer, deleteServer, testServerConnection, getSSHKeys } from '../api/client';
 import type { Server, SSHKey } from '../types';
 
 export default function Servers() {
+  const navigate = useNavigate();
   const [servers, setServers] = useState<Server[]>([]);
   const [sshKeys, setSSHKeys] = useState<SSHKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -192,7 +195,14 @@ export default function Servers() {
                 </div>
               </div>
 
-              <div className="mt-4 pt-4 border-t border-gray-100">
+              <div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+                <button
+                  onClick={() => navigate(`/servers/${server.id}`)}
+                  className="w-full btn btn-primary flex items-center justify-center"
+                >
+                  <EyeIcon className="w-5 h-5 mr-2" />
+                  View Details
+                </button>
                 <button
                   onClick={() => handleTest(server.id)}
                   disabled={testingServer === server.id}

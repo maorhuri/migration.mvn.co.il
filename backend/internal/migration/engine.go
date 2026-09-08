@@ -13,15 +13,16 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
+	"github.com/migration-tool/backend/internal/ssh"
 	"github.com/migration-tool/backend/internal/storage"
 	"github.com/migration-tool/backend/pkg/logger"
 )
 
 // Engine handles migration operations
 type Engine struct {
-	db         *storage.Database
-	logger     *logger.Logger
-	workDir    string
+	db      *storage.Database
+	logger  *logger.Logger
+	workDir string
 }
 
 // NewEngine creates a new migration engine
@@ -43,27 +44,27 @@ type MigrationRequest struct {
 
 // MigrationResult represents the result of a migration
 type MigrationResult struct {
-	ID          string                   `json:"id"`
-	Status      string                   `json:"status"`
-	ExportData  *common.ExportData       `json:"export_data,omitempty"`
-	Error       string                   `json:"error,omitempty"`
-	StartedAt   time.Time                `json:"started_at"`
-	CompletedAt *time.Time               `json:"completed_at,omitempty"`
+	ID          string                    `json:"id"`
+	Status      string                    `json:"status"`
+	ExportData  *common.ExportData        `json:"export_data,omitempty"`
+	Error       string                    `json:"error,omitempty"`
+	StartedAt   time.Time                 `json:"started_at"`
+	CompletedAt *time.Time                `json:"completed_at,omitempty"`
 	Progress    *common.MigrationProgress `json:"progress,omitempty"`
 }
 
 // StartMigration starts a new migration
 func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*MigrationResult, error) {
 	migrationID := uuid.New().String()
-	
+
 	result := &MigrationResult{
 		ID:        migrationID,
 		Status:    "running",
 		StartedAt: time.Now(),
 		Progress: &common.MigrationProgress{
-			ID:         migrationID,
-			Status:     "running",
-			StartedAt:  time.Now(),
+			ID:        migrationID,
+			Status:    "running",
+			StartedAt: time.Now(),
 		},
 	}
 
@@ -107,7 +108,7 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 // runMigration executes the migration process
 func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceServer, targetServer *storage.Server, req *MigrationRequest, workDir string) {
 	progressChan := make(chan common.MigrationProgress, 100)
-	
+
 	// Progress updater
 	go func() {
 		for progress := range progressChan {
@@ -351,7 +352,7 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 
 	if !supported {
 		result.Compatible = false
-		result.Errors = append(result.Errors, 
+		result.Errors = append(result.Errors,
 			fmt.Sprintf("Migration from %s to %s is not supported", sourceType, targetType))
 		return result, nil
 	}
@@ -368,4 +369,112 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 	}
 
 	return result, nil
+}
+
+// CreateSSHClient creates an SSH client for a server
+func (e *Engine) CreateSSHClient(server *storage.Server, password string) (*ssh.Client, error) {
+	config := e.db.ToConnectionConfig(server)
+
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(context.Background(), server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	client := ssh.NewClient()
+	if err := client.Connect(context.Background(), config, password, privateKey); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// AccountInfo represents account information from a server
+type AccountInfo struct {
+	Username      string   `json:"username"`
+	Domain        string   `json:"domain"`
+	Email         string   `json:"email"`
+	DiskUsed      string   `json:"disk_used"`
+	DiskLimit     string   `json:"disk_limit"`
+	Suspended     bool     `json:"suspended"`
+	PHPVersion    string   `json:"php_version,omitempty"`
+	Databases     []string `json:"databases,omitempty"`
+	EmailAccounts []string `json:"email_accounts,omitempty"`
+	AddonDomains  []string `json:"addon_domains,omitempty"`
+	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
+	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
+}
+
+// GetServerAccounts gets all accounts from a server
+func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
+	config := e.db.ToConnectionConfig(server)
+
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeDirectAdmin:
+		da := directadmin.New()
+		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
+			return nil, fmt.Errorf("failed to connect to DirectAdmin: %w", err)
+		}
+		defer da.Disconnect()
+
+		accounts, err := da.ListAccounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list accounts: %w", err)
+		}
+
+		var result []AccountInfo
+		for _, acc := range accounts {
+			info := AccountInfo{
+				Username:      acc.Username,
+				Domain:        acc.Domain,
+				Email:         acc.Email,
+				DiskUsed:      acc.DiskUsage,
+				DiskLimit:     acc.DiskLimit,
+				Suspended:     acc.Suspended,
+				PHPVersion:    acc.PHPVersion,
+				Databases:     acc.Databases,
+				EmailAccounts: acc.EmailAccounts,
+				AddonDomains:  acc.AddonDomains,
+				SSLEnabled:    acc.SSLEnabled,
+				SSLExpiry:     acc.SSLExpiry,
+			}
+			result = append(result, info)
+		}
+		return result, nil
+
+	case common.PanelTypeEnhance:
+		// Enhance uses API, not SSH
+		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+		en := enhance.New()
+		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+			return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
+		}
+
+		accounts, err := en.ListAccounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list accounts: %w", err)
+		}
+
+		var result []AccountInfo
+		for _, acc := range accounts {
+			info := AccountInfo{
+				Username:  acc.Username,
+				Domain:    acc.Domain,
+				Email:     acc.Email,
+				DiskUsed:  acc.DiskUsage,
+				DiskLimit: acc.DiskLimit,
+				Suspended: acc.Suspended,
+			}
+			result = append(result, info)
+		}
+		return result, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported panel type: %s", server.PanelType)
+	}
 }

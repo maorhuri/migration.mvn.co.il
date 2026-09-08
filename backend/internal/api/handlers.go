@@ -235,8 +235,40 @@ func (h *Handler) testServerConnection(c *gin.Context) {
 		return
 	}
 
-	// TODO: Implement actual connection test
-	_ = server
+	// Get decrypted password if using password auth
+	var password string
+	if server.AuthMethod == "password" && server.PasswordEncrypted.Valid {
+		password, err = h.db.GetDecryptedPassword(c.Request.Context(), id)
+		if err != nil {
+			h.logger.Error("Failed to decrypt password", err, nil)
+		}
+	}
+
+	// Try to connect via SSH
+	sshClient, err := h.engine.CreateSSHClient(server, password)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	defer sshClient.Disconnect()
+
+	// Test connection by running a simple command
+	output, err := sshClient.RunCommand(c.Request.Context(), "echo 'connected'")
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	h.logger.Info("SSH connection test successful", map[string]interface{}{
+		"server_id": id,
+		"output":    output,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -253,10 +285,26 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		return
 	}
 
-	// TODO: Implement actual account listing
-	_ = server
+	// Get decrypted password if using password auth
+	var password string
+	if server.AuthMethod == "password" && server.PasswordEncrypted.Valid {
+		password, err = h.db.GetDecryptedPassword(c.Request.Context(), id)
+		if err != nil {
+			h.logger.Error("Failed to decrypt password", err, nil)
+		}
+	}
 
-	c.JSON(http.StatusOK, gin.H{"items": []interface{}{}})
+	// Get accounts based on panel type
+	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"accounts": accounts,
+		"total":    len(accounts),
+	})
 }
 
 // SSH Key handlers
