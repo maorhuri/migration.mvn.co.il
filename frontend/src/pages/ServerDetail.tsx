@@ -234,114 +234,105 @@ export default function ServerDetail() {
               Accounts ({accounts.total})
             </h2>
           </div>
+          {/* Table Header */}
+          <div className="hidden md:grid md:grid-cols-12 gap-2 px-4 py-3 bg-gray-50 border-b text-xs font-medium text-gray-500 uppercase">
+            <div className="col-span-3">Domain</div>
+            <div className="col-span-1 text-center">Type</div>
+            <div className="col-span-1 text-center">PHP</div>
+            <div className="col-span-1 text-center">Disk</div>
+            <div className="col-span-1 text-center">DB Size</div>
+            <div className="col-span-1 text-center">DBs</div>
+            <div className="col-span-2 text-center">Emails</div>
+            <div className="col-span-2 text-center">Status</div>
+          </div>
           <div className="divide-y divide-gray-200">
             {accounts.accounts.map((account) => (
               <div
                 key={account.username}
-                className="p-4 hover:bg-gray-50 cursor-pointer"
-                onClick={() => setSelectedAccount(selectedAccount?.username === account.username ? null : account)}
+                className="grid grid-cols-1 md:grid-cols-12 gap-2 px-4 py-3 hover:bg-gray-50 items-center text-sm"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-4">
-                    <div className="p-2 bg-blue-100 rounded-lg">
-                      <GlobeAltIcon className="h-6 w-6 text-blue-600" />
-                    </div>
-                    <div>
-                      <p className="font-medium">{account.domain}</p>
-                      <p className="text-sm text-gray-500">User: {account.username}</p>
-                    </div>
+                {/* Domain & User */}
+                <div className="col-span-3 flex items-center space-x-3">
+                  <div className="p-1.5 bg-blue-100 rounded-lg flex-shrink-0">
+                    <GlobeAltIcon className="h-5 w-5 text-blue-600" />
                   </div>
-                  <div className="flex items-center space-x-6 text-sm">
-                    <div className="text-center">
-                      <p className="text-gray-500">Disk</p>
-                      <p className="font-medium">{account.disk_used} / {account.disk_limit}</p>
-                    </div>
-                    {account.php_version && (
-                      <div className="text-center">
-                        <p className="text-gray-500">PHP</p>
-                        <p className="font-medium">{account.php_version}</p>
-                      </div>
-                    )}
-                    {account.ssl_enabled && (
-                      <span className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
-                        SSL
-                      </span>
-                    )}
-                    {account.suspended && (
-                      <span className="px-2 py-1 bg-red-100 text-red-700 rounded text-xs">
-                        Suspended
-                      </span>
-                    )}
+                  <div className="min-w-0">
+                    <p className="font-medium truncate">{account.domain}</p>
+                    <p className="text-xs text-gray-500 truncate">{account.username}</p>
                   </div>
                 </div>
 
-                {/* Expanded Details */}
-                {selectedAccount?.username === account.username && (
-                  <div className="mt-4 pt-4 border-t border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {/* Databases */}
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <div className="flex items-center mb-2">
-                        <CircleStackIcon className="h-5 w-5 text-purple-600 mr-2" />
-                        <h4 className="font-medium">Databases</h4>
-                      </div>
-                      {account.databases && account.databases.length > 0 ? (
-                        <ul className="text-sm space-y-1">
-                          {account.databases.map((db) => (
-                            <li key={db} className="text-gray-600">{db}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-gray-400">No databases</p>
-                      )}
-                    </div>
+                {/* WordPress Badge */}
+                <div className="col-span-1 text-center">
+                  {account.is_wordpress ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                      WP
+                    </span>
+                  ) : (
+                    <span className="text-gray-400 text-xs">-</span>
+                  )}
+                </div>
 
-                    {/* Email Accounts */}
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <div className="flex items-center mb-2">
-                        <EnvelopeIcon className="h-5 w-5 text-blue-600 mr-2" />
-                        <h4 className="font-medium">Email Accounts</h4>
-                      </div>
-                      {account.email_accounts && account.email_accounts.length > 0 ? (
-                        <ul className="text-sm space-y-1">
-                          {account.email_accounts.slice(0, 5).map((email) => (
-                            <li key={email} className="text-gray-600">{email}</li>
-                          ))}
-                          {account.email_accounts.length > 5 && (
-                            <li className="text-gray-400">+{account.email_accounts.length - 5} more</li>
-                          )}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-gray-400">No email accounts</p>
-                      )}
-                    </div>
+                {/* PHP Version */}
+                <div className="col-span-1 text-center">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
+                    {account.php_version || '?'}
+                  </span>
+                </div>
 
-                    {/* Addon Domains */}
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <div className="flex items-center mb-2">
-                        <GlobeAltIcon className="h-5 w-5 text-green-600 mr-2" />
-                        <h4 className="font-medium">Addon Domains</h4>
-                      </div>
-                      {account.addon_domains && account.addon_domains.length > 0 ? (
-                        <ul className="text-sm space-y-1">
-                          {account.addon_domains.map((domain) => (
-                            <li key={domain} className="text-gray-600">{domain}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-gray-400">No addon domains</p>
-                      )}
-                    </div>
+                {/* Disk Usage */}
+                <div className="col-span-1 text-center">
+                  <span className="font-medium">{account.disk_used || '-'}</span>
+                </div>
 
-                    {/* SSL Info */}
-                    {account.ssl_enabled && account.ssl_expiry && (
-                      <div className="md:col-span-3 bg-green-50 rounded-lg p-4">
-                        <p className="text-sm text-green-700">
-                          <strong>SSL Certificate:</strong> Valid until {account.ssl_expiry}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {/* DB Size */}
+                <div className="col-span-1 text-center">
+                  <span className="text-gray-600">{account.db_size || '-'}</span>
+                </div>
+
+                {/* Databases Count */}
+                <div className="col-span-1 text-center">
+                  {account.databases && account.databases.length > 0 ? (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700">
+                      <CircleStackIcon className="h-3 w-3 mr-1" />
+                      {account.databases.length}
+                    </span>
+                  ) : (
+                    <span className="text-gray-400">0</span>
+                  )}
+                </div>
+
+                {/* Email Accounts */}
+                <div className="col-span-2 text-center">
+                  {account.email_accounts && account.email_accounts.length > 0 ? (
+                    <div className="flex items-center justify-center">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
+                        <EnvelopeIcon className="h-3 w-3 mr-1" />
+                        {account.email_accounts.length} emails
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-gray-400 text-xs">No emails</span>
+                  )}
+                </div>
+
+                {/* Status Badges */}
+                <div className="col-span-2 flex items-center justify-center space-x-1">
+                  {account.ssl_enabled && (
+                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs">
+                      SSL
+                    </span>
+                  )}
+                  {account.suspended ? (
+                    <span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs">
+                      Suspended
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs">
+                      Active
+                    </span>
+                  )}
+                </div>
               </div>
             ))}
           </div>

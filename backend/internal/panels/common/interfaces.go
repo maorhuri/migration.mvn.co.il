@@ -63,6 +63,8 @@ type Account struct {
 	AddonDomains  []string `json:"addon_domains,omitempty"`
 	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
+	IsWordPress   bool     `json:"is_wordpress"`
+	DBSize        string   `json:"db_size,omitempty"`
 }
 
 // Domain represents a domain configuration

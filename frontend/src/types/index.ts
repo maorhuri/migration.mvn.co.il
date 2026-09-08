@@ -34,6 +34,8 @@ export interface Account {
   addon_domains?: string[];
   ssl_enabled?: boolean;
   ssl_expiry?: string;
+  is_wordpress?: boolean;
+  db_size?: string;
 }
 
 export interface Migration {

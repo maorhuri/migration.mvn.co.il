@@ -166,6 +166,58 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		account.DiskUsage = strings.TrimSpace(usageOutput)
 	}
 
+	// Get PHP version
+	phpOutput, err := da.sshClient.RunCommand(ctx,
+		fmt.Sprintf("cat /usr/local/directadmin/data/users/%s/domains/%s.conf 2>/dev/null | grep php1_select | cut -d= -f2", username, account.Domain))
+	if err == nil && strings.TrimSpace(phpOutput) != "" {
+		account.PHPVersion = strings.TrimSpace(phpOutput)
+	}
+
+	// Get databases
+	dbOutput, err := da.sshClient.RunCommand(ctx,
+		fmt.Sprintf("ls /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null && cat /usr/local/directadmin/data/users/%s/mysql.conf | grep -oP '^[^=]+' | head -20", username, username))
+	if err == nil {
+		dbs := strings.Fields(dbOutput)
+		if len(dbs) > 1 { // First line is the file path
+			account.Databases = dbs[1:]
+		}
+	}
+
+	// Get database size
+	if len(account.Databases) > 0 {
+		dbSizeOutput, err := da.sshClient.RunCommand(ctx,
+			fmt.Sprintf("mysql -N -e \"SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) FROM information_schema.tables WHERE table_schema LIKE '%s_%%'\" 2>/dev/null", username))
+		if err == nil && strings.TrimSpace(dbSizeOutput) != "" && strings.TrimSpace(dbSizeOutput) != "NULL" {
+			account.DBSize = strings.TrimSpace(dbSizeOutput) + " MB"
+		}
+	}
+
+	// Get email accounts
+	emailOutput, err := da.sshClient.RunCommand(ctx,
+		fmt.Sprintf("ls /home/%s/imap/%s/ 2>/dev/null | head -50", username, account.Domain))
+	if err == nil {
+		emails := strings.Fields(emailOutput)
+		for _, email := range emails {
+			if email != "" {
+				account.EmailAccounts = append(account.EmailAccounts, email+"@"+account.Domain)
+			}
+		}
+	}
+
+	// Check if WordPress
+	wpCheck, err := da.sshClient.RunCommand(ctx,
+		fmt.Sprintf("test -f /home/%s/domains/%s/public_html/wp-config.php && echo 'yes' || echo 'no'", username, account.Domain))
+	if err == nil {
+		account.IsWordPress = strings.TrimSpace(wpCheck) == "yes"
+	}
+
+	// Check SSL
+	sslCheck, err := da.sshClient.RunCommand(ctx,
+		fmt.Sprintf("test -f /usr/local/directadmin/data/users/%s/domains/%s.cert && echo 'yes' || echo 'no'", username, account.Domain))
+	if err == nil {
+		account.SSLEnabled = strings.TrimSpace(sslCheck) == "yes"
+	}
+
 	return account, nil
 }
 

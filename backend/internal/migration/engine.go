@@ -402,6 +402,8 @@ type AccountInfo struct {
 	AddonDomains  []string `json:"addon_domains,omitempty"`
 	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
+	IsWordPress   bool     `json:"is_wordpress"`
+	DBSize        string   `json:"db_size,omitempty"`
 }
 
 // GetServerAccounts gets all accounts from a server
@@ -442,6 +444,8 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 				AddonDomains:  acc.AddonDomains,
 				SSLEnabled:    acc.SSLEnabled,
 				SSLExpiry:     acc.SSLExpiry,
+				IsWordPress:   acc.IsWordPress,
+				DBSize:        acc.DBSize,
 			}
 			result = append(result, info)
 		}
