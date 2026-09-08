@@ -41,6 +41,9 @@ export default function ServerDetail() {
     os_version?: string;
     php_versions?: string;
   } | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortField, setSortField] = useState<string>('domain');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [editFormData, setEditFormData] = useState({
     name: '',
     panel_type: 'directadmin' as Server['panel_type'],
@@ -151,6 +154,73 @@ export default function ServerDetail() {
       toast.error('Failed to update server');
     }
   };
+
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const parseSize = (size: string | undefined): number => {
+    if (!size) return 0;
+    const match = size.match(/^([\d.]+)\s*([KMGT]?)B?$/i);
+    if (!match) return 0;
+    const num = parseFloat(match[1]);
+    const unit = match[2].toUpperCase();
+    const multipliers: Record<string, number> = { '': 1, 'K': 1024, 'M': 1024*1024, 'G': 1024*1024*1024, 'T': 1024*1024*1024*1024 };
+    return num * (multipliers[unit] || 1);
+  };
+
+  const filteredAndSortedAccounts = accounts?.accounts
+    .filter(acc => 
+      acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a, b) => {
+      let aVal: string | number = '';
+      let bVal: string | number = '';
+      
+      switch (sortField) {
+        case 'domain':
+          aVal = a.domain || '';
+          bVal = b.domain || '';
+          break;
+        case 'php':
+          aVal = a.php_version || '';
+          bVal = b.php_version || '';
+          break;
+        case 'disk':
+          aVal = parseSize(a.disk_used);
+          bVal = parseSize(b.disk_used);
+          break;
+        case 'db_size':
+          aVal = parseSize(a.db_size);
+          bVal = parseSize(b.db_size);
+          break;
+        case 'dbs':
+          aVal = a.databases?.length || 0;
+          bVal = b.databases?.length || 0;
+          break;
+        case 'emails':
+          aVal = a.email_accounts?.length || 0;
+          bVal = b.email_accounts?.length || 0;
+          break;
+        case 'type':
+          aVal = a.is_wordpress ? 1 : 0;
+          bVal = b.is_wordpress ? 1 : 0;
+          break;
+      }
+      
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
+      }
+      return sortDirection === 'asc' 
+        ? String(aVal).localeCompare(String(bVal))
+        : String(bVal).localeCompare(String(aVal));
+    }) || [];
 
   if (loading) {
     return (
@@ -280,24 +350,45 @@ export default function ServerDetail() {
         </div>
       ) : accounts && accounts.accounts.length > 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="p-6 border-b border-gray-200">
+          <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <h2 className="text-lg font-semibold">
-              Accounts ({accounts.total})
+              Accounts ({filteredAndSortedAccounts.length}{searchTerm ? ` of ${accounts.total}` : ''})
             </h2>
+            <input
+              type="text"
+              placeholder="Search by domain or username..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full md:w-64"
+            />
           </div>
           {/* Table Header */}
           <div className="hidden md:grid md:grid-cols-12 gap-2 px-4 py-3 bg-gray-50 border-b text-xs font-medium text-gray-500 uppercase">
-            <div className="col-span-3">Domain</div>
-            <div className="col-span-1 text-center">Type</div>
-            <div className="col-span-1 text-center">PHP</div>
-            <div className="col-span-1 text-center">Disk</div>
-            <div className="col-span-1 text-center">DB Size</div>
-            <div className="col-span-1 text-center">DBs</div>
-            <div className="col-span-2 text-center">Emails</div>
+            <div className="col-span-3 cursor-pointer hover:text-gray-700" onClick={() => handleSort('domain')}>
+              Domain {sortField === 'domain' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('type')}>
+              Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('php')}>
+              PHP {sortField === 'php' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('disk')}>
+              Disk {sortField === 'disk' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('db_size')}>
+              DB Size {sortField === 'db_size' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('dbs')}>
+              DBs {sortField === 'dbs' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
+            <div className="col-span-2 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('emails')}>
+              Emails {sortField === 'emails' && (sortDirection === 'asc' ? '↑' : '↓')}
+            </div>
             <div className="col-span-2 text-center">Status</div>
           </div>
           <div className="divide-y divide-gray-200">
-            {accounts.accounts.map((account) => (
+            {filteredAndSortedAccounts.map((account) => (
               <div
                 key={account.username}
                 className="grid grid-cols-1 md:grid-cols-12 gap-2 px-4 py-3 hover:bg-gray-50 items-center text-sm"

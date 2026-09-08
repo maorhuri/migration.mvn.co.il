@@ -129,9 +129,11 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		# Disk usage
 		du -sh /home/%s 2>/dev/null | cut -f1
 		echo "---SEPARATOR---"
-		# Databases list
-		if [ -f /usr/local/directadmin/data/users/%s/mysql.conf ]; then
-			grep "^[^=]*=" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null | cut -d= -f1 | tr '\n' ',' || echo ""
+		# Databases list - check mysql.conf format
+		MYSQL_CONF="/usr/local/directadmin/data/users/%s/mysql.conf"
+		if [ -f "$MYSQL_CONF" ]; then
+			# DirectAdmin mysql.conf format: dbname=passwd
+			cat "$MYSQL_CONF" 2>/dev/null | grep -v "^#" | grep "=" | cut -d= -f1 | tr '\n' ','
 		else
 			echo ""
 		fi
@@ -160,28 +162,46 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		echo "---SEPARATOR---"
 		# PHP version - try multiple methods
 		PHP_VER=""
-		# Method 1: domain.conf
+		# Method 1: domain.conf php1_select or php2_select
 		if [ -f "/usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf" ]; then
-			PHP_VER=$(grep -E "^php[0-9]_select=" /usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf 2>/dev/null | head -1 | cut -d= -f2)
+			PHP_VER=$(grep -E "^php[12]_select=" /usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf 2>/dev/null | head -1 | cut -d= -f2)
 		fi
-		# Method 2: Check .htaccess for PHP handler
-		if [ -z "$PHP_VER" ] && [ -f "/home/%s/domains/$DOMAIN/public_html/.htaccess" ]; then
-			PHP_VER=$(grep -oP 'php[0-9]+' /home/%s/domains/$DOMAIN/public_html/.htaccess 2>/dev/null | head -1)
+		# Method 2: user_config.json
+		if [ -z "$PHP_VER" ] && [ -f "/usr/local/directadmin/data/users/%s/user_config.json" ]; then
+			PHP_VER=$(grep -o '"php_version":"[^"]*"' /usr/local/directadmin/data/users/%s/user_config.json 2>/dev/null | cut -d'"' -f4)
 		fi
-		# Method 3: Check default PHP
+		# Method 3: Check CustomBuild php versions
 		if [ -z "$PHP_VER" ]; then
-			PHP_VER=$(php -v 2>/dev/null | head -1 | grep -oP '[0-9]+\.[0-9]+' | head -1)
+			# Get default PHP version
+			DEFAULT_PHP=$(ls -la /usr/local/bin/php 2>/dev/null | grep -oE 'php[0-9]+' | head -1)
+			if [ -n "$DEFAULT_PHP" ]; then
+				PHP_VER=$(echo $DEFAULT_PHP | sed 's/php//' | sed 's/\([0-9]\)/\1./g' | sed 's/\.$//')
+			fi
+		fi
+		# Method 4: Just get PHP version
+		if [ -z "$PHP_VER" ]; then
+			PHP_VER=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
 		fi
 		echo "$PHP_VER"
 		echo "---SEPARATOR---"
-		# DB Size
-		if [ -f /usr/local/directadmin/data/users/%s/mysql.conf ]; then
-			DBS=$(grep "^[^=]*=" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null | cut -d= -f1 | tr '\n' ' ')
+		# DB Size - query MySQL using DirectAdmin credentials
+		MYSQL_CONF="/usr/local/directadmin/data/users/%s/mysql.conf"
+		DA_MYSQL_CONF="/usr/local/directadmin/conf/mysql.conf"
+		if [ -f "$MYSQL_CONF" ] && [ -f "$DA_MYSQL_CONF" ]; then
+			DBS=$(cat "$MYSQL_CONF" 2>/dev/null | grep -v "^#" | grep "=" | cut -d= -f1 | tr '\n' ' ' | xargs)
 			if [ -n "$DBS" ]; then
-				mysql -N -e "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 1) FROM information_schema.tables WHERE table_schema IN ($(echo $DBS | sed "s/ /','/g" | sed "s/^/'/" | sed "s/,$/'/"))" 2>/dev/null || echo ""
+				MYSQL_USER=$(grep "^user=" "$DA_MYSQL_CONF" | cut -d= -f2)
+				MYSQL_PASS=$(grep "^passwd=" "$DA_MYSQL_CONF" | cut -d= -f2)
+				# Build IN clause
+				IN_CLAUSE=$(echo "$DBS" | sed "s/ /','/g" | sed "s/^/'/" | sed "s/ *$/'/")
+				mysql -u"$MYSQL_USER" -p"$MYSQL_PASS" -N -e "SELECT COALESCE(ROUND(SUM(data_length + index_length) / 1024 / 1024, 1), 0) FROM information_schema.tables WHERE table_schema IN ($IN_CLAUSE)" 2>/dev/null || echo "0"
+			else
+				echo "0"
 			fi
+		else
+			echo "0"
 		fi
-	`, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
+	`, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
 
 	output, err := da.sshClient.RunCommand(ctx, script)
 	if err != nil {
