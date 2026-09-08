@@ -107,7 +107,9 @@ export default function Servers() {
     directadmin: 'DirectAdmin',
     enhance: 'Enhance',
     cpanel: 'cPanel',
+    cloudpanel: 'CloudPanel',
     ftp: 'FTP Only',
+    wordpress: 'WordPress Only',
   };
 
   if (loading) {
@@ -256,7 +258,9 @@ export default function Servers() {
                     <option value="directadmin">DirectAdmin</option>
                     <option value="enhance">Enhance</option>
                     <option value="cpanel">cPanel</option>
+                    <option value="cloudpanel">CloudPanel</option>
                     <option value="ftp">FTP Only</option>
+                    <option value="wordpress">WordPress Only</option>
                   </select>
                 </div>
 
