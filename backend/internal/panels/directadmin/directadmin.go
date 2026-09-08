@@ -431,10 +431,6 @@ func (da *DirectAdmin) ExportEmails(ctx context.Context, username string, output
 
 	var emails []common.EmailAccount
 
-	// Read email accounts from DirectAdmin data
-	emailConfPath := fmt.Sprintf("/usr/local/directadmin/data/users/%s/domains/%s.conf",
-		username, account.Domain)
-
 	// Get email accounts
 	emailListPath := fmt.Sprintf("/etc/virtual/%s/passwd", account.Domain)
 	output, err := da.sshClient.RunCommand(ctx, fmt.Sprintf("cat %s 2>/dev/null || echo ''", emailListPath))
