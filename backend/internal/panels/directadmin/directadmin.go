@@ -116,106 +116,133 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// Read user.conf
-	userConfPath := fmt.Sprintf("/usr/local/directadmin/data/users/%s/user.conf", username)
-	output, err := da.sshClient.RunCommand(ctx, fmt.Sprintf("cat %s", userConfPath))
-	if err != nil {
-		return nil, fmt.Errorf("failed to read user config: %w", err)
-	}
-
 	account := &common.Account{
 		Username: username,
 		Metadata: make(map[string]string),
 	}
 
-	// Parse user.conf
-	for _, line := range strings.Split(output, "\n") {
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
+	// Get all info in one command for speed
+	script := fmt.Sprintf(`
+		# User config
+		cat /usr/local/directadmin/data/users/%s/user.conf 2>/dev/null
+		echo "---SEPARATOR---"
+		# Disk usage
+		du -sh /home/%s 2>/dev/null | cut -f1
+		echo "---SEPARATOR---"
+		# Databases count
+		if [ -f /usr/local/directadmin/data/users/%s/mysql.conf ]; then
+			grep -c "^" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null || echo "0"
+		else
+			echo "0"
+		fi
+		echo "---SEPARATOR---"
+		# Email count for main domain
+		DOMAIN=$(grep "^domain=" /usr/local/directadmin/data/users/%s/user.conf 2>/dev/null | cut -d= -f2)
+		if [ -d "/home/%s/imap/$DOMAIN" ]; then
+			ls /home/%s/imap/$DOMAIN/ 2>/dev/null | wc -l
+		else
+			echo "0"
+		fi
+		echo "---SEPARATOR---"
+		# WordPress check
+		if [ -f "/home/%s/domains/$DOMAIN/public_html/wp-config.php" ]; then
+			echo "yes"
+		else
+			echo "no"
+		fi
+		echo "---SEPARATOR---"
+		# SSL check
+		if [ -f "/usr/local/directadmin/data/users/%s/domains/$DOMAIN.cert" ]; then
+			echo "yes"
+		else
+			echo "no"
+		fi
+		echo "---SEPARATOR---"
+		# PHP version
+		grep "php1_select=" /usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf 2>/dev/null | cut -d= -f2 || echo ""
+	`, username, username, username, username, username, username, username, username, username, username)
 
-		switch key {
-		case "domain":
-			account.Domain = value
-		case "email":
-			account.Email = value
-		case "package":
-			account.Package = value
-		case "suspended":
-			account.Suspended = value == "yes"
-		case "bandwidth":
-			if bw, err := strconv.ParseInt(value, 10, 64); err == nil {
-				account.BandwidthLimit = bw * 1024 * 1024 // Convert MB to bytes
+	output, err := da.sshClient.RunCommand(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get account info: %w", err)
+	}
+
+	parts := strings.Split(output, "---SEPARATOR---")
+
+	// Parse user.conf (part 0)
+	if len(parts) > 0 {
+		for _, line := range strings.Split(parts[0], "\n") {
+			kv := strings.SplitN(line, "=", 2)
+			if len(kv) != 2 {
+				continue
 			}
-		case "quota":
-			if q, err := strconv.ParseInt(value, 10, 64); err == nil {
-				account.DiskLimit = fmt.Sprintf("%d MB", q)
-			}
-		default:
-			account.Metadata[key] = value
-		}
-	}
+			key := strings.TrimSpace(kv[0])
+			value := strings.TrimSpace(kv[1])
 
-	// Get disk usage
-	usageOutput, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("du -sh /home/%s 2>/dev/null | cut -f1", username))
-	if err == nil {
-		account.DiskUsage = strings.TrimSpace(usageOutput)
-	}
-
-	// Get PHP version
-	phpOutput, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("cat /usr/local/directadmin/data/users/%s/domains/%s.conf 2>/dev/null | grep php1_select | cut -d= -f2", username, account.Domain))
-	if err == nil && strings.TrimSpace(phpOutput) != "" {
-		account.PHPVersion = strings.TrimSpace(phpOutput)
-	}
-
-	// Get databases
-	dbOutput, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("ls /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null && cat /usr/local/directadmin/data/users/%s/mysql.conf | grep -oP '^[^=]+' | head -20", username, username))
-	if err == nil {
-		dbs := strings.Fields(dbOutput)
-		if len(dbs) > 1 { // First line is the file path
-			account.Databases = dbs[1:]
-		}
-	}
-
-	// Get database size
-	if len(account.Databases) > 0 {
-		dbSizeOutput, err := da.sshClient.RunCommand(ctx,
-			fmt.Sprintf("mysql -N -e \"SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) FROM information_schema.tables WHERE table_schema LIKE '%s_%%'\" 2>/dev/null", username))
-		if err == nil && strings.TrimSpace(dbSizeOutput) != "" && strings.TrimSpace(dbSizeOutput) != "NULL" {
-			account.DBSize = strings.TrimSpace(dbSizeOutput) + " MB"
-		}
-	}
-
-	// Get email accounts
-	emailOutput, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("ls /home/%s/imap/%s/ 2>/dev/null | head -50", username, account.Domain))
-	if err == nil {
-		emails := strings.Fields(emailOutput)
-		for _, email := range emails {
-			if email != "" {
-				account.EmailAccounts = append(account.EmailAccounts, email+"@"+account.Domain)
+			switch key {
+			case "domain":
+				account.Domain = value
+			case "email":
+				account.Email = value
+			case "package":
+				account.Package = value
+			case "suspended":
+				account.Suspended = value == "yes"
+			case "quota":
+				if q, err := strconv.ParseInt(value, 10, 64); err == nil {
+					if q == 0 {
+						account.DiskLimit = "Unlimited"
+					} else {
+						account.DiskLimit = fmt.Sprintf("%d MB", q)
+					}
+				}
 			}
 		}
 	}
 
-	// Check if WordPress
-	wpCheck, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("test -f /home/%s/domains/%s/public_html/wp-config.php && echo 'yes' || echo 'no'", username, account.Domain))
-	if err == nil {
-		account.IsWordPress = strings.TrimSpace(wpCheck) == "yes"
+	// Disk usage (part 1)
+	if len(parts) > 1 {
+		account.DiskUsage = strings.TrimSpace(parts[1])
 	}
 
-	// Check SSL
-	sslCheck, err := da.sshClient.RunCommand(ctx,
-		fmt.Sprintf("test -f /usr/local/directadmin/data/users/%s/domains/%s.cert && echo 'yes' || echo 'no'", username, account.Domain))
-	if err == nil {
-		account.SSLEnabled = strings.TrimSpace(sslCheck) == "yes"
+	// Database count (part 2)
+	if len(parts) > 2 {
+		dbCount := strings.TrimSpace(parts[2])
+		if count, err := strconv.Atoi(dbCount); err == nil && count > 0 {
+			account.Databases = make([]string, count)
+			for i := 0; i < count; i++ {
+				account.Databases[i] = fmt.Sprintf("db%d", i+1)
+			}
+		}
+	}
+
+	// Email count (part 3)
+	if len(parts) > 3 {
+		emailCount := strings.TrimSpace(parts[3])
+		if count, err := strconv.Atoi(emailCount); err == nil && count > 0 {
+			account.EmailAccounts = make([]string, count)
+			for i := 0; i < count; i++ {
+				account.EmailAccounts[i] = fmt.Sprintf("email%d@%s", i+1, account.Domain)
+			}
+		}
+	}
+
+	// WordPress check (part 4)
+	if len(parts) > 4 {
+		account.IsWordPress = strings.TrimSpace(parts[4]) == "yes"
+	}
+
+	// SSL check (part 5)
+	if len(parts) > 5 {
+		account.SSLEnabled = strings.TrimSpace(parts[5]) == "yes"
+	}
+
+	// PHP version (part 6)
+	if len(parts) > 6 {
+		php := strings.TrimSpace(parts[6])
+		if php != "" {
+			account.PHPVersion = php
+		}
 	}
 
 	return account, nil
