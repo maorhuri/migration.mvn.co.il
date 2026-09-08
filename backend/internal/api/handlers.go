@@ -296,11 +296,24 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 	}
 
 	// Get accounts based on panel type
+	h.logger.Info("Fetching accounts", map[string]interface{}{
+		"server_id":  id,
+		"panel_type": server.PanelType,
+	})
+
 	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	if err != nil {
+		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
+			"server_id": id,
+		})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	h.logger.Info("Accounts fetched", map[string]interface{}{
+		"server_id": id,
+		"count":     len(accounts),
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"accounts": accounts,
