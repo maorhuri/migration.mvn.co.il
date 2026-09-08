@@ -129,19 +129,19 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		# Disk usage
 		du -sh /home/%s 2>/dev/null | cut -f1
 		echo "---SEPARATOR---"
-		# Databases count
+		# Databases list
 		if [ -f /usr/local/directadmin/data/users/%s/mysql.conf ]; then
-			grep -c "^" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null || echo "0"
+			grep "^[^=]*=" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null | cut -d= -f1 | tr '\n' ',' || echo ""
 		else
-			echo "0"
+			echo ""
 		fi
 		echo "---SEPARATOR---"
-		# Email count for main domain
+		# Email list for main domain
 		DOMAIN=$(grep "^domain=" /usr/local/directadmin/data/users/%s/user.conf 2>/dev/null | cut -d= -f2)
 		if [ -d "/home/%s/imap/$DOMAIN" ]; then
-			ls /home/%s/imap/$DOMAIN/ 2>/dev/null | wc -l
+			ls /home/%s/imap/$DOMAIN/ 2>/dev/null | tr '\n' ','
 		else
-			echo "0"
+			echo ""
 		fi
 		echo "---SEPARATOR---"
 		# WordPress check
@@ -158,9 +158,30 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 			echo "no"
 		fi
 		echo "---SEPARATOR---"
-		# PHP version
-		grep "php1_select=" /usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf 2>/dev/null | cut -d= -f2 || echo ""
-	`, username, username, username, username, username, username, username, username, username, username)
+		# PHP version - try multiple methods
+		PHP_VER=""
+		# Method 1: domain.conf
+		if [ -f "/usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf" ]; then
+			PHP_VER=$(grep -E "^php[0-9]_select=" /usr/local/directadmin/data/users/%s/domains/$DOMAIN.conf 2>/dev/null | head -1 | cut -d= -f2)
+		fi
+		# Method 2: Check .htaccess for PHP handler
+		if [ -z "$PHP_VER" ] && [ -f "/home/%s/domains/$DOMAIN/public_html/.htaccess" ]; then
+			PHP_VER=$(grep -oP 'php[0-9]+' /home/%s/domains/$DOMAIN/public_html/.htaccess 2>/dev/null | head -1)
+		fi
+		# Method 3: Check default PHP
+		if [ -z "$PHP_VER" ]; then
+			PHP_VER=$(php -v 2>/dev/null | head -1 | grep -oP '[0-9]+\.[0-9]+' | head -1)
+		fi
+		echo "$PHP_VER"
+		echo "---SEPARATOR---"
+		# DB Size
+		if [ -f /usr/local/directadmin/data/users/%s/mysql.conf ]; then
+			DBS=$(grep "^[^=]*=" /usr/local/directadmin/data/users/%s/mysql.conf 2>/dev/null | cut -d= -f1 | tr '\n' ' ')
+			if [ -n "$DBS" ]; then
+				mysql -N -e "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 1) FROM information_schema.tables WHERE table_schema IN ($(echo $DBS | sed "s/ /','/g" | sed "s/^/'/" | sed "s/,$/'/"))" 2>/dev/null || echo ""
+			fi
+		fi
+	`, username, username, username, username, username, username, username, username, username, username, username, username, username, username, username)
 
 	output, err := da.sshClient.RunCommand(ctx, script)
 	if err != nil {
@@ -205,24 +226,30 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		account.DiskUsage = strings.TrimSpace(parts[1])
 	}
 
-	// Database count (part 2)
+	// Database list (part 2)
 	if len(parts) > 2 {
-		dbCount := strings.TrimSpace(parts[2])
-		if count, err := strconv.Atoi(dbCount); err == nil && count > 0 {
-			account.Databases = make([]string, count)
-			for i := 0; i < count; i++ {
-				account.Databases[i] = fmt.Sprintf("db%d", i+1)
+		dbList := strings.TrimSpace(parts[2])
+		if dbList != "" {
+			dbs := strings.Split(strings.TrimSuffix(dbList, ","), ",")
+			for _, db := range dbs {
+				db = strings.TrimSpace(db)
+				if db != "" {
+					account.Databases = append(account.Databases, db)
+				}
 			}
 		}
 	}
 
-	// Email count (part 3)
+	// Email list (part 3)
 	if len(parts) > 3 {
-		emailCount := strings.TrimSpace(parts[3])
-		if count, err := strconv.Atoi(emailCount); err == nil && count > 0 {
-			account.EmailAccounts = make([]string, count)
-			for i := 0; i < count; i++ {
-				account.EmailAccounts[i] = fmt.Sprintf("email%d@%s", i+1, account.Domain)
+		emailList := strings.TrimSpace(parts[3])
+		if emailList != "" {
+			emails := strings.Split(strings.TrimSuffix(emailList, ","), ",")
+			for _, email := range emails {
+				email = strings.TrimSpace(email)
+				if email != "" {
+					account.EmailAccounts = append(account.EmailAccounts, email+"@"+account.Domain)
+				}
 			}
 		}
 	}
@@ -242,6 +269,14 @@ func (da *DirectAdmin) GetAccount(ctx context.Context, username string) (*common
 		php := strings.TrimSpace(parts[6])
 		if php != "" {
 			account.PHPVersion = php
+		}
+	}
+
+	// DB Size (part 7)
+	if len(parts) > 7 {
+		dbSize := strings.TrimSpace(parts[7])
+		if dbSize != "" && dbSize != "NULL" {
+			account.DBSize = dbSize + " MB"
 		}
 	}
 

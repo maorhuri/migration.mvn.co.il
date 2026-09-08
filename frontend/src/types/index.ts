@@ -12,6 +12,12 @@ export interface Server {
   updated_at: string;
 }
 
+export interface ServerInfo {
+  web_server?: string;
+  total_disk?: string;
+  os_version?: string;
+}
+
 export interface SSHKey {
   id: string;
   name: string;

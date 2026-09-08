@@ -43,6 +43,17 @@ export const getServerAccounts = async (id: string): Promise<{ accounts: Account
   return { accounts: data.accounts || [], total: data.total || 0 };
 };
 
+export const getServerInfo = async (id: string): Promise<{
+  web_server?: string;
+  total_disk?: string;
+  used_disk?: string;
+  os_version?: string;
+  php_versions?: string;
+}> => {
+  const { data } = await api.get(`/servers/${id}/info`);
+  return data;
+};
+
 // SSH Keys
 export const getSSHKeys = async (): Promise<SSHKey[]> => {
   const { data } = await api.get('/ssh-keys');

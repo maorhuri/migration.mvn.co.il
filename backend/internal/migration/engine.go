@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -404,6 +405,89 @@ type AccountInfo struct {
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
 	IsWordPress   bool     `json:"is_wordpress"`
 	DBSize        string   `json:"db_size,omitempty"`
+}
+
+// ServerInfo represents server system information
+type ServerInfo struct {
+	WebServer   string `json:"web_server"`
+	TotalDisk   string `json:"total_disk"`
+	UsedDisk    string `json:"used_disk"`
+	OSVersion   string `json:"os_version"`
+	PHPVersions string `json:"php_versions"`
+}
+
+// GetServerInfo gets system information from a server
+func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, password string) (*ServerInfo, error) {
+	config := e.db.ToConnectionConfig(server)
+
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	client := ssh.NewClient()
+	if err := client.Connect(ctx, config, password, privateKey); err != nil {
+		return nil, err
+	}
+	defer client.Disconnect()
+
+	info := &ServerInfo{}
+
+	// Detect web server
+	script := `
+		if command -v nginx &> /dev/null && systemctl is-active nginx &> /dev/null; then
+			echo "Nginx"
+		elif command -v lshttpd &> /dev/null || [ -f /usr/local/lsws/bin/lshttpd ]; then
+			if [ -f /usr/local/lsws/VERSION ]; then
+				echo "LiteSpeed"
+			else
+				echo "OpenLiteSpeed"
+			fi
+		elif command -v httpd &> /dev/null || command -v apache2 &> /dev/null; then
+			echo "Apache"
+		else
+			echo "Unknown"
+		fi
+		echo "---SEP---"
+		# Disk usage
+		df -h / 2>/dev/null | tail -1 | awk '{print $2 "," $3 "," $5}'
+		echo "---SEP---"
+		# OS Version
+		cat /etc/os-release 2>/dev/null | grep "PRETTY_NAME" | cut -d'"' -f2 || uname -a
+		echo "---SEP---"
+		# PHP versions available
+		ls /usr/local/php*/bin/php 2>/dev/null | xargs -I{} {} -v 2>/dev/null | grep -oP 'PHP [0-9]+\.[0-9]+' | sort -u | tr '\n' ',' || php -v 2>/dev/null | head -1 | grep -oP 'PHP [0-9]+\.[0-9]+'
+	`
+
+	output, err := client.RunCommand(ctx, script)
+	if err != nil {
+		return info, nil // Return empty info on error
+	}
+
+	parts := strings.Split(output, "---SEP---")
+
+	if len(parts) > 0 {
+		info.WebServer = strings.TrimSpace(parts[0])
+	}
+
+	if len(parts) > 1 {
+		diskParts := strings.Split(strings.TrimSpace(parts[1]), ",")
+		if len(diskParts) >= 2 {
+			info.TotalDisk = diskParts[0]
+			info.UsedDisk = diskParts[1]
+		}
+	}
+
+	if len(parts) > 2 {
+		info.OSVersion = strings.TrimSpace(parts[2])
+	}
+
+	if len(parts) > 3 {
+		info.PHPVersions = strings.TrimSuffix(strings.TrimSpace(parts[3]), ",")
+	}
+
+	return info, nil
 }
 
 // GetServerAccounts gets all accounts from a server

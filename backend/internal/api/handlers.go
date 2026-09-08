@@ -47,6 +47,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.DELETE("/:id", h.deleteServer)
 			servers.POST("/:id/test", h.testServerConnection)
 			servers.GET("/:id/accounts", h.listServerAccounts)
+			servers.GET("/:id/info", h.getServerInfo)
 		}
 
 		// SSH Keys
@@ -305,6 +306,34 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		"accounts": accounts,
 		"total":    len(accounts),
 	})
+}
+
+func (h *Handler) getServerInfo(c *gin.Context) {
+	id := c.Param("id")
+
+	server, err := h.db.GetServer(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	// Get decrypted password if using password auth
+	var password string
+	if server.AuthMethod == "password" && server.PasswordEncrypted.Valid {
+		password, err = h.db.GetDecryptedPassword(c.Request.Context(), id)
+		if err != nil {
+			h.logger.Error("Failed to decrypt password", err, nil)
+		}
+	}
+
+	// Get server info
+	info, err := h.engine.GetServerInfo(c.Request.Context(), server, password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, info)
 }
 
 // SSH Key handlers

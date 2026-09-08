@@ -13,7 +13,7 @@ import {
   PencilIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServer, getServerAccounts, testServerConnection, updateServer, getSSHKeys } from '../api/client';
+import { getServer, getServerAccounts, getServerInfo, testServerConnection, updateServer, getSSHKeys } from '../api/client';
 import type { Server, Account, SSHKey } from '../types';
 
 interface ServerAccounts {
@@ -32,6 +32,15 @@ export default function ServerDetail() {
   const [testing, setTesting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'failed'>('unknown');
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [emailModalAccount, setEmailModalAccount] = useState<Account | null>(null);
+  const [dbModalAccount, setDbModalAccount] = useState<Account | null>(null);
+  const [serverInfo, setServerInfo] = useState<{
+    web_server?: string;
+    total_disk?: string;
+    used_disk?: string;
+    os_version?: string;
+    php_versions?: string;
+  } | null>(null);
   const [editFormData, setEditFormData] = useState({
     name: '',
     panel_type: 'directadmin' as Server['panel_type'],
@@ -85,6 +94,16 @@ export default function ServerDetail() {
     }
   };
 
+  const loadServerInfo = async () => {
+    if (!id) return;
+    try {
+      const info = await getServerInfo(id);
+      setServerInfo(info);
+    } catch (error) {
+      console.error('Failed to load server info:', error);
+    }
+  };
+
   const handleTestConnection = async () => {
     if (!id) return;
     setTesting(true);
@@ -94,6 +113,7 @@ export default function ServerDetail() {
         setConnectionStatus('success');
         toast.success('Connection successful!');
         loadAccounts();
+        loadServerInfo();
       } else {
         setConnectionStatus('failed');
         toast.error(result.message || 'Connection failed');
@@ -198,7 +218,7 @@ export default function ServerDetail() {
       {/* Server Info */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h2 className="text-lg font-semibold mb-4">Server Information</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <div>
             <p className="text-sm text-gray-500">Host</p>
             <p className="font-medium">{server.host}</p>
@@ -215,6 +235,38 @@ export default function ServerDetail() {
             <p className="text-sm text-gray-500">Auth Method</p>
             <p className="font-medium capitalize">{server.auth_method}</p>
           </div>
+          {serverInfo?.web_server && (
+            <div>
+              <p className="text-sm text-gray-500">Web Server</p>
+              <p className="font-medium text-orange-600">{serverInfo.web_server}</p>
+            </div>
+          )}
+          {serverInfo?.total_disk && (
+            <div>
+              <p className="text-sm text-gray-500">Disk Usage</p>
+              <p className="font-medium">{serverInfo.used_disk} / {serverInfo.total_disk}</p>
+            </div>
+          )}
+          {accounts && (
+            <>
+              <div>
+                <p className="text-sm text-gray-500">Total Accounts</p>
+                <p className="font-medium text-blue-600">{accounts.total}</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Total Databases</p>
+                <p className="font-medium text-purple-600">
+                  {accounts.accounts.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0)}
+                </p>
+              </div>
+            </>
+          )}
+          {serverInfo?.os_version && (
+            <div className="col-span-2">
+              <p className="text-sm text-gray-500">OS</p>
+              <p className="font-medium text-sm">{serverInfo.os_version}</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -292,10 +344,13 @@ export default function ServerDetail() {
                 {/* Databases Count */}
                 <div className="col-span-1 text-center">
                   {account.databases && account.databases.length > 0 ? (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDbModalAccount(account); }}
+                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 cursor-pointer"
+                    >
                       <CircleStackIcon className="h-3 w-3 mr-1" />
                       {account.databases.length}
-                    </span>
+                    </button>
                   ) : (
                     <span className="text-gray-400">0</span>
                   )}
@@ -304,12 +359,13 @@ export default function ServerDetail() {
                 {/* Email Accounts */}
                 <div className="col-span-2 text-center">
                   {account.email_accounts && account.email_accounts.length > 0 ? (
-                    <div className="flex items-center justify-center">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
-                        <EnvelopeIcon className="h-3 w-3 mr-1" />
-                        {account.email_accounts.length} emails
-                      </span>
-                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEmailModalAccount(account); }}
+                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 cursor-pointer"
+                    >
+                      <EnvelopeIcon className="h-3 w-3 mr-1" />
+                      {account.email_accounts.length} emails
+                    </button>
                   ) : (
                     <span className="text-gray-400 text-xs">No emails</span>
                   )}
@@ -500,6 +556,71 @@ export default function ServerDetail() {
                   </button>
                 </div>
               </form>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+
+      {/* Email List Modal */}
+      <Dialog open={emailModalAccount !== null} onClose={() => setEmailModalAccount(null)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
+            <div className="p-6">
+              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                <EnvelopeIcon className="h-5 w-5 mr-2 text-blue-600" />
+                Email Accounts - {emailModalAccount?.domain}
+              </Dialog.Title>
+              <div className="max-h-80 overflow-y-auto">
+                {emailModalAccount?.email_accounts?.map((email, idx) => (
+                  <div key={idx} className="py-2 px-3 border-b border-gray-100 last:border-0 text-sm">
+                    {email}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => setEmailModalAccount(null)}
+                  className="btn btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+
+      {/* Database List Modal */}
+      <Dialog open={dbModalAccount !== null} onClose={() => setDbModalAccount(null)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
+            <div className="p-6">
+              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                <CircleStackIcon className="h-5 w-5 mr-2 text-purple-600" />
+                Databases - {dbModalAccount?.domain}
+              </Dialog.Title>
+              <div className="max-h-80 overflow-y-auto">
+                {dbModalAccount?.databases?.map((db, idx) => (
+                  <div key={idx} className="py-2 px-3 border-b border-gray-100 last:border-0 text-sm flex justify-between">
+                    <span>{db}</span>
+                  </div>
+                ))}
+              </div>
+              {dbModalAccount?.db_size && (
+                <div className="mt-3 pt-3 border-t border-gray-200 text-sm text-gray-600">
+                  Total Size: <span className="font-medium">{dbModalAccount.db_size}</span>
+                </div>
+              )}
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => setDbModalAccount(null)}
+                  className="btn btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </Dialog.Panel>
         </div>
