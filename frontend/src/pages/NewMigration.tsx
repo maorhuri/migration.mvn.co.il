@@ -5,6 +5,8 @@ import {
   GlobeAltIcon,
   MagnifyingGlassIcon,
   ServerStackIcon,
+  XCircleIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServers, getServerAccounts, getClusterServers, ClusterServer } from '../api/client';
@@ -12,10 +14,13 @@ import type { Server, Account } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
 
-interface MigrationProgress {
-  step: string;
-  progress: number;
-  details: string;
+interface MigrationStepStatus {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'completed' | 'error' | 'warning';
+  details?: string;
+  error?: string;
+  duration?: number;
 }
 
 export default function NewMigration() {
@@ -30,9 +35,12 @@ export default function NewMigration() {
   
   const [currentStep, setCurrentStep] = useState<MigrationStep>('select_source');
   const [searchTerm, setSearchTerm] = useState('');
+  const [clusterSearchTerm, setClusterSearchTerm] = useState('');
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
-  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
+  const [migrationSteps, setMigrationSteps] = useState<MigrationStepStatus[]>([]);
+  const [currentMigrationStep, setCurrentMigrationStep] = useState(0);
   const [hostsEntry, setHostsEntry] = useState<string>('');
+  const [overallProgress, setOverallProgress] = useState(0);
 
   const [formData, setFormData] = useState({
     source_server_id: '',
@@ -40,6 +48,21 @@ export default function NewMigration() {
     target_cluster_server_id: '',
     new_password: '',
   });
+
+  const initialMigrationSteps: MigrationStepStatus[] = [
+    { id: 'export_db', name: 'Export Databases', status: 'pending', details: 'Dumping MySQL databases...' },
+    { id: 'export_emails', name: 'Export Emails', status: 'pending', details: 'Backing up mailboxes and email data...' },
+    { id: 'export_cron', name: 'Export Cron Jobs', status: 'pending', details: 'Saving scheduled tasks...' },
+    { id: 'compress', name: 'Compress Files', status: 'pending', details: 'Creating compressed archive...' },
+    { id: 'transfer', name: 'Transfer to Migration Server', status: 'pending', details: 'Rsync files to migration server...' },
+    { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'API call to create website...' },
+    { id: 'upload_files', name: 'Upload Files to Target', status: 'pending', details: 'Rsync files to target server...' },
+    { id: 'import_db', name: 'Import Databases', status: 'pending', details: 'Restoring MySQL databases...' },
+    { id: 'import_emails', name: 'Import Emails', status: 'pending', details: 'Restoring mailboxes...' },
+    { id: 'import_cron', name: 'Import Cron Jobs', status: 'pending', details: 'Setting up scheduled tasks...' },
+    { id: 'configure_php', name: 'Configure PHP Version', status: 'pending', details: 'Setting PHP version...' },
+    { id: 'finalize', name: 'Finalize Migration', status: 'pending', details: 'Cleaning up and generating hosts entry...' },
+  ];
 
   useEffect(() => {
     const fetchServers = async () => {
@@ -86,7 +109,7 @@ export default function NewMigration() {
           setClusterServers(data);
           // Auto-select if only one server
           if (data.length === 1) {
-            setFormData(prev => ({ ...prev, target_cluster_server_id: data[0].id }));
+            setFormData((prev: typeof formData) => ({ ...prev, target_cluster_server_id: data[0].id }));
           }
         } catch (error) {
           console.error('Failed to fetch cluster servers:', error);
@@ -110,11 +133,17 @@ export default function NewMigration() {
   };
 
   const handleToggleAccount = (account: Account) => {
-    if (selectedAccounts.find(a => a.username === account.username)) {
-      setSelectedAccounts(selectedAccounts.filter(a => a.username !== account.username));
+    if (selectedAccounts.find((a: Account) => a.username === account.username)) {
+      setSelectedAccounts(selectedAccounts.filter((a: Account) => a.username !== account.username));
     } else {
       setSelectedAccounts([...selectedAccounts, account]);
     }
+  };
+
+  const updateStepStatus = (stepIndex: number, status: MigrationStepStatus['status'], error?: string, duration?: number) => {
+    setMigrationSteps(prev => prev.map((step, idx) => 
+      idx === stepIndex ? { ...step, status, error, duration } : step
+    ));
   };
 
   const handleStartMigration = async () => {
@@ -125,50 +154,59 @@ export default function NewMigration() {
 
     setCurrentStep('migrating');
     setStarting(true);
+    setMigrationSteps([...initialMigrationSteps]);
+    setCurrentMigrationStep(0);
+    setOverallProgress(0);
 
-    // Simulate migration progress
-    const steps = [
-      { step: 'Exporting databases', progress: 5, details: 'Dumping MySQL databases...' },
-      { step: 'Exporting emails', progress: 15, details: 'Backing up mailboxes...' },
-      { step: 'Exporting cron jobs', progress: 20, details: 'Saving scheduled tasks...' },
-      { step: 'Compressing files', progress: 30, details: 'Creating archive...' },
-      { step: 'Transferring to migration server', progress: 45, details: 'Rsync in progress...' },
-      { step: 'Creating website on Enhance', progress: 55, details: 'API call to create website...' },
-      { step: 'Uploading files', progress: 70, details: 'Rsync to target server...' },
-      { step: 'Importing databases', progress: 80, details: 'Restoring MySQL databases...' },
-      { step: 'Importing emails', progress: 88, details: 'Restoring mailboxes...' },
-      { step: 'Importing cron jobs', progress: 92, details: 'Setting up scheduled tasks...' },
-      { step: 'Configuring PHP version', progress: 97, details: 'Setting PHP version...' },
-      { step: 'Completed', progress: 100, details: 'Migration completed successfully!' },
-    ];
-
+    // Simulate migration with realistic timing
+    const stepDurations = [3000, 2000, 1000, 4000, 5000, 2000, 6000, 3000, 2000, 1000, 1500, 1000];
+    
     try {
-      for (const stepInfo of steps) {
-        setMigrationProgress(stepInfo);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+      for (let i = 0; i < initialMigrationSteps.length; i++) {
+        setCurrentMigrationStep(i);
+        updateStepStatus(i, 'running');
+        
+        const startTime = Date.now();
+        await new Promise(resolve => setTimeout(resolve, stepDurations[i]));
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        
+        // Simulate occasional warnings (not errors)
+        if (i === 2 && selectedAccounts.some((a: Account) => !a.email_accounts?.length)) {
+          updateStepStatus(i, 'warning', 'No cron jobs found for some accounts', duration);
+        } else {
+          updateStepStatus(i, 'completed', undefined, duration);
+        }
+        
+        setOverallProgress(Math.round(((i + 1) / initialMigrationSteps.length) * 100));
       }
 
       // Generate hosts entry
-      const targetServer = servers.find(s => s.id === formData.target_server_id);
-      const domains = selectedAccounts.map(a => a.domain).join(' ');
+      const targetServer = servers.find((s: Server) => s.id === formData.target_server_id);
+      const domains = selectedAccounts.map((a: Account) => a.domain).join(' ');
       setHostsEntry(`${targetServer?.host || 'TARGET_IP'} ${domains}`);
       
       setCurrentStep('completed');
       toast.success('Migration completed successfully!');
     } catch (error) {
+      updateStepStatus(currentMigrationStep, 'error', 'Migration failed: ' + String(error));
       toast.error('Migration failed');
-      setCurrentStep('review');
     } finally {
       setStarting(false);
     }
   };
 
-  const sourceServers = servers.filter(s => s.panel_type === 'directadmin' || s.panel_type === 'cpanel');
-  const targetServers = servers.filter(s => s.panel_type === 'enhance');
+  const sourceServers = servers.filter((s: Server) => s.panel_type === 'directadmin' || s.panel_type === 'cpanel');
+  const targetServers = servers.filter((s: Server) => s.panel_type === 'enhance');
 
-  const filteredAccounts = accounts.filter(acc =>
+  const filteredAccounts = accounts.filter((acc: Account) =>
     acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const filteredClusterServers = clusterServers.filter((server: ClusterServer) =>
+    server.friendly_name?.toLowerCase().includes(clusterSearchTerm.toLowerCase()) ||
+    server.hostname?.toLowerCase().includes(clusterSearchTerm.toLowerCase()) ||
+    server.ip?.toLowerCase().includes(clusterSearchTerm.toLowerCase())
   );
 
   if (loading) {
@@ -308,13 +346,13 @@ export default function NewMigration() {
                       key={account.username}
                       onClick={() => handleToggleAccount(account)}
                       className={`grid grid-cols-1 md:grid-cols-12 gap-2 px-4 py-3 cursor-pointer hover:bg-gray-50 items-center text-sm ${
-                        selectedAccounts.find(a => a.username === account.username) ? 'bg-blue-50' : ''
+                        selectedAccounts.find((a: Account) => a.username === account.username) ? 'bg-blue-50' : ''
                       }`}
                     >
                       <div className="col-span-1">
                         <input
                           type="checkbox"
-                          checked={!!selectedAccounts.find(a => a.username === account.username)}
+                          checked={!!selectedAccounts.find((a: Account) => a.username === account.username)}
                           onChange={() => {}}
                           className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                         />
@@ -413,28 +451,53 @@ export default function NewMigration() {
           {/* Cluster Server Selection */}
           {formData.target_server_id && clusterServers.length > 1 && (
             <div className="mt-6 p-4 bg-purple-50 rounded-lg">
-              <h3 className="font-medium text-purple-900 mb-3">Select Target Server in Cluster</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {clusterServers.map((server) => (
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-medium text-purple-900">Select Target Server in Cluster</h3>
+                <span className="text-sm text-purple-600">{clusterServers.length} servers available</span>
+              </div>
+              
+              {/* Cluster Search */}
+              <div className="relative mb-4">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-purple-400" />
+                <input
+                  type="text"
+                  placeholder="Search servers by name, hostname or IP..."
+                  value={clusterSearchTerm}
+                  onChange={(e) => setClusterSearchTerm(e.target.value)}
+                  className="pl-10 pr-4 py-2 border border-purple-200 rounded-lg w-full focus:ring-2 focus:ring-purple-500 bg-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-80 overflow-y-auto">
+                {filteredClusterServers.map((server) => (
                   <button
                     key={server.id}
                     onClick={() => setFormData({ ...formData, target_cluster_server_id: server.id })}
-                    className={`p-3 border-2 rounded-lg text-left ${
+                    className={`p-3 border-2 rounded-lg text-left transition-all ${
                       formData.target_cluster_server_id === server.id
-                        ? 'border-purple-500 bg-white'
-                        : 'border-purple-200 bg-white hover:border-purple-400'
+                        ? 'border-purple-500 bg-white shadow-md'
+                        : 'border-purple-200 bg-white hover:border-purple-400 hover:shadow-sm'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">{server.friendly_name || server.hostname}</span>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-medium text-gray-900 truncate">
+                        {server.friendly_name || server.hostname}
+                      </span>
                       {server.is_main && (
-                        <span className="px-2 py-0.5 bg-purple-200 text-purple-800 text-xs rounded">Main</span>
+                        <span className="px-2 py-0.5 bg-purple-200 text-purple-800 text-xs rounded ml-2 flex-shrink-0">Main</span>
                       )}
                     </div>
                     <p className="text-sm text-gray-500">{server.ip}</p>
+                    {server.hostname && server.hostname !== server.friendly_name && (
+                      <p className="text-xs text-gray-400 truncate">{server.hostname}</p>
+                    )}
                   </button>
                 ))}
               </div>
+              
+              {filteredClusterServers.length === 0 && (
+                <p className="text-center text-purple-600 py-4">No servers match your search</p>
+              )}
             </div>
           )}
 
@@ -475,14 +538,14 @@ export default function NewMigration() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="p-4 bg-blue-50 rounded-lg">
                 <h3 className="font-medium text-blue-900 mb-2">Source Server</h3>
-                <p className="text-blue-700">{servers.find(s => s.id === formData.source_server_id)?.name}</p>
+                <p className="text-blue-700">{servers.find((s: Server) => s.id === formData.source_server_id)?.name}</p>
               </div>
               <div className="p-4 bg-purple-50 rounded-lg">
                 <h3 className="font-medium text-purple-900 mb-2">Target Server</h3>
-                <p className="text-purple-700">{servers.find(s => s.id === formData.target_server_id)?.name}</p>
+                <p className="text-purple-700">{servers.find((s: Server) => s.id === formData.target_server_id)?.name}</p>
                 {formData.target_cluster_server_id && (
                   <p className="text-sm text-purple-600 mt-1">
-                    Cluster: {clusterServers.find(s => s.id === formData.target_cluster_server_id)?.friendly_name}
+                    Cluster: {clusterServers.find((s: ClusterServer) => s.id === formData.target_cluster_server_id)?.friendly_name}
                   </p>
                 )}
               </div>
@@ -543,38 +606,118 @@ export default function NewMigration() {
         </div>
       )}
 
-      {/* Step 5: Migrating */}
-      {currentStep === 'migrating' && migrationProgress && (
+      {/* Step 5: Migrating - Professional Loader */}
+      {currentStep === 'migrating' && (
         <div className="card">
-          <h2 className="text-lg font-semibold mb-6">Migration in Progress</h2>
-          
-          <div className="space-y-6">
-            {/* Progress Bar */}
-            <div>
-              <div className="flex justify-between mb-2">
-                <span className="font-medium">{migrationProgress.step}</span>
-                <span className="text-gray-500">{migrationProgress.progress}%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-4">
-                <div
-                  className="bg-blue-600 h-4 rounded-full transition-all duration-500"
-                  style={{ width: `${migrationProgress.progress}%` }}
-                />
-              </div>
-              <p className="text-sm text-gray-500 mt-2">{migrationProgress.details}</p>
-            </div>
+          <div className="text-center mb-8">
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Migration in Progress</h2>
+            <p className="text-gray-600">Please wait while we migrate your accounts...</p>
+          </div>
 
-            {/* Accounts being migrated */}
-            <div className="border rounded-lg p-4">
-              <h3 className="font-medium mb-3">Migrating Accounts</h3>
-              <div className="space-y-2">
-                {selectedAccounts.map((account) => (
-                  <div key={account.username} className="flex items-center">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-3"></div>
-                    <span>{account.domain}</span>
+          {/* Overall Progress */}
+          <div className="mb-8">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-sm font-medium text-gray-700">Overall Progress</span>
+              <span className="text-sm font-bold text-blue-600">{overallProgress}%</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${overallProgress}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Steps List */}
+          <div className="space-y-3">
+            {migrationSteps.map((step, index) => (
+              <div
+                key={step.id}
+                className={`p-4 rounded-lg border-2 transition-all duration-300 ${
+                  step.status === 'running' ? 'border-blue-500 bg-blue-50 shadow-md' :
+                  step.status === 'completed' ? 'border-green-300 bg-green-50' :
+                  step.status === 'error' ? 'border-red-300 bg-red-50' :
+                  step.status === 'warning' ? 'border-yellow-300 bg-yellow-50' :
+                  'border-gray-200 bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    {/* Status Icon */}
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                      step.status === 'running' ? 'bg-blue-500' :
+                      step.status === 'completed' ? 'bg-green-500' :
+                      step.status === 'error' ? 'bg-red-500' :
+                      step.status === 'warning' ? 'bg-yellow-500' :
+                      'bg-gray-300'
+                    }`}>
+                      {step.status === 'running' ? (
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : step.status === 'completed' ? (
+                        <CheckCircleIcon className="w-5 h-5 text-white" />
+                      ) : step.status === 'error' ? (
+                        <XCircleIcon className="w-5 h-5 text-white" />
+                      ) : step.status === 'warning' ? (
+                        <ExclamationTriangleIcon className="w-5 h-5 text-white" />
+                      ) : (
+                        <span className="text-white text-sm font-medium">{index + 1}</span>
+                      )}
+                    </div>
+                    
+                    <div>
+                      <p className={`font-medium ${
+                        step.status === 'running' ? 'text-blue-900' :
+                        step.status === 'completed' ? 'text-green-900' :
+                        step.status === 'error' ? 'text-red-900' :
+                        step.status === 'warning' ? 'text-yellow-900' :
+                        'text-gray-500'
+                      }`}>
+                        {step.name}
+                      </p>
+                      {step.status === 'running' && (
+                        <p className="text-sm text-blue-600">{step.details}</p>
+                      )}
+                      {step.status === 'error' && step.error && (
+                        <p className="text-sm text-red-600 mt-1">
+                          <span className="font-medium">Error:</span> {step.error}
+                        </p>
+                      )}
+                      {step.status === 'warning' && step.error && (
+                        <p className="text-sm text-yellow-700 mt-1">
+                          <span className="font-medium">Warning:</span> {step.error}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                ))}
+
+                  {/* Duration */}
+                  {step.duration !== undefined && (
+                    <span className="text-sm text-gray-500">{step.duration}s</span>
+                  )}
+                </div>
+
+                {/* Running Animation Bar */}
+                {step.status === 'running' && (
+                  <div className="mt-3 w-full bg-blue-200 rounded-full h-1.5 overflow-hidden">
+                    <div className="h-full bg-blue-500 rounded-full animate-pulse" style={{ width: '60%' }} />
+                  </div>
+                )}
               </div>
+            ))}
+          </div>
+
+          {/* Accounts being migrated */}
+          <div className="mt-8 p-4 bg-gray-50 rounded-lg">
+            <h3 className="font-medium mb-3 text-gray-700">Migrating Accounts</h3>
+            <div className="flex flex-wrap gap-2">
+              {selectedAccounts.map((account) => (
+                <span
+                  key={account.username}
+                  className="px-3 py-1 bg-white border border-gray-200 rounded-full text-sm text-gray-700"
+                >
+                  {account.domain}
+                </span>
+              ))}
             </div>
           </div>
         </div>
@@ -583,25 +726,52 @@ export default function NewMigration() {
       {/* Step 6: Completed */}
       {currentStep === 'completed' && (
         <div className="card">
-          <div className="text-center mb-6">
-            <CheckCircleIcon className="w-16 h-16 text-green-500 mx-auto mb-4" />
+          <div className="text-center mb-8">
+            <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <CheckCircleIcon className="w-12 h-12 text-green-500" />
+            </div>
             <h2 className="text-2xl font-bold text-green-700">Migration Completed!</h2>
             <p className="text-gray-600 mt-2">All accounts have been successfully migrated.</p>
           </div>
 
+          {/* Summary Stats */}
+          <div className="grid grid-cols-3 gap-4 mb-8">
+            <div className="text-center p-4 bg-blue-50 rounded-lg">
+              <p className="text-3xl font-bold text-blue-600">{selectedAccounts.length}</p>
+              <p className="text-sm text-blue-700">Accounts</p>
+            </div>
+            <div className="text-center p-4 bg-green-50 rounded-lg">
+              <p className="text-3xl font-bold text-green-600">
+                {migrationSteps.filter((s: MigrationStepStatus) => s.status === 'completed').length}
+              </p>
+              <p className="text-sm text-green-700">Steps Completed</p>
+            </div>
+            <div className="text-center p-4 bg-yellow-50 rounded-lg">
+              <p className="text-3xl font-bold text-yellow-600">
+                {migrationSteps.filter((s: MigrationStepStatus) => s.status === 'warning').length}
+              </p>
+              <p className="text-sm text-yellow-700">Warnings</p>
+            </div>
+          </div>
+
           {/* Hosts Entry */}
           <div className="p-4 bg-gray-900 rounded-lg mb-6">
-            <h3 className="text-white font-medium mb-2">Add to your hosts file for testing:</h3>
-            <code className="text-green-400 text-sm break-all">{hostsEntry}</code>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(hostsEntry);
-                toast.success('Copied to clipboard!');
-              }}
-              className="mt-2 text-xs text-blue-400 hover:underline"
-            >
-              Copy to clipboard
-            </button>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-white font-medium">Add to your hosts file for testing:</h3>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(hostsEntry);
+                  toast.success('Copied to clipboard!');
+                }}
+                className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors"
+              >
+                Copy
+              </button>
+            </div>
+            <code className="text-green-400 text-sm break-all font-mono">{hostsEntry}</code>
+            <p className="text-gray-400 text-xs mt-2">
+              File location: Windows: C:\Windows\System32\drivers\etc\hosts | Mac/Linux: /etc/hosts
+            </p>
           </div>
 
           {/* Migrated Accounts */}
@@ -611,7 +781,8 @@ export default function NewMigration() {
               {selectedAccounts.map((account) => (
                 <div key={account.username} className="flex items-center text-green-700">
                   <CheckCircleIcon className="w-5 h-5 mr-2" />
-                  <span>{account.domain}</span>
+                  <span className="font-medium">{account.domain}</span>
+                  <span className="text-gray-400 text-sm ml-2">({account.username})</span>
                 </div>
               ))}
             </div>
@@ -622,6 +793,8 @@ export default function NewMigration() {
               onClick={() => {
                 setCurrentStep('select_source');
                 setSelectedAccounts([]);
+                setMigrationSteps([]);
+                setOverallProgress(0);
                 setFormData({
                   source_server_id: '',
                   target_server_id: '',
