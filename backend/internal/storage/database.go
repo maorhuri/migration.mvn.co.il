@@ -169,23 +169,49 @@ type SSHKey struct {
 	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
 }
 
+// NullableJSON handles nullable JSON columns
+type NullableJSON struct {
+	Data  json.RawMessage
+	Valid bool
+}
+
+// Scan implements the sql.Scanner interface
+func (nj *NullableJSON) Scan(value interface{}) error {
+	if value == nil {
+		nj.Data = nil
+		nj.Valid = false
+		return nil
+	}
+	nj.Valid = true
+	switch v := value.(type) {
+	case []byte:
+		nj.Data = v
+		return nil
+	case string:
+		nj.Data = []byte(v)
+		return nil
+	default:
+		return fmt.Errorf("unsupported type for NullableJSON: %T", value)
+	}
+}
+
 // Migration represents a migration record
 type Migration struct {
-	ID               string          `db:"id" json:"id"`
-	SourceServerID   string          `db:"source_server_id" json:"source_server_id"`
-	TargetServerID   string          `db:"target_server_id" json:"target_server_id"`
-	AccountUsername  string          `db:"account_username" json:"account_username"`
-	Status           string          `db:"status" json:"status"`
-	CurrentStep      sql.NullString  `db:"current_step" json:"current_step,omitempty"`
-	TotalSteps       int             `db:"total_steps" json:"total_steps"`
-	CompletedSteps   int             `db:"completed_steps" json:"completed_steps"`
-	BytesTransferred int64           `db:"bytes_transferred" json:"bytes_transferred"`
-	TotalBytes       int64           `db:"total_bytes" json:"total_bytes"`
-	ErrorMessage     sql.NullString  `db:"error_message" json:"error_message,omitempty"`
-	ExportData       json.RawMessage `db:"export_data" json:"export_data,omitempty"`
-	StartedAt        sql.NullTime    `db:"started_at" json:"started_at,omitempty"`
-	CompletedAt      sql.NullTime    `db:"completed_at" json:"completed_at,omitempty"`
-	CreatedAt        time.Time       `db:"created_at" json:"created_at"`
+	ID               string         `db:"id" json:"id"`
+	SourceServerID   string         `db:"source_server_id" json:"source_server_id"`
+	TargetServerID   string         `db:"target_server_id" json:"target_server_id"`
+	AccountUsername  string         `db:"account_username" json:"account_username"`
+	Status           string         `db:"status" json:"status"`
+	CurrentStep      sql.NullString `db:"current_step" json:"current_step,omitempty"`
+	TotalSteps       int            `db:"total_steps" json:"total_steps"`
+	CompletedSteps   int            `db:"completed_steps" json:"completed_steps"`
+	BytesTransferred int64          `db:"bytes_transferred" json:"bytes_transferred"`
+	TotalBytes       int64          `db:"total_bytes" json:"total_bytes"`
+	ErrorMessage     sql.NullString `db:"error_message" json:"error_message,omitempty"`
+	ExportData       NullableJSON   `db:"export_data" json:"export_data,omitempty"`
+	StartedAt        sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt      sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
+	CreatedAt        time.Time      `db:"created_at" json:"created_at"`
 }
 
 // MigrationLog represents a log entry for a migration

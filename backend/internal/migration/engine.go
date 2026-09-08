@@ -411,9 +411,9 @@ func (e *Engine) GetMigrationStatus(ctx context.Context, migrationID string) (*M
 		StartedAt:        migration.StartedAt.Time,
 	}
 
-	if migration.ExportData != nil {
+	if migration.ExportData.Valid && migration.ExportData.Data != nil {
 		var exportData common.ExportData
-		if err := json.Unmarshal(migration.ExportData, &exportData); err == nil {
+		if err := json.Unmarshal(migration.ExportData.Data, &exportData); err == nil {
 			result.ExportData = &exportData
 		}
 	}
