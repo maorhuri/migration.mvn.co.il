@@ -1013,3 +1013,59 @@ func (e *Enhance) uploadFile(ctx context.Context, endpoint, fieldName, filePath 
 
 	return nil
 }
+
+// FixPermissions fixes file permissions for a website
+func (e *Enhance) FixPermissions(ctx context.Context, websitePath, unixUser string) error {
+	if !e.connected || e.sshClient == nil {
+		return fmt.Errorf("SSH not connected")
+	}
+
+	// Change ownership to the website user
+	chownCmd := fmt.Sprintf("chown -R %s:%s %s", unixUser, unixUser, websitePath)
+	if _, err := e.sshClient.RunCommand(ctx, chownCmd); err != nil {
+		return fmt.Errorf("failed to change ownership: %w", err)
+	}
+
+	// Fix directory permissions (775)
+	dirPermCmd := fmt.Sprintf("find %s -type d -exec chmod 775 {} \\;", websitePath)
+	if _, err := e.sshClient.RunCommand(ctx, dirPermCmd); err != nil {
+		fmt.Printf("Warning: failed to fix directory permissions: %v\n", err)
+	}
+
+	// Fix file permissions (644)
+	filePermCmd := fmt.Sprintf("find %s -type f -exec chmod 644 {} \\;", websitePath)
+	if _, err := e.sshClient.RunCommand(ctx, filePermCmd); err != nil {
+		fmt.Printf("Warning: failed to fix file permissions: %v\n", err)
+	}
+
+	// Secure wp-config.php if exists
+	wpConfigPath := filepath.Join(websitePath, "wp-config.php")
+	secureWpCmd := fmt.Sprintf("[ -f %s ] && chmod 600 %s || true", wpConfigPath, wpConfigPath)
+	e.sshClient.RunCommand(ctx, secureWpCmd)
+
+	return nil
+}
+
+// CleanupTempFiles removes temporary migration files from the server
+func (e *Enhance) CleanupTempFiles(ctx context.Context, paths []string) error {
+	if !e.connected || e.sshClient == nil {
+		return fmt.Errorf("SSH not connected")
+	}
+
+	for _, path := range paths {
+		// Safety check - only delete from /tmp or specific migration directories
+		if !strings.HasPrefix(path, "/tmp/") && !strings.Contains(path, "migration") {
+			fmt.Printf("Skipping cleanup of unsafe path: %s\n", path)
+			continue
+		}
+
+		rmCmd := fmt.Sprintf("rm -rf %s", path)
+		if _, err := e.sshClient.RunCommand(ctx, rmCmd); err != nil {
+			fmt.Printf("Warning: failed to cleanup %s: %v\n", path, err)
+		} else {
+			fmt.Printf("Cleaned up: %s\n", path)
+		}
+	}
+
+	return nil
+}

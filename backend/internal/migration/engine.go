@@ -152,6 +152,39 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		return
 	}
 
+	// Phase 3: Fix permissions on target
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Fixing permissions on target server", nil)
+	progressChan <- common.MigrationProgress{
+		Status:      "running",
+		CurrentStep: "Fixing file permissions",
+	}
+
+	if err := e.fixPermissionsOnTarget(ctx, targetServer, exportData); err != nil {
+		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Permission fix warning: %v", err), nil)
+	}
+
+	// Phase 4: Cleanup temporary files
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Cleaning up temporary files", nil)
+	progressChan <- common.MigrationProgress{
+		Status:      "running",
+		CurrentStep: "Cleaning up temporary files",
+	}
+
+	// Cleanup on source server
+	if err := e.cleanupSourceServer(ctx, sourceServer, workDir); err != nil {
+		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Source cleanup warning: %v", err), nil)
+	}
+
+	// Cleanup on target server
+	if err := e.cleanupTargetServer(ctx, targetServer); err != nil {
+		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Target cleanup warning: %v", err), nil)
+	}
+
+	// Cleanup local work directory
+	if err := os.RemoveAll(workDir); err != nil {
+		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Local cleanup warning: %v", err), nil)
+	}
+
 	// Mark as completed
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
@@ -227,6 +260,112 @@ func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, dat
 
 	default:
 		return fmt.Errorf("unsupported target panel type: %s", server.PanelType)
+	}
+}
+
+// fixPermissionsOnTarget fixes file permissions on the target server
+func (e *Engine) fixPermissionsOnTarget(ctx context.Context, server *storage.Server, data *common.ExportData) error {
+	config := e.db.ToConnectionConfig(server)
+
+	password, _ := e.db.GetServerPassword(ctx, server.ID)
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeEnhance:
+		en := enhance.New()
+		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+			return fmt.Errorf("failed to connect to Enhance: %w", err)
+		}
+		defer en.Disconnect()
+
+		// Get website info to find the correct path and user
+		for _, domain := range data.Domains {
+			// The website path is typically /home/<unixuser>/public_html or similar
+			// We need to get the actual path from Enhance
+			websitePath := fmt.Sprintf("/home/%s/public_html", data.Account.Username)
+			unixUser := data.Account.Username
+
+			if err := en.FixPermissions(ctx, websitePath, unixUser); err != nil {
+				fmt.Printf("Warning: failed to fix permissions for %s: %v\n", domain.Name, err)
+			}
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("permission fix not implemented for panel type: %s", server.PanelType)
+	}
+}
+
+// cleanupSourceServer removes temporary files from the source server
+func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server, workDir string) error {
+	config := e.db.ToConnectionConfig(server)
+
+	password, _ := e.db.GetServerPassword(ctx, server.ID)
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeDirectAdmin:
+		da := directadmin.New()
+		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
+			return fmt.Errorf("failed to connect to DirectAdmin: %w", err)
+		}
+		defer da.Disconnect()
+
+		// Cleanup paths - SQL dumps, ZIP files, etc.
+		cleanupPaths := []string{
+			"/tmp/migration_*",
+			"/tmp/*.sql",
+			"/tmp/*_backup.tar.gz",
+		}
+
+		return da.CleanupTempFiles(ctx, cleanupPaths)
+
+	default:
+		return nil // No cleanup needed for other panel types
+	}
+}
+
+// cleanupTargetServer removes temporary files from the target server
+func (e *Engine) cleanupTargetServer(ctx context.Context, server *storage.Server) error {
+	config := e.db.ToConnectionConfig(server)
+
+	password, _ := e.db.GetServerPassword(ctx, server.ID)
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeEnhance:
+		en := enhance.New()
+		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+			return fmt.Errorf("failed to connect to Enhance: %w", err)
+		}
+		defer en.Disconnect()
+
+		// Cleanup paths - SQL dumps, ZIP files, etc.
+		cleanupPaths := []string{
+			"/tmp/migration_*",
+			"/tmp/*.sql",
+			"/tmp/*_backup.tar.gz",
+			"/tmp/*_import",
+		}
+
+		return en.CleanupTempFiles(ctx, cleanupPaths)
+
+	default:
+		return nil // No cleanup needed for other panel types
 	}
 }
 

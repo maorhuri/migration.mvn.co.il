@@ -888,3 +888,27 @@ func (da *DirectAdmin) SetupDomain(ctx context.Context, username string, domain 
 func (da *DirectAdmin) SetupSSL(ctx context.Context, domain string, cert *common.SSLCert) error {
 	return fmt.Errorf("DirectAdmin import not implemented - use Enhance for import")
 }
+
+// CleanupTempFiles removes temporary migration files from the server
+func (da *DirectAdmin) CleanupTempFiles(ctx context.Context, paths []string) error {
+	if !da.connected || da.sshClient == nil {
+		return fmt.Errorf("SSH not connected")
+	}
+
+	for _, path := range paths {
+		// Safety check - only delete from /tmp or specific migration directories
+		if !strings.HasPrefix(path, "/tmp/") && !strings.Contains(path, "migration") && !strings.Contains(path, "backup") {
+			fmt.Printf("Skipping cleanup of unsafe path: %s\n", path)
+			continue
+		}
+
+		rmCmd := fmt.Sprintf("rm -rf %s", path)
+		if _, err := da.sshClient.RunCommand(ctx, rmCmd); err != nil {
+			fmt.Printf("Warning: failed to cleanup %s: %v\n", path, err)
+		} else {
+			fmt.Printf("Cleaned up: %s\n", path)
+		}
+	}
+
+	return nil
+}
