@@ -175,7 +175,6 @@ export default function NewMigration() {
 
         // Poll for migration status
         let completed = false;
-        let lastStep = '';
         const startTime = Date.now();
 
         while (!completed) {
