@@ -467,6 +467,7 @@ func (d *Database) GetMigration(ctx context.Context, id string) (*Migration, err
 	var migration Migration
 	err := d.db.GetContext(ctx, &migration, "SELECT * FROM migrations WHERE id = $1", id)
 	if err != nil {
+		fmt.Printf("GetMigration error for id=%s: %v\n", id, err)
 		return nil, err
 	}
 	return &migration, nil
