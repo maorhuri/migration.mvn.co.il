@@ -220,8 +220,6 @@ export default function NewMigration() {
               }
             }
 
-            lastStep = currentStepName;
-
             if (status.status === 'completed') {
               completed = true;
               // Mark all steps as completed
