@@ -1,19 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ArrowRightIcon,
   CheckCircleIcon,
-  ExclamationTriangleIcon,
-  XCircleIcon,
   GlobeAltIcon,
   MagnifyingGlassIcon,
   ServerStackIcon,
-  CircleStackIcon,
-  EnvelopeIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, checkCompatibility, startMigration, getServerAccounts, getClusterServers, ClusterServer } from '../api/client';
-import type { Server, Account, CompatibilityResult } from '../types';
+import { getServers, getServerAccounts, getClusterServers, ClusterServer } from '../api/client';
+import type { Server, Account } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
 
@@ -31,9 +26,7 @@ export default function NewMigration() {
   const [loading, setLoading] = useState(true);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [loadingCluster, setLoadingCluster] = useState(false);
-  const [checking, setChecking] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [compatibility, setCompatibility] = useState<CompatibilityResult | null>(null);
   
   const [currentStep, setCurrentStep] = useState<MigrationStep>('select_source');
   const [searchTerm, setSearchTerm] = useState('');
