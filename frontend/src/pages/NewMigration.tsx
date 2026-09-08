@@ -141,7 +141,7 @@ export default function NewMigration() {
   };
 
   const updateStepStatus = (stepIndex: number, status: MigrationStepStatus['status'], error?: string, duration?: number) => {
-    setMigrationSteps(prev => prev.map((step, idx) => 
+    setMigrationSteps((prev: MigrationStepStatus[]) => prev.map((step: MigrationStepStatus, idx: number) => 
       idx === stepIndex ? { ...step, status, error, duration } : step
     ));
   };
