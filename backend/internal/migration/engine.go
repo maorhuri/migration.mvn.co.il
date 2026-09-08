@@ -98,8 +98,9 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		return nil, fmt.Errorf("failed to create work directory: %w", err)
 	}
 
-	// Run migration in background
-	go e.runMigration(ctx, migration.ID, sourceServer, targetServer, req, migrationDir)
+	// Run migration in background with a new context (not tied to HTTP request)
+	bgCtx := context.Background()
+	go e.runMigration(bgCtx, migration.ID, sourceServer, targetServer, req, migrationDir)
 
 	return result, nil
 }
