@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - ENVIRONMENT=production
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=migration
+      - DB_PASSWORD=${DB_PASSWORD:-migration_secret}
+      - DB_NAME=migration
+      - DB_SSL_MODE=disable
+      - MASTER_KEY=${MASTER_KEY:-change-me-in-production}
+      - LOG_LEVEL=info
+      - LOG_PRETTY=false
+      - WORK_DIR=/var/lib/migration-tool/work
+    volumes:
+      - migration-data:/var/lib/migration-tool
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - migration-net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=migration
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-migration_secret}
+      - POSTGRES_DB=migration
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U migration -d migration"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - migration-net
+
+volumes:
+  postgres-data:
+  migration-data:
+
+networks:
+  migration-net:
+    driver: bridge
