@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
@@ -56,7 +55,17 @@ type MigrationResult struct {
 
 // StartMigration starts a new migration
 func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*MigrationResult, error) {
-	migrationID := uuid.New().String()
+	// Create migration record in database first to get the ID
+	migration := &storage.Migration{
+		SourceServerID:  req.SourceServerID,
+		TargetServerID:  req.TargetServerID,
+		AccountUsername: req.Username,
+	}
+	if err := e.db.CreateMigration(ctx, migration); err != nil {
+		return nil, fmt.Errorf("failed to create migration record: %w", err)
+	}
+
+	migrationID := migration.ID
 
 	result := &MigrationResult{
 		ID:        migrationID,
@@ -68,17 +77,6 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 			StartedAt: time.Now(),
 		},
 	}
-
-	// Create migration record in database
-	migration := &storage.Migration{
-		SourceServerID:  req.SourceServerID,
-		TargetServerID:  req.TargetServerID,
-		AccountUsername: req.Username,
-	}
-	if err := e.db.CreateMigration(ctx, migration); err != nil {
-		return nil, fmt.Errorf("failed to create migration record: %w", err)
-	}
-	result.ID = migration.ID
 
 	// Get source and target server configs
 	sourceServer, err := e.db.GetServer(ctx, req.SourceServerID)
