@@ -31,7 +31,6 @@ export default function ServerDetail() {
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [testing, setTesting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'failed'>('unknown');
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editFormData, setEditFormData] = useState({
     name: '',
