@@ -54,6 +54,21 @@ export const getServerInfo = async (id: string): Promise<{
   return data;
 };
 
+export interface ClusterServer {
+  id: string;
+  friendly_name: string;
+  hostname: string;
+  ip: string;
+  role: string;
+  is_main: boolean;
+  status: string;
+}
+
+export const getClusterServers = async (id: string): Promise<ClusterServer[]> => {
+  const { data } = await api.get(`/servers/${id}/cluster-servers`);
+  return data.items || [];
+};
+
 // SSH Keys
 export const getSSHKeys = async (): Promise<SSHKey[]> => {
   const { data } = await api.get('/ssh-keys');

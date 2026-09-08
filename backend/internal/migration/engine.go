@@ -490,6 +490,57 @@ func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, pass
 	return info, nil
 }
 
+// EnhanceClusterServer represents a server in Enhance cluster
+type EnhanceClusterServer struct {
+	ID           string `json:"id"`
+	FriendlyName string `json:"friendly_name"`
+	Hostname     string `json:"hostname"`
+	IP           string `json:"ip"`
+	Role         string `json:"role"`
+	IsMain       bool   `json:"is_main"`
+	Status       string `json:"status"`
+}
+
+// GetEnhanceClusterServers gets all servers in an Enhance cluster
+func (e *Engine) GetEnhanceClusterServers(ctx context.Context, server *storage.Server, apiKey string) ([]EnhanceClusterServer, error) {
+	config := e.db.ToConnectionConfig(server)
+
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+
+	// Get password for SSH
+	password, _ := e.db.GetDecryptedPassword(ctx, server.ID)
+
+	en := enhance.New()
+	if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+		return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
+	}
+	defer en.Disconnect()
+
+	servers, err := en.ListServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []EnhanceClusterServer
+	for _, s := range servers {
+		result = append(result, EnhanceClusterServer{
+			ID:           s.ID,
+			FriendlyName: s.FriendlyName,
+			Hostname:     s.Hostname,
+			IP:           s.IP,
+			Role:         s.Role,
+			IsMain:       s.IsMain,
+			Status:       s.Status,
+		})
+	}
+
+	return result, nil
+}
+
 // GetServerAccounts gets all accounts from a server
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
 	config := e.db.ToConnectionConfig(server)

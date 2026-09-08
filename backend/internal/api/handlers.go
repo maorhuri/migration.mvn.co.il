@@ -49,6 +49,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.POST("/:id/test", h.testServerConnection)
 			servers.GET("/:id/accounts", h.listServerAccounts)
 			servers.GET("/:id/info", h.getServerInfo)
+			servers.GET("/:id/cluster-servers", h.listClusterServers)
 		}
 
 		// SSH Keys
@@ -357,6 +358,38 @@ func (h *Handler) getServerInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, info)
+}
+
+func (h *Handler) listClusterServers(c *gin.Context) {
+	id := c.Param("id")
+
+	server, err := h.db.GetServer(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	// Only Enhance servers have cluster servers
+	if server.PanelType != "enhance" {
+		c.JSON(http.StatusOK, gin.H{"items": []interface{}{}})
+		return
+	}
+
+	// Get API key
+	apiKey, err := h.db.GetServerAPIKey(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get API key"})
+		return
+	}
+
+	// Get cluster servers
+	servers, err := h.engine.GetEnhanceClusterServers(c.Request.Context(), server, apiKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": servers})
 }
 
 // SSH Key handlers

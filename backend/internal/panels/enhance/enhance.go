@@ -157,10 +157,152 @@ type EnhanceDatabase struct {
 
 // EnhanceEmail represents an email account in Enhance
 type EnhanceEmail struct {
-	ID       string `json:"id"`
-	Address  string `json:"address"`
-	QuotaMB  int64  `json:"quotaMb"`
-	UsedMB   int64  `json:"usedMb"`
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	QuotaMB int64  `json:"quotaMb"`
+	UsedMB  int64  `json:"usedMb"`
+}
+
+// EnhanceServer represents a server in Enhance cluster
+type EnhanceServer struct {
+	ID           string `json:"id"`
+	FriendlyName string `json:"friendlyName"`
+	Hostname     string `json:"hostname"`
+	IP           string `json:"primaryIpv4"`
+	Role         string `json:"role"`
+	IsMain       bool   `json:"isControlPanel"`
+	Status       string `json:"status"`
+}
+
+// ListServers returns all servers in the Enhance cluster
+func (e *Enhance) ListServers(ctx context.Context) ([]EnhanceServer, error) {
+	if !e.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	resp, err := e.apiRequest(ctx, "GET", "/servers", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var serversResponse struct {
+		Items []EnhanceServer `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &serversResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse servers response: %w", err)
+	}
+
+	return serversResponse.Items, nil
+}
+
+// CreateWebsiteOnServer creates a website on a specific server in the cluster
+func (e *Enhance) CreateWebsiteOnServer(ctx context.Context, orgID string, domain string, serverID string) (*EnhanceWebsite, error) {
+	if !e.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	websiteReq := map[string]interface{}{
+		"domain": domain,
+		"kind":   "website",
+	}
+
+	// If serverID is provided, specify the target server
+	if serverID != "" {
+		websiteReq["appServerId"] = serverID
+		websiteReq["dbServerId"] = serverID
+		websiteReq["mailServerId"] = serverID
+	}
+
+	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
+	resp, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var website EnhanceWebsite
+	if err := json.Unmarshal(resp, &website); err != nil {
+		return nil, fmt.Errorf("failed to parse website response: %w", err)
+	}
+
+	return &website, nil
+}
+
+// GetWebsiteInfo returns detailed info about a website including paths
+func (e *Enhance) GetWebsiteInfo(ctx context.Context, orgID string, websiteID string) (*EnhanceWebsite, error) {
+	if !e.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	endpoint := fmt.Sprintf("/orgs/%s/websites/%s", orgID, websiteID)
+	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var website EnhanceWebsite
+	if err := json.Unmarshal(resp, &website); err != nil {
+		return nil, fmt.Errorf("failed to parse website response: %w", err)
+	}
+
+	return &website, nil
+}
+
+// UploadToTmp uploads files to /tmp on the main server
+func (e *Enhance) UploadToTmp(ctx context.Context, localPath string, remoteName string) (string, error) {
+	if !e.connected {
+		return "", fmt.Errorf("not connected")
+	}
+
+	remotePath := fmt.Sprintf("/tmp/migration_%s_%d", remoteName, time.Now().Unix())
+
+	// Create remote directory
+	if _, err := e.sshClient.RunCommand(ctx, fmt.Sprintf("mkdir -p %s", remotePath)); err != nil {
+		return "", fmt.Errorf("failed to create tmp directory: %w", err)
+	}
+
+	// Upload files
+	progressChan := make(chan int64, 100)
+	go func() {
+		for range progressChan {
+			// Just drain the channel
+		}
+	}()
+
+	if err := e.sshClient.UploadDirectory(ctx, localPath, remotePath, progressChan); err != nil {
+		close(progressChan)
+		return "", fmt.Errorf("failed to upload to tmp: %w", err)
+	}
+	close(progressChan)
+
+	return remotePath, nil
+}
+
+// MoveFromTmpToWebsite moves files from /tmp to the website directory
+// If the website is on a different server, it uses rsync internally
+func (e *Enhance) MoveFromTmpToWebsite(ctx context.Context, tmpPath string, website *EnhanceWebsite) error {
+	if !e.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	destPath := filepath.Join(website.HomeDir, "public_html")
+
+	// Check if we need to rsync to another server
+	// The main server has access to all servers in the cluster
+	cmd := fmt.Sprintf("rsync -avz --delete %s/ %s/", tmpPath, destPath)
+
+	if _, err := e.sshClient.RunCommand(ctx, cmd); err != nil {
+		return fmt.Errorf("failed to move files: %w", err)
+	}
+
+	// Cleanup tmp
+	cleanupCmd := fmt.Sprintf("rm -rf %s", tmpPath)
+	e.sshClient.RunCommand(ctx, cleanupCmd)
+
+	// Fix permissions
+	chownCmd := fmt.Sprintf("chown -R %s:%s %s", website.UnixUser, website.UnixUser, destPath)
+	e.sshClient.RunCommand(ctx, chownCmd)
+
+	return nil
 }
 
 // ListAccounts returns all accounts (organizations) on the server
@@ -689,9 +831,9 @@ func (e *Enhance) SetupSSL(ctx context.Context, domain string, cert *common.SSLC
 
 		// Upload SSL certificate
 		sslReq := map[string]interface{}{
-			"cert":   cert.Certificate,
-			"key":    cert.PrivateKey,
-			"chain":  cert.CABundle,
+			"cert":  cert.Certificate,
+			"key":   cert.PrivateKey,
+			"chain": cert.CABundle,
 		}
 
 		endpoint := fmt.Sprintf("/orgs/%s/websites/%s/ssl", orgID, website.ID)
