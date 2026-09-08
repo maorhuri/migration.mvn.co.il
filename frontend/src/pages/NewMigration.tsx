@@ -9,7 +9,7 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, ClusterServer } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, getMigrationLogs } from '../api/client';
 import type { Server, Account } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
@@ -35,6 +35,10 @@ export default function NewMigration() {
   
   const [currentStep, setCurrentStep] = useState<MigrationStep>('select_source');
   const [searchTerm, setSearchTerm] = useState('');
+  const [sourceSearchTerm, setSourceSearchTerm] = useState('');
+  const [sourceFilterType, setSourceFilterType] = useState<string>('all');
+  const [targetSearchTerm, setTargetSearchTerm] = useState('');
+  const [targetFilterType, setTargetFilterType] = useState<string>('all');
   const [clusterSearchTerm, setClusterSearchTerm] = useState('');
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
   const [migrationSteps, setMigrationSteps] = useState<MigrationStepStatus[]>([]);
@@ -158,26 +162,98 @@ export default function NewMigration() {
     setCurrentMigrationStep(0);
     setOverallProgress(0);
 
-    // Simulate migration with realistic timing
-    const stepDurations = [3000, 2000, 1000, 4000, 5000, 2000, 6000, 3000, 2000, 1000, 1500, 1000];
-    
     try {
-      for (let i = 0; i < initialMigrationSteps.length; i++) {
-        setCurrentMigrationStep(i);
-        updateStepStatus(i, 'running');
-        
+      // Start migration for each selected account
+      for (const account of selectedAccounts) {
+        // Call the real API to start migration
+        const migration = await startMigration({
+          source_server_id: formData.source_server_id,
+          target_server_id: formData.target_server_id,
+          username: account.username,
+          new_password: formData.new_password || undefined,
+        });
+
+        // Poll for migration status
+        let completed = false;
+        let lastStep = '';
         const startTime = Date.now();
-        await new Promise(resolve => setTimeout(resolve, stepDurations[i]));
-        const duration = Math.round((Date.now() - startTime) / 1000);
-        
-        // Simulate occasional warnings (not errors)
-        if (i === 2 && selectedAccounts.some((a: Account) => !a.email_accounts?.length)) {
-          updateStepStatus(i, 'warning', 'No cron jobs found for some accounts', duration);
-        } else {
-          updateStepStatus(i, 'completed', undefined, duration);
+
+        while (!completed) {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2 seconds
+
+          try {
+            const status = await getMigration(migration.id);
+            const logs = await getMigrationLogs(migration.id);
+
+            // Update UI based on current step
+            const currentStepName = status.current_step || '';
+            
+            // Map backend steps to UI steps
+            const stepMapping: Record<string, number> = {
+              'Exporting domains': 0,
+              'Exporting databases': 0,
+              'Exporting emails': 1,
+              'Exporting cron jobs': 2,
+              'Exporting files': 3,
+              'Starting import': 5,
+              'Creating organization': 5,
+              'Creating websites': 5,
+              'Importing databases': 7,
+              'Importing email accounts': 8,
+              'Importing files': 6,
+              'Setting up SSL': 10,
+              'Migration completed': 11,
+            };
+
+            // Find matching step
+            for (const [stepName, stepIndex] of Object.entries(stepMapping)) {
+              if (currentStepName.includes(stepName) && stepIndex !== currentMigrationStep) {
+                // Mark previous steps as completed
+                for (let i = 0; i <= stepIndex; i++) {
+                  if (i < stepIndex) {
+                    updateStepStatus(i, 'completed');
+                  } else {
+                    updateStepStatus(i, 'running');
+                  }
+                }
+                setCurrentMigrationStep(stepIndex);
+                setOverallProgress(Math.round(((stepIndex + 1) / initialMigrationSteps.length) * 100));
+              }
+            }
+
+            lastStep = currentStepName;
+
+            if (status.status === 'completed') {
+              completed = true;
+              // Mark all steps as completed
+              for (let i = 0; i < initialMigrationSteps.length; i++) {
+                updateStepStatus(i, 'completed');
+              }
+              setOverallProgress(100);
+            } else if (status.status === 'failed') {
+              throw new Error(status.error || 'Migration failed');
+            }
+
+            // Check for errors in logs
+            const errorLogs = logs.filter(log => log.level === 'error');
+            if (errorLogs.length > 0) {
+              const lastError = errorLogs[errorLogs.length - 1];
+              throw new Error(lastError.message);
+            }
+
+          } catch (pollError) {
+            // If it's a network error, continue polling
+            if (String(pollError).includes('Network')) {
+              continue;
+            }
+            throw pollError;
+          }
+
+          // Timeout after 30 minutes
+          if (Date.now() - startTime > 30 * 60 * 1000) {
+            throw new Error('Migration timeout - please check the server logs');
+          }
         }
-        
-        setOverallProgress(Math.round(((i + 1) / initialMigrationSteps.length) * 100));
       }
 
       // Generate hosts entry
@@ -188,15 +264,30 @@ export default function NewMigration() {
       setCurrentStep('completed');
       toast.success('Migration completed successfully!');
     } catch (error) {
-      updateStepStatus(currentMigrationStep, 'error', 'Migration failed: ' + String(error));
-      toast.error('Migration failed');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      updateStepStatus(currentMigrationStep, 'error', errorMessage);
+      toast.error('Migration failed: ' + errorMessage);
     } finally {
       setStarting(false);
     }
   };
 
-  const sourceServers = servers.filter((s: Server) => s.panel_type === 'directadmin' || s.panel_type === 'cpanel');
-  const targetServers = servers.filter((s: Server) => s.panel_type === 'enhance');
+  // All servers can be source or target
+  const sourceServers = servers.filter((s: Server) => {
+    const matchesSearch = s.name.toLowerCase().includes(sourceSearchTerm.toLowerCase()) ||
+                          s.host.toLowerCase().includes(sourceSearchTerm.toLowerCase());
+    const matchesType = sourceFilterType === 'all' || s.panel_type === sourceFilterType;
+    return matchesSearch && matchesType;
+  });
+
+  const targetServers = servers.filter((s: Server) => {
+    const matchesSearch = s.name.toLowerCase().includes(targetSearchTerm.toLowerCase()) ||
+                          s.host.toLowerCase().includes(targetSearchTerm.toLowerCase());
+    const matchesType = targetFilterType === 'all' || s.panel_type === targetFilterType;
+    // Exclude source server from target list
+    const notSource = s.id !== formData.source_server_id;
+    return matchesSearch && matchesType && notSource;
+  });
 
   const filteredAccounts = accounts.filter((acc: Account) =>
     acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -255,7 +346,36 @@ export default function NewMigration() {
       {/* Step 1: Select Source Server */}
       {currentStep === 'select_source' && (
         <div className="card">
-          <h2 className="text-lg font-semibold mb-4">Select Source Server</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Select Source Server</h2>
+            <span className="text-sm text-gray-500">{servers.length} servers available</span>
+          </div>
+
+          {/* Search and Filter */}
+          <div className="flex flex-col md:flex-row gap-4 mb-6">
+            <div className="relative flex-1">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search by name or host..."
+                value={sourceSearchTerm}
+                onChange={(e) => setSourceSearchTerm(e.target.value)}
+                className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg w-full focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <select
+              value={sourceFilterType}
+              onChange={(e) => setSourceFilterType(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="all">All Types</option>
+              <option value="directadmin">DirectAdmin</option>
+              <option value="enhance">Enhance</option>
+              <option value="cpanel">cPanel</option>
+              <option value="cloudpanel">CloudPanel</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {sourceServers.map((server) => (
               <button
@@ -269,11 +389,19 @@ export default function NewMigration() {
                 }`}
               >
                 <div className="flex items-center mb-2">
-                  <ServerStackIcon className="w-6 h-6 text-blue-600 mr-2" />
+                  <ServerStackIcon className={`w-6 h-6 mr-2 ${
+                    server.panel_type === 'directadmin' ? 'text-blue-600' :
+                    server.panel_type === 'enhance' ? 'text-purple-600' :
+                    server.panel_type === 'cpanel' ? 'text-orange-600' : 'text-gray-600'
+                  }`} />
                   <span className="font-medium">{server.name}</span>
                 </div>
                 <p className="text-sm text-gray-500">{server.host}</p>
-                <span className="inline-block mt-2 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">
+                <span className={`inline-block mt-2 px-2 py-1 text-xs rounded ${
+                  server.panel_type === 'directadmin' ? 'bg-blue-100 text-blue-700' :
+                  server.panel_type === 'enhance' ? 'bg-purple-100 text-purple-700' :
+                  server.panel_type === 'cpanel' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
+                }`}>
                   {server.panel_type}
                 </span>
               </button>
@@ -281,7 +409,7 @@ export default function NewMigration() {
           </div>
           {sourceServers.length === 0 && (
             <p className="text-center text-gray-500 py-8">
-              No source servers configured. Please add a DirectAdmin or cPanel server first.
+              No servers match your search. Try adjusting your filters.
             </p>
           )}
         </div>
@@ -427,6 +555,31 @@ export default function NewMigration() {
             </button>
           </div>
 
+          {/* Search and Filter */}
+          <div className="flex flex-col md:flex-row gap-4 mb-6">
+            <div className="relative flex-1">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search by name or host..."
+                value={targetSearchTerm}
+                onChange={(e) => setTargetSearchTerm(e.target.value)}
+                className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg w-full focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+            <select
+              value={targetFilterType}
+              onChange={(e) => setTargetFilterType(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
+            >
+              <option value="all">All Types</option>
+              <option value="directadmin">DirectAdmin</option>
+              <option value="enhance">Enhance</option>
+              <option value="cpanel">cPanel</option>
+              <option value="cloudpanel">CloudPanel</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             {targetServers.map((server) => (
               <button
@@ -437,16 +590,30 @@ export default function NewMigration() {
                 }`}
               >
                 <div className="flex items-center mb-2">
-                  <ServerStackIcon className="w-6 h-6 text-purple-600 mr-2" />
+                  <ServerStackIcon className={`w-6 h-6 mr-2 ${
+                    server.panel_type === 'directadmin' ? 'text-blue-600' :
+                    server.panel_type === 'enhance' ? 'text-purple-600' :
+                    server.panel_type === 'cpanel' ? 'text-orange-600' : 'text-gray-600'
+                  }`} />
                   <span className="font-medium">{server.name}</span>
                 </div>
                 <p className="text-sm text-gray-500">{server.host}</p>
-                <span className="inline-block mt-2 px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">
+                <span className={`inline-block mt-2 px-2 py-1 text-xs rounded ${
+                  server.panel_type === 'directadmin' ? 'bg-blue-100 text-blue-700' :
+                  server.panel_type === 'enhance' ? 'bg-purple-100 text-purple-700' :
+                  server.panel_type === 'cpanel' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700'
+                }`}>
                   {server.panel_type}
                 </span>
               </button>
             ))}
           </div>
+
+          {targetServers.length === 0 && (
+            <p className="text-center text-gray-500 py-4 mb-6">
+              No servers match your search. Try adjusting your filters.
+            </p>
+          )}
 
           {/* Cluster Server Selection */}
           {formData.target_server_id && clusterServers.length > 1 && (
