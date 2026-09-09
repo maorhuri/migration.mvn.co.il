@@ -20,11 +20,12 @@ import (
 
 // Enhance implements the Panel interface for Enhance servers
 type Enhance struct {
-	config     *common.ConnectionConfig
-	apiKey     string
-	httpClient *http.Client
-	sshClient  *ssh.Client
-	connected  bool
+	config                *common.ConnectionConfig
+	apiKey                string
+	httpClient            *http.Client
+	sshClient             *ssh.Client
+	connected             bool
+	targetClusterServerID string // Target server ID for website creation
 }
 
 // New creates a new Enhance panel instance
@@ -66,6 +67,11 @@ func (e *Enhance) ConnectWithCredentials(ctx context.Context, config *common.Con
 func (e *Enhance) Disconnect() error {
 	e.connected = false
 	return e.sshClient.Disconnect()
+}
+
+// SetTargetClusterServerID sets the target server ID for website creation
+func (e *Enhance) SetTargetClusterServerID(serverID string) {
+	e.targetClusterServerID = serverID
 }
 
 // TestConnection tests if the connection is working
@@ -480,6 +486,12 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 	websiteReq := map[string]interface{}{
 		"domain": domain.Name,
 		"kind":   "website",
+	}
+
+	// If target cluster server ID is specified, use it for website placement
+	if e.targetClusterServerID != "" {
+		websiteReq["appServerId"] = e.targetClusterServerID
+		websiteReq["dbServerId"] = e.targetClusterServerID
 	}
 
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)

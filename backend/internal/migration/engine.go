@@ -36,10 +36,11 @@ func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine
 
 // MigrationRequest represents a migration request
 type MigrationRequest struct {
-	SourceServerID string `json:"source_server_id"`
-	TargetServerID string `json:"target_server_id"`
-	Username       string `json:"username"`
-	NewPassword    string `json:"new_password,omitempty"` // Password for new account
+	SourceServerID        string `json:"source_server_id"`
+	TargetServerID        string `json:"target_server_id"`
+	TargetClusterServerID string `json:"target_cluster_server_id,omitempty"` // For Enhance: specific server in cluster
+	Username              string `json:"username"`
+	NewPassword           string `json:"new_password,omitempty"` // Password for new account
 }
 
 // MigrationResult represents the result of a migration
@@ -153,7 +154,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		"panel":  targetServer.PanelType,
 	})
 
-	if err := e.importToTarget(ctx, targetServer, exportData, req.NewPassword, progressChan); err != nil {
+	if err := e.importToTarget(ctx, targetServer, exportData, req.NewPassword, req.TargetClusterServerID, progressChan); err != nil {
 		e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
 		return
 	}
@@ -234,7 +235,7 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 }
 
 // importToTarget imports data to the target server
-func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, data *common.ExportData, newPassword string, progress chan<- common.MigrationProgress) error {
+func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, data *common.ExportData, newPassword string, targetClusterServerID string, progress chan<- common.MigrationProgress) error {
 	config := e.db.ToConnectionConfig(server)
 
 	// Get credentials
@@ -257,6 +258,9 @@ func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, dat
 		if err := en.TestConnection(ctx); err != nil {
 			return fmt.Errorf("Enhance connection test failed: %w", err)
 		}
+
+		// Set target cluster server ID for website creation
+		en.SetTargetClusterServerID(targetClusterServerID)
 
 		_, err := en.ImportAccount(ctx, data, newPassword, progress)
 		return err

@@ -170,6 +170,7 @@ export default function NewMigration() {
         const migration = await startMigration({
           source_server_id: formData.source_server_id,
           target_server_id: formData.target_server_id,
+          target_cluster_server_id: formData.target_cluster_server_id || undefined,
           username: account.username,
           new_password: formData.new_password || undefined,
         });

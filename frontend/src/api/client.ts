@@ -98,6 +98,7 @@ export const getMigration = async (id: string): Promise<Migration> => {
 export const startMigration = async (params: {
   source_server_id: string;
   target_server_id: string;
+  target_cluster_server_id?: string;
   username: string;
   new_password?: string;
 }): Promise<Migration> => {
