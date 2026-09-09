@@ -290,14 +290,9 @@ func (e *Engine) fixPermissionsOnTarget(ctx context.Context, server *storage.Ser
 		}
 		defer en.Disconnect()
 
-		// Get website info to find the correct path and user
+		// Fix permissions for each domain using the actual Enhance website info
 		for _, domain := range data.Domains {
-			// The website path is typically /home/<unixuser>/public_html or similar
-			// We need to get the actual path from Enhance
-			websitePath := fmt.Sprintf("/home/%s/public_html", data.Account.Username)
-			unixUser := data.Account.Username
-
-			if err := en.FixPermissions(ctx, websitePath, unixUser); err != nil {
+			if err := en.FixPermissionsForDomain(ctx, domain.Name); err != nil {
 				fmt.Printf("Warning: failed to fix permissions for %s: %v\n", domain.Name, err)
 			}
 		}

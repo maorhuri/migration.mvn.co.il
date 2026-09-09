@@ -450,7 +450,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	sendProgress("Importing databases", currentStep, totalSteps)
 	if len(data.Databases) > 0 {
 		dbDir := filepath.Join(filepath.Dir(data.FilesPath), "databases")
-		if err := e.ImportDatabases(ctx, data.Account.Username, data.Databases, dbDir); err != nil {
+		if err := e.ImportDatabases(ctx, data.Account.Username, data.Databases, dbDir, data.Domains); err != nil {
 			fmt.Printf("Warning: failed to import databases: %v\n", err)
 		}
 	}
@@ -649,7 +649,7 @@ func (e *Enhance) uploadFilesToWebsite(ctx context.Context, website *EnhanceWebs
 	if progress != nil {
 		progress <- common.MigrationProgress{
 			Status:      "running",
-			CurrentStep: fmt.Sprintf("Uploading files to %s", website.Domain),
+			CurrentStep: fmt.Sprintf("Uploading files to %s", website.Domain.Domain),
 		}
 	}
 
@@ -663,7 +663,7 @@ func (e *Enhance) uploadFilesToWebsite(ctx context.Context, website *EnhanceWebs
 }
 
 // ImportDatabases imports databases to Enhance
-func (e *Enhance) ImportDatabases(ctx context.Context, username string, databases []common.Database, dumpDir string) error {
+func (e *Enhance) ImportDatabases(ctx context.Context, username string, databases []common.Database, dumpDir string, domains []common.Domain) error {
 	if !e.connected {
 		return fmt.Errorf("not connected")
 	}
@@ -677,7 +677,7 @@ func (e *Enhance) ImportDatabases(ctx context.Context, username string, database
 		return fmt.Errorf("enhance_org_id not configured")
 	}
 
-	// Get first website for this org
+	// Get websites for this org
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
 	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -695,7 +695,24 @@ func (e *Enhance) ImportDatabases(ctx context.Context, username string, database
 		return fmt.Errorf("no websites found for organization")
 	}
 
-	website := websitesResp.Items[0]
+	// Find the website that matches one of our domains
+	var website *EnhanceWebsite
+	for _, domain := range domains {
+		for i, ws := range websitesResp.Items {
+			if ws.Domain.Domain == domain.Name {
+				website = &websitesResp.Items[i]
+				fmt.Printf("Found website for domain %s: ID=%s\n", domain.Name, ws.ID)
+				break
+			}
+		}
+		if website != nil {
+			break
+		}
+	}
+
+	if website == nil {
+		return fmt.Errorf("no matching website found for domains")
+	}
 
 	for _, db := range databases {
 		// Create database via API
@@ -816,7 +833,7 @@ func (e *Enhance) ImportEmails(ctx context.Context, username string, emails []co
 }
 
 // ImportCronJobs imports cron jobs to Enhance
-func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs []common.CronJob) error {
+func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs []common.CronJob, domains []common.Domain) error {
 	if !e.connected {
 		return fmt.Errorf("not connected")
 	}
@@ -830,7 +847,7 @@ func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs 
 		return fmt.Errorf("enhance_org_id not configured")
 	}
 
-	// Get first website for this org
+	// Get websites for this org
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
 	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
@@ -848,7 +865,23 @@ func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs 
 		return fmt.Errorf("no websites found for organization")
 	}
 
-	website := websitesResp.Items[0]
+	// Find the website that matches one of our domains
+	var website *EnhanceWebsite
+	for _, domain := range domains {
+		for i, ws := range websitesResp.Items {
+			if ws.Domain.Domain == domain.Name {
+				website = &websitesResp.Items[i]
+				break
+			}
+		}
+		if website != nil {
+			break
+		}
+	}
+
+	if website == nil {
+		return fmt.Errorf("no matching website found for cron jobs")
+	}
 
 	for _, cron := range cronJobs {
 		// Create cron job via API
@@ -878,7 +911,7 @@ func (e *Enhance) ImportEmailData(ctx context.Context, website *EnhanceWebsite, 
 
 	// Upload maildir to the correct location
 	// Enhance uses /home/<unixuser>/mail/<domain>/<user>/
-	remoteMailDir := fmt.Sprintf("/home/%s/mail/%s/%s", website.UnixUser, website.Domain, emailUser)
+	remoteMailDir := fmt.Sprintf("/home/%s/mail/%s/%s", website.UnixUser, website.Domain.Domain, emailUser)
 
 	// Create directory
 	mkdirCmd := fmt.Sprintf("mkdir -p %s", remoteMailDir)
@@ -1056,6 +1089,36 @@ func (e *Enhance) FixPermissions(ctx context.Context, websitePath, unixUser stri
 	e.sshClient.RunCommand(ctx, secureWpCmd)
 
 	return nil
+}
+
+// FixPermissionsForDomain fixes permissions for a specific domain by looking up the website
+func (e *Enhance) FixPermissionsForDomain(ctx context.Context, domainName string) error {
+	if !e.connected {
+		return fmt.Errorf("not connected")
+	}
+
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
+	}
+	if orgID == "" {
+		return fmt.Errorf("enhance_org_id not configured")
+	}
+
+	// Find the website for this domain
+	website, err := e.getWebsiteByDomain(ctx, orgID, domainName)
+	if err != nil {
+		return fmt.Errorf("website not found for domain %s: %w", domainName, err)
+	}
+
+	// Use the actual website path and unix user from Enhance
+	websitePath := filepath.Join(website.HomeDir, "public_html")
+	unixUser := website.UnixUser
+
+	fmt.Printf("Fixing permissions for %s: path=%s, user=%s\n", domainName, websitePath, unixUser)
+
+	return e.FixPermissions(ctx, websitePath, unixUser)
 }
 
 // CleanupTempFiles removes temporary migration files from the server
