@@ -90,6 +90,10 @@ func (e *Enhance) GetPanelType() common.PanelType {
 
 // apiRequest makes an API request to Enhance
 func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
+	// Ensure endpoint starts with /v2
+	if !strings.HasPrefix(endpoint, "/v2") {
+		endpoint = "/v2" + endpoint
+	}
 	url := fmt.Sprintf("%s%s", e.config.APIEndpoint, endpoint)
 
 	var reqBody io.Reader
