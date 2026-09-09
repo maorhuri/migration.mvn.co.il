@@ -145,17 +145,24 @@ type EnhanceOrg struct {
 }
 
 // EnhanceWebsite represents a website in Enhance
+// EnhanceDomain represents a domain object in Enhance API
+type EnhanceDomain struct {
+	ID     string `json:"id"`
+	Domain string `json:"domain"`
+}
+
 type EnhanceWebsite struct {
-	ID           string `json:"id"`
-	Domain       string `json:"domain"`
-	Kind         string `json:"kind"`
-	Status       string `json:"status"`
-	ServerID     string `json:"serverId"`
-	AppServerID  string `json:"appServerId"`
-	DbServerID   string `json:"dbServerId"`
-	MailServerID string `json:"mailServerId"`
-	UnixUser     string `json:"unixUser"`
-	HomeDir      string `json:"homeDir"`
+	ID           string        `json:"id"`
+	Domain       EnhanceDomain `json:"domain"`
+	DomainStr    string        `json:"-"` // For convenience
+	Kind         string        `json:"kind"`
+	Status       string        `json:"status"`
+	ServerID     string        `json:"serverId"`
+	AppServerID  string        `json:"appServerId"`
+	DbServerID   string        `json:"dbServerId"`
+	MailServerID string        `json:"mailServerId"`
+	UnixUser     string        `json:"unixUser"`
+	HomeDir      string        `json:"homeDir"`
 }
 
 // EnhanceDatabase represents a database in Enhance
@@ -513,18 +520,31 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 
 // mapPHPVersion converts PHP version from DirectAdmin format to Enhance format
 func (e *Enhance) mapPHPVersion(version string) string {
-	// DirectAdmin formats: "8.1", "8.2", "7.4", etc.
+	// DirectAdmin formats: "8.1", "8.2", "7.4", "default", etc.
 	// Enhance formats: "php81", "php82", "php74", etc.
+
+	// Handle default/empty - use PHP 8.1 as default
+	if version == "" || version == "default" || version == "phpdefault" {
+		return "php81"
+	}
 
 	// Remove dots and add "php" prefix
 	version = strings.TrimPrefix(version, "php")
 	version = strings.Replace(version, ".", "", -1)
 
+	// Valid PHP versions for Enhance
+	validVersions := map[string]bool{
+		"56": true, "70": true, "71": true, "72": true, "73": true,
+		"74": true, "80": true, "81": true, "82": true, "83": true, "84": true,
+	}
+
 	// Validate it's a reasonable PHP version
-	if len(version) >= 2 {
+	if len(version) >= 2 && validVersions[version] {
 		return "php" + version
 	}
-	return ""
+
+	// Default to PHP 8.1 if invalid
+	return "php81"
 }
 
 // getWebsiteByDomain gets a website by domain name
@@ -543,7 +563,9 @@ func (e *Enhance) getWebsiteByDomain(ctx context.Context, orgID, domain string) 
 	}
 
 	for _, ws := range websitesResp.Items {
-		if ws.Domain == domain {
+		// Domain is now an object with a domain field
+		if ws.Domain.Domain == domain {
+			ws.DomainStr = ws.Domain.Domain
 			return &ws, nil
 		}
 	}
@@ -602,7 +624,7 @@ func (e *Enhance) ImportFiles(ctx context.Context, username string, sourcePath s
 
 		// Find matching website
 		for _, ws := range websitesResp.Items {
-			if ws.Domain == domainName {
+			if ws.Domain.Domain == domainName {
 				if err := e.uploadFilesToWebsite(ctx, &ws, localPath, progress); err != nil {
 					fmt.Printf("Warning: failed to upload files for %s: %v\n", domainName, err)
 				}
@@ -767,7 +789,7 @@ func (e *Enhance) ImportEmails(ctx context.Context, username string, emails []co
 		// Find website for this domain
 		var websiteID string
 		for _, ws := range websitesResp.Items {
-			if ws.Domain == domain {
+			if ws.Domain.Domain == domain {
 				websiteID = ws.ID
 				break
 			}
