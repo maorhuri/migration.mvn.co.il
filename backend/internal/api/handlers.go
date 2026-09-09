@@ -323,6 +323,31 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 				if ca.Email.Valid {
 					accounts[i].Email = ca.Email.String
 				}
+				// Extract databases and email_accounts from metadata
+				if len(ca.Metadata) > 0 {
+					var metadataMap map[string]interface{}
+					if err := json.Unmarshal(ca.Metadata, &metadataMap); err == nil {
+						if dbs, ok := metadataMap["databases"].([]interface{}); ok {
+							accounts[i].Databases = make([]string, len(dbs))
+							for j, db := range dbs {
+								if dbStr, ok := db.(string); ok {
+									accounts[i].Databases[j] = dbStr
+								}
+							}
+						}
+						if emails, ok := metadataMap["email_accounts"].([]interface{}); ok {
+							accounts[i].EmailAccounts = make([]string, len(emails))
+							for j, email := range emails {
+								if emailStr, ok := email.(string); ok {
+									accounts[i].EmailAccounts[j] = emailStr
+								}
+							}
+						}
+						if isWp, ok := metadataMap["is_wordpress"].(bool); ok {
+							accounts[i].IsWordPress = isWp
+						}
+					}
+				}
 			}
 			c.JSON(http.StatusOK, gin.H{
 				"accounts": accounts,
@@ -356,17 +381,20 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		commonAccounts := make([]common.Account, len(accounts))
 		for i, acc := range accounts {
 			commonAccounts[i] = common.Account{
-				Username:   acc.Username,
-				Domain:     acc.Domain,
-				Email:      acc.Email,
-				DiskUsage:  acc.DiskUsed,
-				DiskLimit:  acc.DiskLimit,
-				Suspended:  acc.Suspended,
-				PHPVersion: acc.PHPVersion,
-				DBSize:     acc.DBSize,
-				DBCount:    len(acc.Databases),
-				EmailCount: len(acc.EmailAccounts),
-				SiteType:   getSiteType(acc.IsWordPress),
+				Username:      acc.Username,
+				Domain:        acc.Domain,
+				Email:         acc.Email,
+				DiskUsage:     acc.DiskUsed,
+				DiskLimit:     acc.DiskLimit,
+				Suspended:     acc.Suspended,
+				PHPVersion:    acc.PHPVersion,
+				DBSize:        acc.DBSize,
+				DBCount:       len(acc.Databases),
+				EmailCount:    len(acc.EmailAccounts),
+				SiteType:      getSiteType(acc.IsWordPress),
+				Databases:     acc.Databases,
+				EmailAccounts: acc.EmailAccounts,
+				IsWordPress:   acc.IsWordPress,
 			}
 		}
 		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
@@ -417,17 +445,20 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 		commonAccounts := make([]common.Account, len(accounts))
 		for i, acc := range accounts {
 			commonAccounts[i] = common.Account{
-				Username:   acc.Username,
-				Domain:     acc.Domain,
-				Email:      acc.Email,
-				DiskUsage:  acc.DiskUsed,
-				DiskLimit:  acc.DiskLimit,
-				Suspended:  acc.Suspended,
-				PHPVersion: acc.PHPVersion,
-				DBSize:     acc.DBSize,
-				DBCount:    len(acc.Databases),
-				EmailCount: len(acc.EmailAccounts),
-				SiteType:   getSiteType(acc.IsWordPress),
+				Username:      acc.Username,
+				Domain:        acc.Domain,
+				Email:         acc.Email,
+				DiskUsage:     acc.DiskUsed,
+				DiskLimit:     acc.DiskLimit,
+				Suspended:     acc.Suspended,
+				PHPVersion:    acc.PHPVersion,
+				DBSize:        acc.DBSize,
+				DBCount:       len(acc.Databases),
+				EmailCount:    len(acc.EmailAccounts),
+				SiteType:      getSiteType(acc.IsWordPress),
+				Databases:     acc.Databases,
+				EmailAccounts: acc.EmailAccounts,
+				IsWordPress:   acc.IsWordPress,
 			}
 		}
 		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {

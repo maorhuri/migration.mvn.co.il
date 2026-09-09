@@ -635,7 +635,18 @@ func (d *Database) SaveServerAccounts(ctx context.Context, serverID string, acco
 	// Insert new accounts
 	for _, acc := range accounts {
 		id := uuid.New().String()
-		metadata, _ := json.Marshal(acc.Metadata)
+
+		// Store databases and email_accounts in metadata
+		metadataMap := make(map[string]interface{})
+		if acc.Metadata != nil {
+			for k, v := range acc.Metadata {
+				metadataMap[k] = v
+			}
+		}
+		metadataMap["databases"] = acc.Databases
+		metadataMap["email_accounts"] = acc.EmailAccounts
+		metadataMap["is_wordpress"] = acc.IsWordPress
+		metadata, _ := json.Marshal(metadataMap)
 
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO server_accounts (id, server_id, username, domain, email, disk_usage, disk_limit, 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Dialog } from '@headlessui/react';
 import {
   CheckCircleIcon,
   GlobeAltIcon,
@@ -10,6 +11,8 @@ import {
   ArrowPathIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  EnvelopeIcon,
+  CircleStackIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, refreshServerAccounts } from '../api/client';
@@ -51,6 +54,8 @@ export default function NewMigration() {
   const [sortField, setSortField] = useState<string>('domain');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [refreshingAccounts, setRefreshingAccounts] = useState(false);
+  const [emailModalAccount, setEmailModalAccount] = useState<Account | null>(null);
+  const [dbModalAccount, setDbModalAccount] = useState<Account | null>(null);
 
   const [formData, setFormData] = useState({
     source_server_id: '',
@@ -676,10 +681,28 @@ export default function NewMigration() {
                       <div className="col-span-1 text-center font-medium">{account.disk_used || '-'}</div>
                       <div className="col-span-1 text-center text-gray-600">{account.db_size || '-'}</div>
                       <div className="col-span-1 text-center">
-                        {account.databases?.length || 0}
+                        {account.databases && account.databases.length > 0 ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDbModalAccount(account); }}
+                            className="text-blue-600 hover:underline"
+                          >
+                            {account.databases.length}
+                          </button>
+                        ) : (
+                          <span>0</span>
+                        )}
                       </div>
                       <div className="col-span-2 text-center">
-                        {account.email_accounts?.length || 0} emails
+                        {account.email_accounts && account.email_accounts.length > 0 ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setEmailModalAccount(account); }}
+                            className="text-blue-600 hover:underline"
+                          >
+                            {account.email_accounts.length} emails
+                          </button>
+                        ) : (
+                          <span>0 emails</span>
+                        )}
                       </div>
                       <div className="col-span-1 text-center">
                         {account.suspended ? (
@@ -1151,6 +1174,84 @@ export default function NewMigration() {
           </div>
         </div>
       )}
+
+      {/* Email Accounts Modal */}
+      <Dialog open={!!emailModalAccount} onClose={() => setEmailModalAccount(null)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
+            <div className="p-6">
+              <div className="flex items-center mb-4">
+                <EnvelopeIcon className="h-6 w-6 text-blue-600 mr-2" />
+                <Dialog.Title className="text-lg font-semibold text-gray-900">
+                  Email Accounts - {emailModalAccount?.domain}
+                </Dialog.Title>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {emailModalAccount?.email_accounts && emailModalAccount.email_accounts.length > 0 ? (
+                  <ul className="space-y-2">
+                    {emailModalAccount.email_accounts.map((email, index) => (
+                      <li key={index} className="flex items-center px-3 py-2 bg-gray-50 rounded">
+                        <EnvelopeIcon className="h-4 w-4 text-gray-400 mr-2" />
+                        <span className="text-sm">{email}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500 text-center py-4">No email accounts</p>
+                )}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => setEmailModalAccount(null)}
+                  className="btn btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+
+      {/* Databases Modal */}
+      <Dialog open={!!dbModalAccount} onClose={() => setDbModalAccount(null)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
+            <div className="p-6">
+              <div className="flex items-center mb-4">
+                <CircleStackIcon className="h-6 w-6 text-blue-600 mr-2" />
+                <Dialog.Title className="text-lg font-semibold text-gray-900">
+                  Databases - {dbModalAccount?.domain}
+                </Dialog.Title>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {dbModalAccount?.databases && dbModalAccount.databases.length > 0 ? (
+                  <ul className="space-y-2">
+                    {dbModalAccount.databases.map((db, index) => (
+                      <li key={index} className="flex items-center px-3 py-2 bg-gray-50 rounded">
+                        <CircleStackIcon className="h-4 w-4 text-gray-400 mr-2" />
+                        <span className="text-sm font-mono">{db}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500 text-center py-4">No databases</p>
+                )}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => setDbModalAccount(null)}
+                  className="btn btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
     </div>
   );
 }

@@ -7,9 +7,10 @@ import {
   ServerStackIcon,
   CheckCircleIcon,
   EyeIcon,
+  ArrowPathIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, createServer, deleteServer, testServerConnection, getSSHKeys } from '../api/client';
+import { getServers, createServer, deleteServer, testServerConnection, getSSHKeys, refreshServerAccounts } from '../api/client';
 import type { Server, SSHKey } from '../types';
 
 export default function Servers() {
@@ -19,6 +20,10 @@ export default function Servers() {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [testingServer, setTestingServer] = useState<string | null>(null);
+  const [refreshingServer, setRefreshingServer] = useState<string | null>(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [serverToDelete, setServerToDelete] = useState<Server | null>(null);
+  const [deleteConfirmName, setDeleteConfirmName] = useState('');
 
   const [formData, setFormData] = useState({
     name: '',
@@ -79,11 +84,19 @@ export default function Servers() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this server?')) return;
+  const openDeleteModal = (server: Server) => {
+    setServerToDelete(server);
+    setDeleteConfirmName('');
+    setDeleteModalOpen(true);
+  };
+
+  const handleDelete = async () => {
+    if (!serverToDelete) return;
     try {
-      await deleteServer(id);
+      await deleteServer(serverToDelete.id);
       toast.success('Server deleted');
+      setDeleteModalOpen(false);
+      setServerToDelete(null);
       fetchData();
     } catch (error) {
       toast.error('Failed to delete server');
@@ -103,6 +116,23 @@ export default function Servers() {
       toast.error('Connection test failed');
     } finally {
       setTestingServer(null);
+    }
+  };
+
+  const handleRefresh = async (id: string, panelType: string) => {
+    // Skip refresh for Enhance servers (they have clusters)
+    if (panelType === 'enhance') {
+      toast.error('Enhance servers use cluster - refresh from server details');
+      return;
+    }
+    setRefreshingServer(id);
+    try {
+      await refreshServerAccounts(id);
+      toast.success('Accounts refreshed!');
+    } catch (error) {
+      toast.error('Failed to refresh accounts');
+    } finally {
+      setRefreshingServer(null);
     }
   };
 
@@ -173,12 +203,25 @@ export default function Servers() {
                     <p className="text-sm text-gray-500">{panelTypeLabels[server.panel_type]}</p>
                   </div>
                 </div>
-                <button
-                  onClick={() => handleDelete(server.id)}
-                  className="text-gray-400 hover:text-red-600 transition-colors"
-                >
-                  <TrashIcon className="w-5 h-5" />
-                </button>
+                <div className="flex items-center space-x-2">
+                  {server.panel_type !== 'enhance' && (
+                    <button
+                      onClick={() => handleRefresh(server.id, server.panel_type)}
+                      disabled={refreshingServer === server.id}
+                      className="text-gray-400 hover:text-green-600 transition-colors"
+                      title="Refresh accounts from server"
+                    >
+                      <ArrowPathIcon className={`w-5 h-5 ${refreshingServer === server.id ? 'animate-spin' : ''}`} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => openDeleteModal(server)}
+                    className="text-gray-400 hover:text-red-600 transition-colors"
+                    title="Delete server"
+                  >
+                    <TrashIcon className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2 text-sm">
@@ -428,6 +471,48 @@ export default function Servers() {
                   </button>
                 </div>
               </form>
+            </div>
+          </Dialog.Panel>
+        </div>
+      </Dialog>
+
+      {/* Delete Confirmation Modal */}
+      <Dialog open={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
+        <div className="fixed inset-0 flex items-center justify-center p-4">
+          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
+            <div className="p-6">
+              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-2">
+                Delete Server
+              </Dialog.Title>
+              <p className="text-gray-600 mb-4">
+                This action cannot be undone. To confirm, please type the server name:
+              </p>
+              <p className="font-mono bg-gray-100 px-3 py-2 rounded mb-4 text-center font-semibold">
+                {serverToDelete?.name}
+              </p>
+              <input
+                type="text"
+                value={deleteConfirmName}
+                onChange={(e) => setDeleteConfirmName(e.target.value)}
+                placeholder="Type server name to confirm"
+                className="input w-full mb-4"
+              />
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={() => setDeleteModalOpen(false)}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDelete}
+                  disabled={deleteConfirmName !== serverToDelete?.name}
+                  className="btn bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Delete Server
+                </button>
+              </div>
             </div>
           </Dialog.Panel>
         </div>

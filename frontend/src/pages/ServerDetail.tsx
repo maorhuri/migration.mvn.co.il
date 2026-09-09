@@ -61,6 +61,8 @@ export default function ServerDetail() {
     if (id) {
       loadServer();
       loadSSHKeys();
+      // Auto-load cached accounts
+      loadAccounts();
     }
   }, [id]);
 
@@ -115,7 +117,6 @@ export default function ServerDetail() {
       if (result.success) {
         setConnectionStatus('success');
         toast.success('Connection successful!');
-        loadAccounts();
         loadServerInfo();
       } else {
         setConnectionStatus('failed');
@@ -286,30 +287,28 @@ export default function ServerDetail() {
           </button>
           <button
             onClick={handleTestConnection}
-            disabled={testing || loadingAccounts}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            disabled={testing}
+            className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
           >
             {testing ? (
               <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
             ) : (
-              <ServerStackIcon className="h-5 w-5 mr-2" />
+              <CheckCircleIcon className="h-5 w-5 mr-2" />
             )}
-            {testing ? 'Testing...' : 'Test & Load Data'}
+            {testing ? 'Testing...' : 'Test Connection'}
           </button>
-          {accounts && accounts.accounts.length > 0 && (
-            <button
-              onClick={handleRefreshAccounts}
-              disabled={loadingAccounts}
-              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
-            >
-              {loadingAccounts ? (
-                <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
-              ) : (
-                <ArrowPathIcon className="h-5 w-5 mr-2" />
-              )}
-              {loadingAccounts ? 'Refreshing...' : 'Refresh Accounts'}
-            </button>
-          )}
+          <button
+            onClick={handleRefreshAccounts}
+            disabled={loadingAccounts}
+            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loadingAccounts ? (
+              <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
+            ) : (
+              <ArrowPathIcon className="h-5 w-5 mr-2" />
+            )}
+            {loadingAccounts ? 'Refreshing...' : 'Refresh Accounts'}
+          </button>
         </div>
       </div>
 
@@ -511,14 +510,15 @@ export default function ServerDetail() {
             ))}
           </div>
         </div>
-      ) : connectionStatus === 'success' ? (
+      ) : loadingAccounts ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center">
-          <p className="text-gray-500">No accounts found on this server</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-500">Loading accounts...</p>
         </div>
       ) : (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center">
           <ServerStackIcon className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-          <p className="text-gray-500 mb-4">Click "Test & Load Data" to connect and view accounts</p>
+          <p className="text-gray-500 mb-4">No cached accounts. Click "Refresh Accounts" to load from server</p>
         </div>
       )}
 
