@@ -74,8 +74,8 @@ func (e *Enhance) TestConnection(ctx context.Context) error {
 		return fmt.Errorf("not connected")
 	}
 
-	// Test API connection
-	_, err := e.apiRequest(ctx, "GET", "/orgs", nil)
+	// Test API connection using /servers endpoint (always accessible)
+	_, err := e.apiRequest(ctx, "GET", "/servers", nil)
 	if err != nil {
 		return fmt.Errorf("API connection failed: %w", err)
 	}
