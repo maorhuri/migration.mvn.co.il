@@ -521,22 +521,13 @@ func (e *Enhance) ImportFiles(ctx context.Context, username string, sourcePath s
 		return fmt.Errorf("not connected")
 	}
 
-	// Get the website info to find the home directory
-	accounts, err := e.ListAccounts(ctx)
-	if err != nil {
-		return err
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-
-	var orgID string
-	for _, acc := range accounts {
-		if acc.Username == username {
-			orgID = acc.Metadata["org_id"]
-			break
-		}
-	}
-
 	if orgID == "" {
-		return fmt.Errorf("organization not found for user: %s", username)
+		return fmt.Errorf("enhance_org_id not configured")
 	}
 
 	// Get websites for this org
@@ -619,22 +610,13 @@ func (e *Enhance) ImportDatabases(ctx context.Context, username string, database
 		return fmt.Errorf("not connected")
 	}
 
-	// Get org ID
-	accounts, err := e.ListAccounts(ctx)
-	if err != nil {
-		return err
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-
-	var orgID string
-	for _, acc := range accounts {
-		if acc.Username == username {
-			orgID = acc.Metadata["org_id"]
-			break
-		}
-	}
-
 	if orgID == "" {
-		return fmt.Errorf("organization not found for user: %s", username)
+		return fmt.Errorf("enhance_org_id not configured")
 	}
 
 	// Get first website for this org
@@ -714,22 +696,13 @@ func (e *Enhance) ImportEmails(ctx context.Context, username string, emails []co
 		return fmt.Errorf("not connected")
 	}
 
-	// Get org ID
-	accounts, err := e.ListAccounts(ctx)
-	if err != nil {
-		return err
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-
-	var orgID string
-	for _, acc := range accounts {
-		if acc.Username == username {
-			orgID = acc.Metadata["org_id"]
-			break
-		}
-	}
-
 	if orgID == "" {
-		return fmt.Errorf("organization not found for user: %s", username)
+		return fmt.Errorf("enhance_org_id not configured")
 	}
 
 	// Get websites
@@ -790,22 +763,13 @@ func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs 
 		return fmt.Errorf("not connected")
 	}
 
-	// Get org ID
-	accounts, err := e.ListAccounts(ctx)
-	if err != nil {
-		return err
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-
-	var orgID string
-	for _, acc := range accounts {
-		if acc.Username == username {
-			orgID = acc.Metadata["org_id"]
-			break
-		}
-	}
-
 	if orgID == "" {
-		return fmt.Errorf("organization not found for user: %s", username)
+		return fmt.Errorf("enhance_org_id not configured")
 	}
 
 	// Get first website for this org
@@ -890,22 +854,13 @@ func (e *Enhance) SetupDomain(ctx context.Context, username string, domain *comm
 		return fmt.Errorf("not connected")
 	}
 
-	// Get org ID
-	accounts, err := e.ListAccounts(ctx)
-	if err != nil {
-		return err
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-
-	var orgID string
-	for _, acc := range accounts {
-		if acc.Username == username {
-			orgID = acc.Metadata["org_id"]
-			break
-		}
-	}
-
 	if orgID == "" {
-		return fmt.Errorf("organization not found for user: %s", username)
+		return fmt.Errorf("enhance_org_id not configured")
 	}
 
 	return e.createWebsite(ctx, orgID, domain)
@@ -917,39 +872,33 @@ func (e *Enhance) SetupSSL(ctx context.Context, domain string, cert *common.SSLC
 		return fmt.Errorf("not connected")
 	}
 
-	// Find the website
-	accounts, err := e.ListAccounts(ctx)
+	// Get org_id from config metadata
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
+	}
+	if orgID == "" {
+		return fmt.Errorf("enhance_org_id not configured")
+	}
+
+	website, err := e.getWebsiteByDomain(ctx, orgID, domain)
 	if err != nil {
-		return err
+		return fmt.Errorf("website not found for domain %s: %w", domain, err)
 	}
 
-	for _, acc := range accounts {
-		orgID := acc.Metadata["org_id"]
-		if orgID == "" {
-			continue
-		}
-
-		website, err := e.getWebsiteByDomain(ctx, orgID, domain)
-		if err != nil {
-			continue
-		}
-
-		// Upload SSL certificate
-		sslReq := map[string]interface{}{
-			"cert":  cert.Certificate,
-			"key":   cert.PrivateKey,
-			"chain": cert.CABundle,
-		}
-
-		endpoint := fmt.Sprintf("/orgs/%s/websites/%s/ssl", orgID, website.ID)
-		if _, err := e.apiRequest(ctx, "POST", endpoint, sslReq); err != nil {
-			return fmt.Errorf("failed to setup SSL: %w", err)
-		}
-
-		return nil
+	// Upload SSL certificate
+	sslReq := map[string]interface{}{
+		"cert":  cert.Certificate,
+		"key":   cert.PrivateKey,
+		"chain": cert.CABundle,
 	}
 
-	return fmt.Errorf("website not found for domain: %s", domain)
+	endpoint := fmt.Sprintf("/orgs/%s/websites/%s/ssl", orgID, website.ID)
+	if _, err := e.apiRequest(ctx, "POST", endpoint, sslReq); err != nil {
+		return fmt.Errorf("failed to setup SSL: %w", err)
+	}
+
+	return nil
 }
 
 // ExportAccount exports all data for an account (for backup purposes)
