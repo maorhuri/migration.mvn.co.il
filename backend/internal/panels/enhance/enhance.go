@@ -406,19 +406,25 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 		}
 	}
 
-	totalSteps := 6
+	totalSteps := 5
 	currentStep := 0
 
-	// 1. Create organization
-	sendProgress("Creating organization", currentStep, totalSteps)
-	if err := e.CreateAccount(ctx, &data.Account, password); err != nil {
-		return nil, fmt.Errorf("failed to create account: %w", err)
+	// Get org_id from config metadata (already exists in Enhance)
+	orgID := ""
+	if e.config != nil && e.config.Metadata != nil {
+		orgID = e.config.Metadata["enhance_org_id"]
 	}
-	currentStep++
+	if orgID == "" {
+		return nil, fmt.Errorf("enhance_org_id not configured - please set it in server settings")
+	}
 
-	orgID := data.Account.Metadata["org_id"]
+	// Store org_id in account metadata for later use
+	if data.Account.Metadata == nil {
+		data.Account.Metadata = make(map[string]string)
+	}
+	data.Account.Metadata["org_id"] = orgID
 
-	// 2. Create websites (domains)
+	// 1. Create websites (domains)
 	sendProgress("Creating websites", currentStep, totalSteps)
 	for _, domain := range data.Domains {
 		if err := e.createWebsite(ctx, orgID, &domain); err != nil {
@@ -427,7 +433,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	}
 	currentStep++
 
-	// 3. Import databases
+	// 2. Import databases
 	sendProgress("Importing databases", currentStep, totalSteps)
 	if len(data.Databases) > 0 {
 		dbDir := filepath.Join(filepath.Dir(data.FilesPath), "databases")
@@ -437,7 +443,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	}
 	currentStep++
 
-	// 4. Import emails
+	// 3. Import emails
 	sendProgress("Importing email accounts", currentStep, totalSteps)
 	if len(data.Emails) > 0 {
 		if err := e.ImportEmails(ctx, data.Account.Username, data.Emails); err != nil {
@@ -446,7 +452,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	}
 	currentStep++
 
-	// 5. Import files
+	// 4. Import files
 	sendProgress("Importing files", currentStep, totalSteps)
 	if data.FilesPath != "" {
 		if err := e.ImportFiles(ctx, data.Account.Username, data.FilesPath, progress); err != nil {
@@ -455,7 +461,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	}
 	currentStep++
 
-	// 6. Setup SSL certificates
+	// 5. Setup SSL certificates
 	sendProgress("Setting up SSL certificates", currentStep, totalSteps)
 	for _, domain := range data.Domains {
 		if domain.SSL != nil {
