@@ -589,5 +589,18 @@ func (d *Database) ToConnectionConfig(server *Server) *common.ConnectionConfig {
 		config.APIEndpoint = server.APIEndpoint.String
 	}
 
+	// Parse and copy metadata
+	if len(server.Metadata) > 0 {
+		config.Metadata = make(map[string]string)
+		var rawMetadata map[string]interface{}
+		if err := json.Unmarshal(server.Metadata, &rawMetadata); err == nil {
+			for k, v := range rawMetadata {
+				if strVal, ok := v.(string); ok {
+					config.Metadata[k] = strVal
+				}
+			}
+		}
+	}
+
 	return config
 }

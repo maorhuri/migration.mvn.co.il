@@ -9,7 +9,7 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, getMigrationLogs } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration } from '../api/client';
 import type { Server, Account } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
@@ -177,57 +177,62 @@ export default function NewMigration() {
         // Poll for migration status
         let completed = false;
         const startTime = Date.now();
+        let lastStepIndex = -1;
+
+        // Start first step as running
+        updateStepStatus(0, 'running');
 
         while (!completed) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Poll every 2 seconds
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every 1 second
 
           try {
             const status = await getMigration(migration.id);
-            const logs = await getMigrationLogs(migration.id);
 
             // Update UI based on current step from backend
             const currentStepName = status.current_step || '';
             
             // Map backend step names to UI step indices
-            const stepMapping: Record<string, number> = {
+            const stepMapping: [string, number][] = [
               // Export phase
-              'Exporting domains': 0,
-              'Exporting databases': 1,
-              'Exporting emails': 2,
-              'Exporting cron': 3,
-              'Exporting files': 4,
-              'Downloading files': 4,
+              ['Exporting domains', 0],
+              ['Exporting databases', 1],
+              ['Exporting emails', 2],
+              ['Exporting cron', 3],
+              ['Exporting files', 4],
+              ['Downloading files', 4],
+              ['Export completed', 4],
               // Import phase
-              'Creating websites': 5,
-              'Creating website': 5,
-              'Importing databases': 6,
-              'Importing email': 7,
-              'Importing files': 8,
-              'Uploading files': 8,
-              'Fixing file permissions': 9,
-              'Fixing permissions': 9,
-              'Cleaning up': 10,
-              'Migration completed': 10,
-            };
+              ['Starting import', 5],
+              ['Creating websites', 5],
+              ['Creating website', 5],
+              ['Importing databases', 6],
+              ['Importing email', 7],
+              ['Importing files', 8],
+              ['Uploading files', 8],
+              ['Fixing file permissions', 9],
+              ['Fixing permissions', 9],
+              ['Cleaning up', 10],
+              ['Migration completed', 10],
+            ];
 
             // Find matching step and update UI
             let matchedStepIndex = -1;
-            for (const [stepName, stepIndex] of Object.entries(stepMapping)) {
+            for (const [stepName, stepIndex] of stepMapping) {
               if (currentStepName.toLowerCase().includes(stepName.toLowerCase())) {
                 matchedStepIndex = stepIndex;
                 break;
               }
             }
 
-            if (matchedStepIndex >= 0 && matchedStepIndex !== currentMigrationStep) {
-              // Mark previous steps as completed, current as running
-              for (let i = 0; i <= matchedStepIndex; i++) {
-                if (i < matchedStepIndex) {
-                  updateStepStatus(i, 'completed');
-                } else {
-                  updateStepStatus(i, 'running');
-                }
+            // Update steps if we moved forward
+            if (matchedStepIndex >= 0 && matchedStepIndex > lastStepIndex) {
+              // Mark all previous steps as completed
+              for (let i = 0; i < matchedStepIndex; i++) {
+                updateStepStatus(i, 'completed');
               }
+              // Mark current step as running
+              updateStepStatus(matchedStepIndex, 'running');
+              lastStepIndex = matchedStepIndex;
               setCurrentMigrationStep(matchedStepIndex);
               setOverallProgress(Math.round(((matchedStepIndex + 1) / initialMigrationSteps.length) * 100));
             }
@@ -240,40 +245,38 @@ export default function NewMigration() {
               }
               setOverallProgress(100);
             } else if (status.status === 'failed') {
-              // Find which step failed based on the error message
               const errorMsg = status.error || 'Migration failed';
-              let failedStep = currentMigrationStep;
               
-              // Determine failed step from error message
-              if (errorMsg.includes('export')) {
-                if (errorMsg.includes('database')) failedStep = 1;
-                else if (errorMsg.includes('email')) failedStep = 2;
-                else if (errorMsg.includes('cron')) failedStep = 3;
-                else if (errorMsg.includes('file')) failedStep = 4;
-                else failedStep = 0;
-              } else if (errorMsg.includes('import')) {
-                if (errorMsg.includes('website') || errorMsg.includes('create')) failedStep = 5;
-                else if (errorMsg.includes('database')) failedStep = 6;
-                else if (errorMsg.includes('email')) failedStep = 7;
-                else if (errorMsg.includes('file')) failedStep = 8;
-                else failedStep = 5;
+              // Determine which step failed based on lastStepIndex and error message
+              let failedStep = lastStepIndex >= 0 ? lastStepIndex : 0;
+              
+              // If error mentions import, it's in the import phase (step 5+)
+              if (errorMsg.toLowerCase().includes('import')) {
+                // Export was successful, fail on appropriate import step
+                if (errorMsg.toLowerCase().includes('enhance_org_id') || 
+                    errorMsg.toLowerCase().includes('website') || 
+                    errorMsg.toLowerCase().includes('create')) {
+                  failedStep = 5; // Create Website on Enhance
+                } else if (errorMsg.toLowerCase().includes('database')) {
+                  failedStep = 6;
+                } else if (errorMsg.toLowerCase().includes('email')) {
+                  failedStep = 7;
+                } else if (errorMsg.toLowerCase().includes('file')) {
+                  failedStep = 8;
+                } else {
+                  failedStep = 5; // Default to first import step
+                }
               }
               
-              // Mark steps up to failed as completed, failed step as error
+              // Mark all steps before failed as completed
               for (let i = 0; i < failedStep; i++) {
                 updateStepStatus(i, 'completed');
               }
+              // Mark only the failed step with error
               updateStepStatus(failedStep, 'error', errorMsg);
               setCurrentMigrationStep(failedStep);
+              setOverallProgress(Math.round((failedStep / initialMigrationSteps.length) * 100));
               throw new Error(errorMsg);
-            }
-
-            // Check for errors in logs
-            const errorLogs = logs.filter(log => log.level === 'error');
-            if (errorLogs.length > 0) {
-              const lastError = errorLogs[errorLogs.length - 1];
-              // Don't throw immediately, let the status check handle it
-              console.error('Migration error:', lastError.message);
             }
 
           } catch (pollError) {
