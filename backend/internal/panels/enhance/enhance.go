@@ -494,6 +494,14 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		websiteReq["dbServerId"] = e.targetClusterServerID
 	}
 
+	// Set PHP version from source domain if available
+	if domain.PHPVersion != "" {
+		phpVersion := e.mapPHPVersion(domain.PHPVersion)
+		if phpVersion != "" {
+			websiteReq["phpVersion"] = phpVersion
+		}
+	}
+
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
 	_, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
 	if err != nil {
@@ -501,6 +509,22 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 	}
 
 	return nil
+}
+
+// mapPHPVersion converts PHP version from DirectAdmin format to Enhance format
+func (e *Enhance) mapPHPVersion(version string) string {
+	// DirectAdmin formats: "8.1", "8.2", "7.4", etc.
+	// Enhance formats: "php81", "php82", "php74", etc.
+
+	// Remove dots and add "php" prefix
+	version = strings.TrimPrefix(version, "php")
+	version = strings.Replace(version, ".", "", -1)
+
+	// Validate it's a reasonable PHP version
+	if len(version) >= 2 {
+		return "php" + version
+	}
+	return ""
 }
 
 // getWebsiteByDomain gets a website by domain name
