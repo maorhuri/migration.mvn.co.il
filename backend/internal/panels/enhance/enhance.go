@@ -499,6 +499,10 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 	if e.targetClusterServerID != "" {
 		websiteReq["appServerId"] = e.targetClusterServerID
 		websiteReq["dbServerId"] = e.targetClusterServerID
+		fmt.Printf("Creating website %s on cluster server: appServerId=%s, dbServerId=%s\n",
+			domain.Name, e.targetClusterServerID, e.targetClusterServerID)
+	} else {
+		fmt.Printf("WARNING: Creating website %s WITHOUT cluster server ID - will use default placement!\n", domain.Name)
 	}
 
 	// Set PHP version from source domain if available
@@ -508,6 +512,8 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 			websiteReq["phpVersion"] = phpVersion
 		}
 	}
+
+	fmt.Printf("Website creation request: %+v\n", websiteReq)
 
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
 	_, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
