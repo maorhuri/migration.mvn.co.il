@@ -597,25 +597,20 @@ func (e *Enhance) uploadFilesToWebsite(ctx context.Context, website *EnhanceWebs
 		localPath = publicHtmlLocal
 	}
 
-	progressChan := make(chan int64, 100)
-	go func() {
-		var totalBytes int64
-		for bytes := range progressChan {
-			totalBytes += bytes
-			if progress != nil {
-				progress <- common.MigrationProgress{
-					Status:           "running",
-					CurrentStep:      fmt.Sprintf("Uploading files to %s", website.Domain),
-					BytesTransferred: totalBytes,
-				}
-			}
+	if progress != nil {
+		progress <- common.MigrationProgress{
+			Status:      "running",
+			CurrentStep: fmt.Sprintf("Uploading files to %s", website.Domain),
 		}
-	}()
+	}
 
-	err := e.sshClient.UploadDirectory(ctx, localPath, remotePath, progressChan)
-	close(progressChan)
+	// Use rsync/tar for faster upload
+	err := e.sshClient.RsyncUploadWithKey(ctx, localPath, remotePath)
+	if err != nil {
+		return fmt.Errorf("failed to upload files: %w", err)
+	}
 
-	return err
+	return nil
 }
 
 // ImportDatabases imports databases to Enhance

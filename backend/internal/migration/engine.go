@@ -120,6 +120,13 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 
 	defer close(progressChan)
 
+	// Always cleanup local work directory on exit (success or failure)
+	defer func() {
+		if err := os.RemoveAll(workDir); err != nil {
+			e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Local cleanup warning: %v", err), nil)
+		}
+	}()
+
 	// Phase 1: Export from source
 	e.db.AddMigrationLog(ctx, migrationID, "info", "Starting export from source server", map[string]interface{}{
 		"source": sourceServer.Name,
@@ -169,20 +176,17 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		CurrentStep: "Cleaning up temporary files",
 	}
 
-	// Cleanup on source server
+	// Cleanup on source server (remove any temp files created during export)
 	if err := e.cleanupSourceServer(ctx, sourceServer, workDir); err != nil {
 		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Source cleanup warning: %v", err), nil)
 	}
 
-	// Cleanup on target server
+	// Cleanup on target server (remove any temp files created during import)
 	if err := e.cleanupTargetServer(ctx, targetServer); err != nil {
 		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Target cleanup warning: %v", err), nil)
 	}
 
-	// Cleanup local work directory
-	if err := os.RemoveAll(workDir); err != nil {
-		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Local cleanup warning: %v", err), nil)
-	}
+	// Local work directory cleanup is handled by defer at the start of runMigration
 
 	// Mark as completed
 	now := time.Now()
