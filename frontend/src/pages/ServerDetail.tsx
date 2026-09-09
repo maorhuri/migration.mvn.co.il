@@ -13,7 +13,7 @@ import {
   PencilIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServer, getServerAccounts, getServerInfo, testServerConnection, updateServer, getSSHKeys } from '../api/client';
+import { getServer, getServerAccounts, getServerInfo, testServerConnection, updateServer, getSSHKeys, refreshServerAccounts } from '../api/client';
 import type { Server, Account, SSHKey } from '../types';
 
 interface ServerAccounts {
@@ -137,6 +137,20 @@ export default function ServerDetail() {
       setAccounts(data);
     } catch (error) {
       toast.error('Failed to load accounts');
+    } finally {
+      setLoadingAccounts(false);
+    }
+  };
+
+  const handleRefreshAccounts = async () => {
+    if (!id) return;
+    setLoadingAccounts(true);
+    try {
+      const data = await refreshServerAccounts(id);
+      setAccounts(data);
+      toast.success('Accounts refreshed successfully');
+    } catch (error) {
+      toast.error('Failed to refresh accounts');
     } finally {
       setLoadingAccounts(false);
     }
@@ -272,7 +286,7 @@ export default function ServerDetail() {
           </button>
           <button
             onClick={handleTestConnection}
-            disabled={testing}
+            disabled={testing || loadingAccounts}
             className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
             {testing ? (
@@ -282,6 +296,20 @@ export default function ServerDetail() {
             )}
             {testing ? 'Testing...' : 'Test & Load Data'}
           </button>
+          {accounts && accounts.accounts.length > 0 && (
+            <button
+              onClick={handleRefreshAccounts}
+              disabled={loadingAccounts}
+              className="flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+            >
+              {loadingAccounts ? (
+                <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
+              ) : (
+                <ArrowPathIcon className="h-5 w-5 mr-2" />
+              )}
+              {loadingAccounts ? 'Refreshing...' : 'Refresh Accounts'}
+            </button>
+          )}
         </div>
       </div>
 

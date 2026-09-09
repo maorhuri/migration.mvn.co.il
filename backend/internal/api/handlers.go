@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/migration-tool/backend/internal/migration"
+	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/storage"
 	"github.com/migration-tool/backend/pkg/logger"
 )
@@ -48,6 +49,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.DELETE("/:id", h.deleteServer)
 			servers.POST("/:id/test", h.testServerConnection)
 			servers.GET("/:id/accounts", h.listServerAccounts)
+			servers.POST("/:id/accounts/refresh", h.refreshServerAccounts)
 			servers.GET("/:id/info", h.getServerInfo)
 			servers.GET("/:id/cluster-servers", h.listClusterServers)
 		}
@@ -299,17 +301,42 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		return
 	}
 
-	// Get decrypted password if using password auth
-	var password string
-	if server.AuthMethod == "password" && server.PasswordEncrypted.Valid {
-		password, err = h.db.GetDecryptedPassword(c.Request.Context(), id)
-		if err != nil {
-			h.logger.Error("Failed to decrypt password", err, nil)
+	// Check if we have cached accounts (skip for Enhance which has clusters)
+	if server.PanelType != "enhance" {
+		cachedAccounts, err := h.db.GetServerAccounts(c.Request.Context(), id)
+		if err == nil && len(cachedAccounts) > 0 {
+			// Convert cached accounts to common.Account format
+			accounts := make([]common.Account, len(cachedAccounts))
+			for i, ca := range cachedAccounts {
+				accounts[i] = common.Account{
+					Username:   ca.Username,
+					Domain:     ca.Domain,
+					DiskUsage:  ca.DiskUsage.String,
+					DiskLimit:  ca.DiskLimit.String,
+					DBCount:    ca.DBCount,
+					DBSize:     ca.DBSize.String,
+					EmailCount: ca.EmailCount,
+					PHPVersion: ca.PHPVersion.String,
+					SiteType:   ca.SiteType.String,
+					Suspended:  ca.Suspended,
+				}
+				if ca.Email.Valid {
+					accounts[i].Email = ca.Email.String
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"accounts": accounts,
+				"total":    len(accounts),
+				"cached":   true,
+			})
+			return
 		}
 	}
 
-	// Get accounts based on panel type
-	h.logger.Info("Fetching accounts", map[string]interface{}{
+	// No cache, fetch from server
+	password, _ := h.db.GetDecryptedPassword(c.Request.Context(), id)
+
+	h.logger.Info("Fetching accounts from server", map[string]interface{}{
 		"server_id":  id,
 		"panel_type": server.PanelType,
 	})
@@ -323,6 +350,30 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		return
 	}
 
+	// Cache the accounts (skip for Enhance)
+	if server.PanelType != "enhance" && len(accounts) > 0 {
+		// Convert AccountInfo to common.Account for caching
+		commonAccounts := make([]common.Account, len(accounts))
+		for i, acc := range accounts {
+			commonAccounts[i] = common.Account{
+				Username:   acc.Username,
+				Domain:     acc.Domain,
+				Email:      acc.Email,
+				DiskUsage:  acc.DiskUsed,
+				DiskLimit:  acc.DiskLimit,
+				Suspended:  acc.Suspended,
+				PHPVersion: acc.PHPVersion,
+				DBSize:     acc.DBSize,
+				DBCount:    len(acc.Databases),
+				EmailCount: len(acc.EmailAccounts),
+				SiteType:   getSiteType(acc.IsWordPress),
+			}
+		}
+		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
+			h.logger.Error("Failed to cache accounts", err, nil)
+		}
+	}
+
 	h.logger.Info("Accounts fetched", map[string]interface{}{
 		"server_id": id,
 		"count":     len(accounts),
@@ -331,7 +382,72 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"accounts": accounts,
 		"total":    len(accounts),
+		"cached":   false,
 	})
+}
+
+// refreshServerAccounts forces a refresh of cached accounts
+func (h *Handler) refreshServerAccounts(c *gin.Context) {
+	id := c.Param("id")
+
+	server, err := h.db.GetServer(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	password, _ := h.db.GetDecryptedPassword(c.Request.Context(), id)
+
+	h.logger.Info("Refreshing accounts from server", map[string]interface{}{
+		"server_id":  id,
+		"panel_type": server.PanelType,
+	})
+
+	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	if err != nil {
+		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
+			"server_id": id,
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Save to cache (skip for Enhance)
+	if server.PanelType != "enhance" && len(accounts) > 0 {
+		commonAccounts := make([]common.Account, len(accounts))
+		for i, acc := range accounts {
+			commonAccounts[i] = common.Account{
+				Username:   acc.Username,
+				Domain:     acc.Domain,
+				Email:      acc.Email,
+				DiskUsage:  acc.DiskUsed,
+				DiskLimit:  acc.DiskLimit,
+				Suspended:  acc.Suspended,
+				PHPVersion: acc.PHPVersion,
+				DBSize:     acc.DBSize,
+				DBCount:    len(acc.Databases),
+				EmailCount: len(acc.EmailAccounts),
+				SiteType:   getSiteType(acc.IsWordPress),
+			}
+		}
+		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
+			h.logger.Error("Failed to cache accounts", err, nil)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":  accounts,
+		"total":     len(accounts),
+		"refreshed": true,
+	})
+}
+
+// getSiteType returns site type string based on flags
+func getSiteType(isWordPress bool) string {
+	if isWordPress {
+		return "wordpress"
+	}
+	return ""
 }
 
 func (h *Handler) getServerInfo(c *gin.Context) {

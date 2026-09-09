@@ -123,12 +123,35 @@ func (d *Database) Migrate(ctx context.Context) error {
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)`,
 
+		// Server accounts cache table
+		`CREATE TABLE IF NOT EXISTS server_accounts (
+			id UUID PRIMARY KEY,
+			server_id UUID NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			username VARCHAR(255) NOT NULL,
+			domain VARCHAR(255) NOT NULL,
+			email VARCHAR(255),
+			disk_usage VARCHAR(50),
+			disk_limit VARCHAR(50),
+			db_count INTEGER DEFAULT 0,
+			db_size VARCHAR(50),
+			email_count INTEGER DEFAULT 0,
+			php_version VARCHAR(20),
+			site_type VARCHAR(50),
+			suspended BOOLEAN DEFAULT FALSE,
+			metadata JSONB DEFAULT '{}',
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+			UNIQUE(server_id, username)
+		)`,
+
 		// Create indexes
 		`CREATE INDEX IF NOT EXISTS idx_servers_panel_type ON servers(panel_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_source ON migrations(source_server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_target ON migrations(target_server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_migration_logs_migration ON migration_logs(migration_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_server_accounts_server ON server_accounts(server_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_server_accounts_domain ON server_accounts(domain)`,
 	}
 
 	for _, migration := range migrations {
@@ -167,6 +190,26 @@ type SSHKey struct {
 	PassphraseEncrypted sql.NullString `db:"passphrase_encrypted" json:"-"`
 	Fingerprint         sql.NullString `db:"fingerprint" json:"fingerprint,omitempty"`
 	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
+}
+
+// ServerAccount represents a cached account on a server
+type ServerAccount struct {
+	ID         string          `db:"id" json:"id"`
+	ServerID   string          `db:"server_id" json:"server_id"`
+	Username   string          `db:"username" json:"username"`
+	Domain     string          `db:"domain" json:"domain"`
+	Email      sql.NullString  `db:"email" json:"email,omitempty"`
+	DiskUsage  sql.NullString  `db:"disk_usage" json:"disk_usage,omitempty"`
+	DiskLimit  sql.NullString  `db:"disk_limit" json:"disk_limit,omitempty"`
+	DBCount    int             `db:"db_count" json:"db_count"`
+	DBSize     sql.NullString  `db:"db_size" json:"db_size,omitempty"`
+	EmailCount int             `db:"email_count" json:"email_count"`
+	PHPVersion sql.NullString  `db:"php_version" json:"php_version,omitempty"`
+	SiteType   sql.NullString  `db:"site_type" json:"site_type,omitempty"`
+	Suspended  bool            `db:"suspended" json:"suspended"`
+	Metadata   json.RawMessage `db:"metadata" json:"metadata,omitempty"`
+	CreatedAt  time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time       `db:"updated_at" json:"updated_at"`
 }
 
 // NullableJSON handles nullable JSON columns
@@ -565,6 +608,59 @@ func (d *Database) GetMigrationLogs(ctx context.Context, migrationID string) ([]
 func (d *Database) DeleteMigration(ctx context.Context, id string) error {
 	// Logs are deleted automatically via CASCADE
 	_, err := d.db.ExecContext(ctx, "DELETE FROM migrations WHERE id = $1", id)
+	return err
+}
+
+// GetServerAccounts gets cached accounts for a server
+func (d *Database) GetServerAccounts(ctx context.Context, serverID string) ([]ServerAccount, error) {
+	var accounts []ServerAccount
+	err := d.db.SelectContext(ctx, &accounts,
+		"SELECT * FROM server_accounts WHERE server_id = $1 ORDER BY domain", serverID)
+	return accounts, err
+}
+
+// SaveServerAccounts saves accounts for a server (replaces existing)
+func (d *Database) SaveServerAccounts(ctx context.Context, serverID string, accounts []common.Account) error {
+	tx, err := d.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete existing accounts for this server
+	if _, err := tx.ExecContext(ctx, "DELETE FROM server_accounts WHERE server_id = $1", serverID); err != nil {
+		return err
+	}
+
+	// Insert new accounts
+	for _, acc := range accounts {
+		id := uuid.New().String()
+		metadata, _ := json.Marshal(acc.Metadata)
+
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO server_accounts (id, server_id, username, domain, email, disk_usage, disk_limit, 
+				db_count, db_size, email_count, php_version, site_type, suspended, metadata)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			id, serverID, acc.Username, acc.Domain, acc.Email, acc.DiskUsage, acc.DiskLimit,
+			acc.DBCount, acc.DBSize, acc.EmailCount, acc.PHPVersion, acc.SiteType, acc.Suspended, metadata)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// HasCachedAccounts checks if a server has cached accounts
+func (d *Database) HasCachedAccounts(ctx context.Context, serverID string) (bool, error) {
+	var count int
+	err := d.db.GetContext(ctx, &count, "SELECT COUNT(*) FROM server_accounts WHERE server_id = $1", serverID)
+	return count > 0, err
+}
+
+// DeleteServerAccounts deletes cached accounts for a server
+func (d *Database) DeleteServerAccounts(ctx context.Context, serverID string) error {
+	_, err := d.db.ExecContext(ctx, "DELETE FROM server_accounts WHERE server_id = $1", serverID)
 	return err
 }
 

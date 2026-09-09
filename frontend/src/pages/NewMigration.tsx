@@ -7,9 +7,12 @@ import {
   ServerStackIcon,
   XCircleIcon,
   ExclamationTriangleIcon,
+  ArrowPathIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, refreshServerAccounts } from '../api/client';
 import type { Server, Account } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
@@ -45,6 +48,9 @@ export default function NewMigration() {
   const [currentMigrationStep, setCurrentMigrationStep] = useState(0);
   const [hostsEntry, setHostsEntry] = useState<string>('');
   const [overallProgress, setOverallProgress] = useState(0);
+  const [sortField, setSortField] = useState<string>('domain');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [refreshingAccounts, setRefreshingAccounts] = useState(false);
 
   const [formData, setFormData] = useState({
     source_server_id: '',
@@ -328,10 +334,76 @@ export default function NewMigration() {
     return matchesSearch && matchesType && notSource;
   });
 
-  const filteredAccounts = accounts.filter((acc: Account) =>
-    acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Sort and filter accounts
+  const handleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const handleRefreshAccounts = async () => {
+    if (!formData.source_server_id) return;
+    setRefreshingAccounts(true);
+    try {
+      const data = await refreshServerAccounts(formData.source_server_id);
+      setAccounts(data.accounts);
+      toast.success('Accounts refreshed');
+    } catch (error) {
+      toast.error('Failed to refresh accounts');
+    } finally {
+      setRefreshingAccounts(false);
+    }
+  };
+
+  const filteredAccounts = accounts
+    .filter((acc: Account) =>
+      acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a: Account, b: Account) => {
+      let aVal: string | number = '';
+      let bVal: string | number = '';
+      
+      switch (sortField) {
+        case 'domain':
+          aVal = a.domain || '';
+          bVal = b.domain || '';
+          break;
+        case 'disk_usage':
+          aVal = parseFloat(a.disk_used?.replace(/[^\d.]/g, '') || '0');
+          bVal = parseFloat(b.disk_used?.replace(/[^\d.]/g, '') || '0');
+          break;
+        case 'db_size':
+          aVal = parseFloat(a.db_size?.replace(/[^\d.]/g, '') || '0');
+          bVal = parseFloat(b.db_size?.replace(/[^\d.]/g, '') || '0');
+          break;
+        case 'php_version':
+          aVal = a.php_version || '';
+          bVal = b.php_version || '';
+          break;
+        case 'db_count':
+          aVal = a.databases?.length || 0;
+          bVal = b.databases?.length || 0;
+          break;
+        case 'email_count':
+          aVal = a.email_accounts?.length || 0;
+          bVal = b.email_accounts?.length || 0;
+          break;
+        default:
+          aVal = a.domain || '';
+          bVal = b.domain || '';
+      }
+      
+      if (typeof aVal === 'string') {
+        return sortDirection === 'asc' 
+          ? aVal.localeCompare(bVal as string)
+          : (bVal as string).localeCompare(aVal);
+      }
+      return sortDirection === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal;
+    });
 
   const filteredClusterServers = clusterServers.filter((server: ClusterServer) =>
     server.friendly_name?.toLowerCase().includes(clusterSearchTerm.toLowerCase()) ||
@@ -474,7 +546,7 @@ export default function NewMigration() {
             </div>
           ) : (
             <>
-              {/* Search and Select All */}
+              {/* Search, Refresh and Select All */}
               <div className="flex items-center justify-between mb-4">
                 <div className="relative flex-1 max-w-md">
                   <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -486,25 +558,83 @@ export default function NewMigration() {
                     className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg w-full focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                <button
-                  onClick={handleSelectAllAccounts}
-                  className="ml-4 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-                >
-                  {selectedAccounts.length === filteredAccounts.length ? 'Deselect All' : 'Select All'}
-                </button>
+                <div className="flex items-center space-x-2 ml-4">
+                  <button
+                    onClick={handleRefreshAccounts}
+                    disabled={refreshingAccounts}
+                    className="p-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                    title="Refresh accounts from server"
+                  >
+                    <ArrowPathIcon className={`h-5 w-5 ${refreshingAccounts ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    onClick={handleSelectAllAccounts}
+                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                  >
+                    {selectedAccounts.length === filteredAccounts.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
               </div>
 
               {/* Accounts Table */}
               <div className="border rounded-lg overflow-hidden">
                 <div className="hidden md:grid md:grid-cols-12 gap-2 px-4 py-3 bg-gray-50 border-b text-xs font-medium text-gray-500 uppercase">
                   <div className="col-span-1"></div>
-                  <div className="col-span-3">Domain</div>
+                  <div 
+                    className="col-span-3 cursor-pointer hover:text-gray-700 flex items-center"
+                    onClick={() => handleSort('domain')}
+                  >
+                    Domain
+                    {sortField === 'domain' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
                   <div className="col-span-1 text-center">Type</div>
-                  <div className="col-span-1 text-center">PHP</div>
-                  <div className="col-span-1 text-center">Disk</div>
-                  <div className="col-span-1 text-center">DB Size</div>
-                  <div className="col-span-1 text-center">DBs</div>
-                  <div className="col-span-2 text-center">Emails</div>
+                  <div 
+                    className="col-span-1 text-center cursor-pointer hover:text-gray-700 flex items-center justify-center"
+                    onClick={() => handleSort('php_version')}
+                  >
+                    PHP
+                    {sortField === 'php_version' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
+                  <div 
+                    className="col-span-1 text-center cursor-pointer hover:text-gray-700 flex items-center justify-center"
+                    onClick={() => handleSort('disk_usage')}
+                  >
+                    Disk
+                    {sortField === 'disk_usage' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
+                  <div 
+                    className="col-span-1 text-center cursor-pointer hover:text-gray-700 flex items-center justify-center"
+                    onClick={() => handleSort('db_size')}
+                  >
+                    DB Size
+                    {sortField === 'db_size' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
+                  <div 
+                    className="col-span-1 text-center cursor-pointer hover:text-gray-700 flex items-center justify-center"
+                    onClick={() => handleSort('db_count')}
+                  >
+                    DBs
+                    {sortField === 'db_count' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
+                  <div 
+                    className="col-span-2 text-center cursor-pointer hover:text-gray-700 flex items-center justify-center"
+                    onClick={() => handleSort('email_count')}
+                  >
+                    Emails
+                    {sortField === 'email_count' && (
+                      sortDirection === 'asc' ? <ChevronUpIcon className="h-4 w-4 ml-1" /> : <ChevronDownIcon className="h-4 w-4 ml-1" />
+                    )}
+                  </div>
                   <div className="col-span-1 text-center">Status</div>
                 </div>
                 <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">

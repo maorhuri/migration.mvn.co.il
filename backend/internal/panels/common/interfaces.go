@@ -66,6 +66,10 @@ type Account struct {
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
 	IsWordPress   bool     `json:"is_wordpress"`
 	DBSize        string   `json:"db_size,omitempty"`
+	// Counts for display
+	DBCount    int    `json:"db_count"`
+	EmailCount int    `json:"email_count"`
+	SiteType   string `json:"site_type,omitempty"` // "wordpress", "joomla", etc.
 }
 
 // Domain represents a domain configuration

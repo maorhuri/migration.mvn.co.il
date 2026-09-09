@@ -69,6 +69,12 @@ export const getClusterServers = async (id: string): Promise<ClusterServer[]> =>
   return data.items || [];
 };
 
+// Refresh server accounts (force reload from server)
+export const refreshServerAccounts = async (id: string): Promise<{ accounts: Account[]; total: number }> => {
+  const { data } = await api.post(`/servers/${id}/accounts/refresh`);
+  return data;
+};
+
 // SSH Keys
 export const getSSHKeys = async (): Promise<SSHKey[]> => {
   const { data } = await api.get('/ssh-keys');
