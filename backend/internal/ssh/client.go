@@ -724,6 +724,7 @@ func (c *Client) RsyncUpload(ctx context.Context, localPath, remotePath, host, u
 }
 
 // RsyncDownloadWithKey uses rsync with the stored connection config
+// Falls back to tar+ssh if rsync with key fails, or uses SFTP for password auth
 func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath string) error {
 	c.mu.Lock()
 	config := c.config
@@ -733,46 +734,51 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 		return fmt.Errorf("no connection config available")
 	}
 
-	// Write private key to temp file for rsync
-	tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp key file: %w", err)
-	}
-	defer os.Remove(tmpKeyFile.Name())
-
-	if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
-		tmpKeyFile.Close()
-		return fmt.Errorf("failed to write key: %w", err)
-	}
-	tmpKeyFile.Close()
-
-	if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
-		return fmt.Errorf("failed to chmod key: %w", err)
-	}
-
 	port := config.Port
 	if port == 0 {
 		port = 22
 	}
 
-	// rsync with optimal settings for speed
-	rsyncArgs := []string{
-		"-avz",               // archive, verbose, compress
-		"--compress-level=1", // fast compression
-		"--whole-file",       // don't use delta algorithm (faster for new files)
-		"--no-inc-recursive", // faster for large directories
-		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
-		fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
-		localPath + "/",
+	// If using SSH key, try rsync with key file
+	if config.AuthMethod == common.AuthMethodSSHKey && len(config.PrivateKey) > 0 {
+		// Write private key to temp file for rsync
+		tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
+		if err != nil {
+			return fmt.Errorf("failed to create temp key file: %w", err)
+		}
+		defer os.Remove(tmpKeyFile.Name())
+
+		if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
+			tmpKeyFile.Close()
+			return fmt.Errorf("failed to write key: %w", err)
+		}
+		tmpKeyFile.Close()
+
+		if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
+			return fmt.Errorf("failed to chmod key: %w", err)
+		}
+
+		// rsync with optimal settings for speed
+		rsyncArgs := []string{
+			"-avz",               // archive, verbose, compress
+			"--compress-level=1", // fast compression
+			"--whole-file",       // don't use delta algorithm (faster for new files)
+			"--no-inc-recursive", // faster for large directories
+			"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
+			fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
+			localPath + "/",
+		}
+
+		cmd := execCommand("rsync", rsyncArgs...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+		}
+		return nil
 	}
 
-	cmd := execCommand("rsync", rsyncArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
-	}
-
-	return nil
+	// For password auth, use tar+ssh through existing SSH connection (faster than SFTP)
+	return c.FastDownloadDirectory(ctx, remotePath, localPath, nil)
 }
 
 // RsyncUploadWithKey uses rsync with the stored connection config
@@ -785,42 +791,47 @@ func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath s
 		return fmt.Errorf("no connection config available")
 	}
 
-	// Write private key to temp file for rsync
-	tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp key file: %w", err)
-	}
-	defer os.Remove(tmpKeyFile.Name())
-
-	if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
-		tmpKeyFile.Close()
-		return fmt.Errorf("failed to write key: %w", err)
-	}
-	tmpKeyFile.Close()
-
-	if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
-		return fmt.Errorf("failed to chmod key: %w", err)
-	}
-
 	port := config.Port
 	if port == 0 {
 		port = 22
 	}
 
-	rsyncArgs := []string{
-		"-avz",
-		"--compress-level=1",
-		"--whole-file",
-		"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
-		localPath + "/",
-		fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
+	// If using SSH key, try rsync with key file
+	if config.AuthMethod == common.AuthMethodSSHKey && len(config.PrivateKey) > 0 {
+		// Write private key to temp file for rsync
+		tmpKeyFile, err := os.CreateTemp("", "migration_key_*")
+		if err != nil {
+			return fmt.Errorf("failed to create temp key file: %w", err)
+		}
+		defer os.Remove(tmpKeyFile.Name())
+
+		if _, err := tmpKeyFile.Write(config.PrivateKey); err != nil {
+			tmpKeyFile.Close()
+			return fmt.Errorf("failed to write key: %w", err)
+		}
+		tmpKeyFile.Close()
+
+		if err := os.Chmod(tmpKeyFile.Name(), 0600); err != nil {
+			return fmt.Errorf("failed to chmod key: %w", err)
+		}
+
+		rsyncArgs := []string{
+			"-avz",
+			"--compress-level=1",
+			"--whole-file",
+			"-e", fmt.Sprintf("ssh -p %d -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=no", port, tmpKeyFile.Name()),
+			localPath + "/",
+			fmt.Sprintf("%s@%s:%s/", config.Username, config.Host, remotePath),
+		}
+
+		cmd := execCommand("rsync", rsyncArgs...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+		}
+		return nil
 	}
 
-	cmd := execCommand("rsync", rsyncArgs...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
-	}
-
-	return nil
+	// For password auth, use tar+ssh through existing SSH connection
+	return c.FastUploadDirectory(ctx, localPath, remotePath, nil)
 }
