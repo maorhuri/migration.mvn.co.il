@@ -453,6 +453,40 @@ func (e *Engine) GetMigrationLogs(ctx context.Context, migrationID string) ([]st
 	return e.db.GetMigrationLogs(ctx, migrationID)
 }
 
+// CancelMigration cancels a running or pending migration
+func (e *Engine) CancelMigration(ctx context.Context, migrationID string) error {
+	migration, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return fmt.Errorf("migration not found: %w", err)
+	}
+
+	if migration.Status != "running" && migration.Status != "pending" {
+		return fmt.Errorf("migration is not running or pending (status: %s)", migration.Status)
+	}
+
+	now := time.Now()
+	return e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
+		ID:          migrationID,
+		Status:      "cancelled",
+		Error:       "Cancelled by user",
+		CompletedAt: &now,
+	})
+}
+
+// DeleteMigration deletes a migration record
+func (e *Engine) DeleteMigration(ctx context.Context, migrationID string) error {
+	migration, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return fmt.Errorf("migration not found: %w", err)
+	}
+
+	if migration.Status == "running" {
+		return fmt.Errorf("cannot delete running migration")
+	}
+
+	return e.db.DeleteMigration(ctx, migrationID)
+}
+
 // CheckCompatibility checks if a migration is compatible
 func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetServerID, username string) (*common.CompatibilityResult, error) {
 	sourceServer, err := e.db.GetServer(ctx, sourceServerID)

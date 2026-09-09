@@ -561,6 +561,13 @@ func (d *Database) GetMigrationLogs(ctx context.Context, migrationID string) ([]
 	return logs, err
 }
 
+// DeleteMigration deletes a migration and its logs
+func (d *Database) DeleteMigration(ctx context.Context, id string) error {
+	// Logs are deleted automatically via CASCADE
+	_, err := d.db.ExecContext(ctx, "DELETE FROM migrations WHERE id = $1", id)
+	return err
+}
+
 // ToConnectionConfig converts a Server to ConnectionConfig
 func (d *Database) ToConnectionConfig(server *Server) *common.ConnectionConfig {
 	config := &common.ConnectionConfig{

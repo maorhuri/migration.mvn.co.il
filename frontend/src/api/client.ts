@@ -110,6 +110,14 @@ export const getMigrationLogs = async (id: string): Promise<MigrationLog[]> => {
   return data.items || [];
 };
 
+export const cancelMigration = async (id: string): Promise<void> => {
+  await api.post(`/migrations/${id}/cancel`);
+};
+
+export const deleteMigration = async (id: string): Promise<void> => {
+  await api.delete(`/migrations/${id}`);
+};
+
 export const checkCompatibility = async (params: {
   source_server_id: string;
   target_server_id: string;

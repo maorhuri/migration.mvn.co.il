@@ -68,6 +68,8 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.POST("", h.startMigration)
 			migrations.GET("/:id", h.getMigration)
 			migrations.GET("/:id/logs", h.getMigrationLogs)
+			migrations.POST("/:id/cancel", h.cancelMigration)
+			migrations.DELETE("/:id", h.deleteMigration)
 			migrations.POST("/check-compatibility", h.checkCompatibility)
 		}
 	}
@@ -522,6 +524,30 @@ func (h *Handler) getMigrationLogs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"items": logs})
+}
+
+func (h *Handler) cancelMigration(c *gin.Context) {
+	id := c.Param("id")
+
+	err := h.engine.CancelMigration(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Migration cancelled"})
+}
+
+func (h *Handler) deleteMigration(c *gin.Context) {
+	id := c.Param("id")
+
+	err := h.engine.DeleteMigration(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Migration deleted"})
 }
 
 func (h *Handler) checkCompatibility(c *gin.Context) {

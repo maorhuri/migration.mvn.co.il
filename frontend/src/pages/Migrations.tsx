@@ -6,8 +6,10 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   ClockIcon,
+  StopIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
-import { getMigrations, getServers } from '../api/client';
+import { getMigrations, getServers, cancelMigration, deleteMigration } from '../api/client';
 import type { Migration, Server } from '../types';
 
 export default function Migrations() {
@@ -15,35 +17,63 @@ export default function Migrations() {
   const [servers, setServers] = useState<Record<string, Server>>({});
   const [loading, setLoading] = useState(true);
 
+  const fetchData = async () => {
+    try {
+      const [migrationsData, serversData] = await Promise.all([
+        getMigrations(),
+        getServers(),
+      ]);
+      setMigrations(migrationsData);
+      
+      const serversMap: Record<string, Server> = {};
+      serversData.forEach((s) => {
+        serversMap[s.id] = s;
+      });
+      setServers(serversMap);
+    } catch (error) {
+      console.error('Failed to fetch data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [migrationsData, serversData] = await Promise.all([
-          getMigrations(),
-          getServers(),
-        ]);
-        setMigrations(migrationsData);
-        
-        const serversMap: Record<string, Server> = {};
-        serversData.forEach((s) => {
-          serversMap[s.id] = s;
-        });
-        setServers(serversMap);
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchData();
+    // Refresh every 5 seconds for running migrations
+    const interval = setInterval(fetchData, 5000);
+    return () => clearInterval(interval);
   }, []);
 
-  const getStatusIcon = (status: Migration['status']) => {
+  const handleCancel = async (id: string) => {
+    if (!confirm('Are you sure you want to cancel this migration?')) return;
+    try {
+      await cancelMigration(id);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to cancel migration:', error);
+      alert('Failed to cancel migration');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this migration?')) return;
+    try {
+      await deleteMigration(id);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to delete migration:', error);
+      alert('Failed to delete migration');
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed':
         return <CheckCircleIcon className="w-5 h-5 text-green-500" />;
       case 'failed':
         return <XCircleIcon className="w-5 h-5 text-red-500" />;
+      case 'cancelled':
+        return <StopIcon className="w-5 h-5 text-orange-500" />;
       case 'running':
         return <ClockIcon className="w-5 h-5 text-yellow-500 animate-pulse" />;
       default:
@@ -51,15 +81,16 @@ export default function Migrations() {
     }
   };
 
-  const getStatusBadge = (status: Migration['status']) => {
-    const classes = {
+  const getStatusBadge = (status: string) => {
+    const classes: Record<string, string> = {
       completed: 'bg-green-100 text-green-700',
       failed: 'bg-red-100 text-red-700',
+      cancelled: 'bg-orange-100 text-orange-700',
       running: 'bg-yellow-100 text-yellow-700',
       pending: 'bg-gray-100 text-gray-700',
     };
     return (
-      <span className={`px-2 py-1 text-xs font-medium rounded-full ${classes[status]}`}>
+      <span className={`px-2 py-1 text-xs font-medium rounded-full ${classes[status] || classes.pending}`}>
         {status}
       </span>
     );
@@ -117,6 +148,9 @@ export default function Migrations() {
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Started
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
                 </th>
               </tr>
             </thead>
@@ -181,6 +215,28 @@ export default function Migrations() {
                     {migration.started_at 
                       ? new Date(migration.started_at).toLocaleString()
                       : '-'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <div className="flex items-center space-x-2">
+                      {(migration.status === 'running' || migration.status === 'pending') && (
+                        <button
+                          onClick={() => handleCancel(migration.id)}
+                          className="text-yellow-600 hover:text-yellow-800 p-1 rounded hover:bg-yellow-50"
+                          title="Cancel migration"
+                        >
+                          <StopIcon className="w-5 h-5" />
+                        </button>
+                      )}
+                      {migration.status !== 'running' && (
+                        <button
+                          onClick={() => handleDelete(migration.id)}
+                          className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"
+                          title="Delete migration"
+                        >
+                          <TrashIcon className="w-5 h-5" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
