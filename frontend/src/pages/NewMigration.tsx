@@ -54,18 +54,19 @@ export default function NewMigration() {
   });
 
   const initialMigrationSteps: MigrationStepStatus[] = [
+    // Export phase (from source)
+    { id: 'export_domains', name: 'Export Domains', status: 'pending', details: 'Reading domain configuration...' },
     { id: 'export_db', name: 'Export Databases', status: 'pending', details: 'Dumping MySQL databases...' },
-    { id: 'export_emails', name: 'Export Emails', status: 'pending', details: 'Backing up mailboxes and email data...' },
+    { id: 'export_emails', name: 'Export Emails', status: 'pending', details: 'Backing up mailboxes...' },
     { id: 'export_cron', name: 'Export Cron Jobs', status: 'pending', details: 'Saving scheduled tasks...' },
-    { id: 'compress', name: 'Compress Files', status: 'pending', details: 'Creating compressed archive...' },
-    { id: 'transfer', name: 'Transfer to Migration Server', status: 'pending', details: 'Rsync files to migration server...' },
-    { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'API call to create website...' },
-    { id: 'upload_files', name: 'Upload Files to Target', status: 'pending', details: 'Rsync files to target server...' },
+    { id: 'export_files', name: 'Download Files', status: 'pending', details: 'Downloading website files...' },
+    // Import phase (to target)
+    { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'Creating website via API...' },
     { id: 'import_db', name: 'Import Databases', status: 'pending', details: 'Restoring MySQL databases...' },
-    { id: 'import_emails', name: 'Import Emails', status: 'pending', details: 'Restoring mailboxes...' },
-    { id: 'import_cron', name: 'Import Cron Jobs', status: 'pending', details: 'Setting up scheduled tasks...' },
-    { id: 'configure_php', name: 'Configure PHP Version', status: 'pending', details: 'Setting PHP version...' },
-    { id: 'finalize', name: 'Finalize Migration', status: 'pending', details: 'Cleaning up and generating hosts entry...' },
+    { id: 'import_emails', name: 'Import Emails', status: 'pending', details: 'Creating email accounts...' },
+    { id: 'import_files', name: 'Upload Files', status: 'pending', details: 'Uploading website files...' },
+    { id: 'fix_permissions', name: 'Fix Permissions', status: 'pending', details: 'Setting file permissions...' },
+    { id: 'cleanup', name: 'Cleanup', status: 'pending', details: 'Removing temporary files...' },
   ];
 
   useEffect(() => {
@@ -184,40 +185,51 @@ export default function NewMigration() {
             const status = await getMigration(migration.id);
             const logs = await getMigrationLogs(migration.id);
 
-            // Update UI based on current step
+            // Update UI based on current step from backend
             const currentStepName = status.current_step || '';
             
-            // Map backend steps to UI steps
+            // Map backend step names to UI step indices
             const stepMapping: Record<string, number> = {
+              // Export phase
               'Exporting domains': 0,
-              'Exporting databases': 0,
-              'Exporting emails': 1,
-              'Exporting cron jobs': 2,
-              'Exporting files': 3,
-              'Starting import': 5,
-              'Creating organization': 5,
+              'Exporting databases': 1,
+              'Exporting emails': 2,
+              'Exporting cron': 3,
+              'Exporting files': 4,
+              'Downloading files': 4,
+              // Import phase
               'Creating websites': 5,
-              'Importing databases': 7,
-              'Importing email accounts': 8,
-              'Importing files': 6,
-              'Setting up SSL': 10,
-              'Migration completed': 11,
+              'Creating website': 5,
+              'Importing databases': 6,
+              'Importing email': 7,
+              'Importing files': 8,
+              'Uploading files': 8,
+              'Fixing file permissions': 9,
+              'Fixing permissions': 9,
+              'Cleaning up': 10,
+              'Migration completed': 10,
             };
 
-            // Find matching step
+            // Find matching step and update UI
+            let matchedStepIndex = -1;
             for (const [stepName, stepIndex] of Object.entries(stepMapping)) {
-              if (currentStepName.includes(stepName) && stepIndex !== currentMigrationStep) {
-                // Mark previous steps as completed
-                for (let i = 0; i <= stepIndex; i++) {
-                  if (i < stepIndex) {
-                    updateStepStatus(i, 'completed');
-                  } else {
-                    updateStepStatus(i, 'running');
-                  }
-                }
-                setCurrentMigrationStep(stepIndex);
-                setOverallProgress(Math.round(((stepIndex + 1) / initialMigrationSteps.length) * 100));
+              if (currentStepName.toLowerCase().includes(stepName.toLowerCase())) {
+                matchedStepIndex = stepIndex;
+                break;
               }
+            }
+
+            if (matchedStepIndex >= 0 && matchedStepIndex !== currentMigrationStep) {
+              // Mark previous steps as completed, current as running
+              for (let i = 0; i <= matchedStepIndex; i++) {
+                if (i < matchedStepIndex) {
+                  updateStepStatus(i, 'completed');
+                } else {
+                  updateStepStatus(i, 'running');
+                }
+              }
+              setCurrentMigrationStep(matchedStepIndex);
+              setOverallProgress(Math.round(((matchedStepIndex + 1) / initialMigrationSteps.length) * 100));
             }
 
             if (status.status === 'completed') {
@@ -228,14 +240,40 @@ export default function NewMigration() {
               }
               setOverallProgress(100);
             } else if (status.status === 'failed') {
-              throw new Error(status.error || 'Migration failed');
+              // Find which step failed based on the error message
+              const errorMsg = status.error || 'Migration failed';
+              let failedStep = currentMigrationStep;
+              
+              // Determine failed step from error message
+              if (errorMsg.includes('export')) {
+                if (errorMsg.includes('database')) failedStep = 1;
+                else if (errorMsg.includes('email')) failedStep = 2;
+                else if (errorMsg.includes('cron')) failedStep = 3;
+                else if (errorMsg.includes('file')) failedStep = 4;
+                else failedStep = 0;
+              } else if (errorMsg.includes('import')) {
+                if (errorMsg.includes('website') || errorMsg.includes('create')) failedStep = 5;
+                else if (errorMsg.includes('database')) failedStep = 6;
+                else if (errorMsg.includes('email')) failedStep = 7;
+                else if (errorMsg.includes('file')) failedStep = 8;
+                else failedStep = 5;
+              }
+              
+              // Mark steps up to failed as completed, failed step as error
+              for (let i = 0; i < failedStep; i++) {
+                updateStepStatus(i, 'completed');
+              }
+              updateStepStatus(failedStep, 'error', errorMsg);
+              setCurrentMigrationStep(failedStep);
+              throw new Error(errorMsg);
             }
 
             // Check for errors in logs
             const errorLogs = logs.filter(log => log.level === 'error');
             if (errorLogs.length > 0) {
               const lastError = errorLogs[errorLogs.length - 1];
-              throw new Error(lastError.message);
+              // Don't throw immediately, let the status check handle it
+              console.error('Migration error:', lastError.message);
             }
 
           } catch (pollError) {
