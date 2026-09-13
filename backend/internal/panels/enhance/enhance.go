@@ -586,7 +586,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		return nil, err
 	}
 
-	totalSteps := 7
+	totalSteps := 8
 	step := 0
 	sendProgress := func(name string) {
 		if progress != nil {
@@ -652,7 +652,15 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		e.logf("info", "No databases in export; skipping database import")
 	}
 
-	// 4. Emails (warnings only)
+	// 4. WordPress registration: app discovery + web server rewrite (warnings only)
+	sendProgress("Registering WordPress")
+	for _, ws := range e.websites {
+		if err := e.registerWordPress(ctx, orgID, ws); err != nil {
+			e.warnf("WordPress registration for %s incomplete: %v", ws.Domain.Domain, err)
+		}
+	}
+
+	// 5. Emails (warnings only)
 	sendProgress("Importing email accounts")
 	for _, em := range data.Emails {
 		if addr, err := e.importEmail(ctx, orgID, em); err != nil {
@@ -665,7 +673,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		e.warnf("%d mailbox(es) created with new random passwords (see log); mailbox contents were not migrated", len(result.Emails))
 	}
 
-	// 5. Cron jobs (warnings only)
+	// 6. Cron jobs (warnings only)
 	sendProgress("Importing cron jobs")
 	if len(data.CronJobs) > 0 {
 		main := e.websites[strings.ToLower(data.Account.Domain)]
@@ -677,7 +685,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
-	// 6. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
+	// 7. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
 	sendProgress("Setting up SSL certificates")
 	for _, d := range data.Domains {
 		if d.SSL == nil {
@@ -689,7 +697,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
-	// 7. Permissions (fatal)
+	// 8. Permissions (fatal)
 	sendProgress("Fixing file permissions")
 	for _, ws := range e.websites {
 		if err := e.fixPermissions(ctx, ws); err != nil {
@@ -723,6 +731,10 @@ func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocR
 	start := time.Now()
 	if err := e.node.RsyncUploadWithKey(ctx, localDocRoot, ws.DocRoot); err != nil {
 		return err
+	}
+	// rsync -a preserves the source uid; hand the files to the website user right away
+	if out, err := e.nodeRun(ctx, fmt.Sprintf("chown -R %s:%s %s", shq(ws.UnixUser), shq(ws.UnixUser), shq(ws.DocRoot))); err != nil {
+		return fmt.Errorf("chown after upload failed: %v %s", err, out)
 	}
 
 	out, err := e.nodeRun(ctx, fmt.Sprintf("find %s -type f 2>/dev/null | wc -l; du -sh %s 2>/dev/null | cut -f1", shq(ws.DocRoot), shq(ws.DocRoot)))
@@ -1009,6 +1021,65 @@ func (e *Enhance) detectDBHost(ctx context.Context) string {
 	}
 	e.logf("info", "Using DB_HOST=localhost (no other WordPress sites on the node to learn from)")
 	return "localhost"
+}
+
+// registerWordPress makes Enhance aware of a migrated WordPress install and adds the
+// web server rewrite WordPress permalinks need on Nginx (harmless on LiteSpeed/Apache).
+func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *EnhanceWebsite) error {
+	if _, err := e.nodeRun(ctx, "test -f "+shq(ws.DocRoot+"/wp-config.php")); err != nil {
+		e.logf("info", "%s: no wp-config.php, skipping WordPress registration", ws.Domain.Domain)
+		return nil
+	}
+
+	kind := "unknown"
+	if resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/v2/websites/%s/webserver_kind", ws.ID), nil); err == nil {
+		kind = strings.Trim(strings.TrimSpace(string(resp)), `"`)
+	}
+
+	// Discovery: orchd scans the website and records the WP installation (db name, prefix, path)
+	var problems []string
+	if resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/apps/wordpress", orgID, ws.ID), nil); err != nil {
+		problems = append(problems, fmt.Sprintf("discovery: %v", err))
+	} else {
+		var installs []struct {
+			DbName      string `json:"dbName"`
+			DbUser      string `json:"dbUser"`
+			TablePrefix string `json:"tablePrefix"`
+			Path        string `json:"path"`
+		}
+		_ = json.Unmarshal(resp, &installs)
+		if len(installs) == 0 {
+			problems = append(problems, "discovery found no WordPress installation")
+		} else {
+			e.logf("info", "%s: WordPress discovered by Enhance (db=%s, prefix=%s, path=%q, web server=%s)",
+				ws.Domain.Domain, installs[0].DbName, installs[0].TablePrefix, installs[0].Path, kind)
+		}
+	}
+
+	// Rewrite: route requests for non-existent files to /index.php (WordPress permalinks)
+	rewrite := map[string]interface{}{"path": "/", "destinationFile": "/index.php"}
+	if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("/v2/domains/%s/webserver_rewrites", ws.Domain.ID), rewrite); err != nil {
+		problems = append(problems, fmt.Sprintf("rewrite: %v", err))
+	} else {
+		verified := ""
+		if resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/v2/domains/%s/webserver_rewrites", ws.Domain.ID), nil); err == nil {
+			verified = strings.TrimSpace(string(resp))
+		}
+		e.logf("info", "%s: web server rewrite / -> /index.php set (current rewrites: %s)", ws.Domain.Domain, verified)
+	}
+	for _, alias := range ws.Aliases {
+		if alias.ID == "" {
+			continue
+		}
+		if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("/v2/domains/%s/webserver_rewrites", alias.ID), rewrite); err != nil {
+			problems = append(problems, fmt.Sprintf("rewrite for alias %s: %v", alias.Domain, err))
+		}
+	}
+
+	if len(problems) > 0 {
+		return fmt.Errorf("%s", strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // importEmail creates a mailbox with a new random password
