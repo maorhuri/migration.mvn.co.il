@@ -60,6 +60,8 @@ export interface Migration {
   target_ip?: string;
   target_node?: string;
   warnings?: number;
+  /** Set once the source account was suspended after the migration (manual step after the IP/DNS switch). */
+  source_suspended_at?: string;
   total_steps: number;
   completed_steps: number;
   bytes_transferred: number;

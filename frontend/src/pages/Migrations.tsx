@@ -21,7 +21,7 @@ import {
   TR,
 } from '../components/ui';
 import { MigrationRow } from '../components/migrations/MigrationRow';
-import { getMigrations, getServers, cancelMigration, deleteMigration } from '../api/client';
+import { getMigrations, getServers, cancelMigration, deleteMigration, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, Server } from '../types';
 
 export default function Migrations() {
@@ -35,6 +35,10 @@ export default function Migrations() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Migration | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [toSuspend, setToSuspend] = useState<Migration | null>(null);
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [toUnsuspend, setToUnsuspend] = useState<Migration | null>(null);
+  const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -86,6 +90,33 @@ export default function Migrations() {
     } catch (error) {
       console.error('Failed to delete migration:', error);
       toast.error('Failed to delete migration');
+    }
+  };
+
+  const apiError = (error: unknown, fallback: string) =>
+    (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
+
+  const handleSuspendSource = async (m: Migration) => {
+    try {
+      await suspendMigrationSource(m.id);
+      toast.success(`${m.account_username} suspended on the source server`);
+      setSuspendOpen(false);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to suspend source account:', error);
+      toast.error(apiError(error, 'Failed to suspend the source account'));
+    }
+  };
+
+  const handleUnsuspendSource = async (m: Migration) => {
+    try {
+      await unsuspendMigrationSource(m.id);
+      toast.success(`${m.account_username} re-enabled on the source server`);
+      setUnsuspendOpen(false);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to unsuspend source account:', error);
+      toast.error(apiError(error, 'Failed to unsuspend the source account'));
     }
   };
 
@@ -197,6 +228,14 @@ export default function Migrations() {
                     setToDelete(migration);
                     setDeleteOpen(true);
                   }}
+                  onSuspendSource={() => {
+                    setToSuspend(migration);
+                    setSuspendOpen(true);
+                  }}
+                  onUnsuspendSource={() => {
+                    setToUnsuspend(migration);
+                    setUnsuspendOpen(true);
+                  }}
                 />
               ))}
             </TBody>
@@ -236,6 +275,43 @@ export default function Migrations() {
         confirmLabel="Delete migration"
         onConfirm={async () => {
           if (toDelete) await handleDelete(toDelete.id);
+        }}
+      />
+
+      <ConfirmDialog
+        open={suspendOpen}
+        onClose={() => setSuspendOpen(false)}
+        tone="warning"
+        title="Suspend the source account?"
+        message={
+          <>
+            The account <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toSuspend?.account_username}</span> will be
+            suspended on <span className="font-medium">{toSuspend ? servers[toSuspend.source_server_id]?.name ?? 'the source server' : ''}</span>.
+            Do this only after the IP/DNS switch, once the site is verified to load from the new server. The migrated site on the target is not
+            affected, and you can unsuspend at any time.
+          </>
+        }
+        confirmLabel="Suspend on source"
+        cancelLabel="Not yet"
+        onConfirm={async () => {
+          if (toSuspend) await handleSuspendSource(toSuspend);
+        }}
+      />
+
+      <ConfirmDialog
+        open={unsuspendOpen}
+        onClose={() => setUnsuspendOpen(false)}
+        tone="brand"
+        title="Re-enable the source account?"
+        message={
+          <>
+            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toUnsuspend?.account_username}</span> will be active again on{' '}
+            <span className="font-medium">{toUnsuspend ? servers[toUnsuspend.source_server_id]?.name ?? 'the source server' : ''}</span>.
+          </>
+        }
+        confirmLabel="Unsuspend"
+        onConfirm={async () => {
+          if (toUnsuspend) await handleUnsuspendSource(toUnsuspend);
         }}
       />
     </div>

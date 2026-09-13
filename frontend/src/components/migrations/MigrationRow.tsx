@@ -1,8 +1,8 @@
 import { Link } from 'react-router-dom';
 import { ArrowRightIcon, ExclamationTriangleIcon } from '@heroicons/react/16/solid';
-import { StopIcon, TrashIcon } from '@heroicons/react/20/solid';
-import { Badge, IconButton, ProgressBar, StatusBadge, TD, TDPrimary, TR, Tooltip } from '../ui';
-import { formatDate, formatDuration, formatRelativeTime, percent, shortId } from '../../lib/format';
+import { PauseCircleIcon, PlayCircleIcon, StopIcon, TrashIcon } from '@heroicons/react/20/solid';
+import { Badge, Button, IconButton, ProgressBar, StatusBadge, TD, TDPrimary, TR, Tooltip } from '../ui';
+import { formatDate, formatDuration, formatRelativeTime, percent, realDate, shortId } from '../../lib/format';
 import type { Migration, Server } from '../../types';
 
 export interface MigrationRowProps {
@@ -12,19 +12,27 @@ export interface MigrationRowProps {
   onView: () => void;
   onCancel: () => void;
   onDelete: () => void;
+  /** Suspend the account on the source panel (only offered for completed migrations). */
+  onSuspendSource: () => void;
+  onUnsuspendSource: () => void;
 }
 
 /** One migration in the list table: account, route, node (xl+), status/progress, warnings, timing, actions. Click the row to open it. */
-export function MigrationRow({ migration, source, target, onView, onCancel, onDelete }: MigrationRowProps) {
+export function MigrationRow({ migration, source, target, onView, onCancel, onDelete, onSuspendSource, onUnsuspendSource }: MigrationRowProps) {
   const m = migration;
   const isRunning = m.status === 'running';
   const canCancel = m.status === 'running' || m.status === 'pending';
   const canDelete = m.status !== 'running';
+  const isCompleted = m.status === 'completed';
+  const sourceSuspended = !!m.source_suspended_at;
   const warnings = m.warnings ?? 0;
-  const timeRef = m.started_at ?? m.created_at;
-  const timeLabel = m.started_at ? 'Started' : 'Created';
+  // The API sends Go's zero time for unset timestamps; treat those as missing.
+  const startedAt = realDate(m.started_at);
+  const completedAt = realDate(m.completed_at);
+  const timeRef = startedAt ?? m.created_at;
+  const timeLabel = startedAt ? 'Started' : 'Created';
   // Only measure a duration that has a real end: a live one while running, or the recorded finish.
-  const duration = m.started_at && (isRunning || m.completed_at) ? formatDuration(m.started_at, isRunning ? undefined : m.completed_at) : null;
+  const duration = startedAt && (isRunning || completedAt) ? formatDuration(startedAt, isRunning ? undefined : completedAt) : null;
   // The row itself is a keyboard-activatable button; keep inner controls from bubbling their keys to it.
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
@@ -84,6 +92,13 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
             </div>
           </div>
         )}
+        {isCompleted && (
+          <div className="mt-1.5">
+            <Badge tone={sourceSuspended ? 'neutral' : 'info'} size="sm" dot>
+              {sourceSuspended ? 'Source suspended' : 'Source still active'}
+            </Badge>
+          </div>
+        )}
         {m.status === 'failed' && m.error && (
           <div className="mt-1 max-w-[220px] truncate text-2xs text-rose-600 dark:text-rose-400" title={m.error}>
             {m.error}
@@ -116,6 +131,20 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
 
       <TD align="right" onClick={stop} onKeyDown={stop} className="whitespace-nowrap">
         <div className="inline-flex items-center gap-0.5">
+          {isCompleted && !sourceSuspended && (
+            <Tooltip content="Suspend the account on the source server (after the IP switch)">
+              <Button variant="outline" size="sm" leftIcon={<PauseCircleIcon />} onClick={onSuspendSource} className="mr-1">
+                Suspend source
+              </Button>
+            </Tooltip>
+          )}
+          {isCompleted && sourceSuspended && (
+            <Tooltip content="Re-enable the account on the source server">
+              <Button variant="ghost" size="sm" leftIcon={<PlayCircleIcon />} onClick={onUnsuspendSource} className="mr-1">
+                Unsuspend
+              </Button>
+            </Tooltip>
+          )}
           {canCancel && (
             <Tooltip content="Cancel">
               <IconButton aria-label="Cancel migration" icon={<StopIcon />} size="sm" tone="danger" onClick={onCancel} />

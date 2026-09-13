@@ -142,6 +142,18 @@ export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
 };
 
+/** Suspend the migrated account on the SOURCE panel (manual step after the IP switch). Never automatic. */
+export const suspendMigrationSource = async (id: string): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/source/suspend`);
+  return data;
+};
+
+/** Re-enable the account on the source panel. */
+export const unsuspendMigrationSource = async (id: string): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/source/unsuspend`);
+  return data;
+};
+
 export const checkCompatibility = async (params: {
   source_server_id: string;
   target_server_id: string;
