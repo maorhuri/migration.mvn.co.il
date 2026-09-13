@@ -51,7 +51,7 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
       </TDPrimary>
 
       <TD>
-        <div className="flex items-center gap-1.5 whitespace-nowrap">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
           <span className={source ? 'text-slate-700 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'}>
             {source?.name ?? 'Unknown'}
           </span>
@@ -73,7 +73,7 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
         )}
       </TD>
 
-      <TD className="min-w-[180px]">
+      <TD className="min-w-[180px]" onClick={isCompleted ? stop : undefined} onKeyDown={isCompleted ? stop : undefined}>
         <StatusBadge status={m.status} size="sm" />
         {isRunning && (
           <div className="mt-1.5 max-w-[220px]">
@@ -92,11 +92,25 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
             </div>
           </div>
         )}
-        {isCompleted && (
-          <div className="mt-1.5">
-            <Badge tone={sourceSuspended ? 'neutral' : 'info'} size="sm" dot>
-              {sourceSuspended ? 'Source suspended' : 'Source still active'}
+        {isCompleted && !sourceSuspended && (
+          <div className="mt-2">
+            <Tooltip content="Suspend the account on the source server. Do this only after the IP switch, once the site loads from the new server.">
+              <Button variant="outline" size="sm" leftIcon={<PauseCircleIcon />} onClick={onSuspendSource}>
+                Suspend source
+              </Button>
+            </Tooltip>
+          </div>
+        )}
+        {isCompleted && sourceSuspended && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <Badge tone="neutral" size="sm" dot>
+              Source suspended
             </Badge>
+            <Tooltip content="Re-enable the account on the source server">
+              <Button variant="ghost" size="sm" leftIcon={<PlayCircleIcon />} onClick={onUnsuspendSource}>
+                Unsuspend
+              </Button>
+            </Tooltip>
           </div>
         )}
         {m.status === 'failed' && m.error && (
@@ -131,20 +145,6 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
 
       <TD align="right" onClick={stop} onKeyDown={stop} className="whitespace-nowrap">
         <div className="inline-flex items-center gap-0.5">
-          {isCompleted && !sourceSuspended && (
-            <Tooltip content="Suspend the account on the source server (after the IP switch)">
-              <Button variant="outline" size="sm" leftIcon={<PauseCircleIcon />} onClick={onSuspendSource} className="mr-1">
-                Suspend source
-              </Button>
-            </Tooltip>
-          )}
-          {isCompleted && sourceSuspended && (
-            <Tooltip content="Re-enable the account on the source server">
-              <Button variant="ghost" size="sm" leftIcon={<PlayCircleIcon />} onClick={onUnsuspendSource} className="mr-1">
-                Unsuspend
-              </Button>
-            </Tooltip>
-          )}
           {canCancel && (
             <Tooltip content="Cancel">
               <IconButton aria-label="Cancel migration" icon={<StopIcon />} size="sm" tone="danger" onClick={onCancel} />

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowPathIcon } from '@heroicons/react/20/solid';
+import toast from 'react-hot-toast';
+import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { getMigration, getMigrationLogs, getServer } from '../api/client';
+import { getMigration, getMigrationLogs, getServer, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
-import { Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
+import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
 import { MigrationHero } from '../components/migrationdetail/MigrationHero';
 import { ServerFlow } from '../components/migrationdetail/ServerFlow';
@@ -41,6 +42,8 @@ export default function MigrationDetail() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [suspendOpen, setSuspendOpen] = useState(false);
+  const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
   const fetchData = async () => {
     if (!id) return;
@@ -133,6 +136,30 @@ export default function MigrationDetail() {
   }
 
   const isRunning = migration.status === 'running';
+  const isCompleted = migration.status === 'completed';
+  const sourceSuspended = !!migration.source_suspended_at;
+  const apiError = (error: unknown, fallback: string) =>
+    (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
+  const handleSuspendSource = async () => {
+    try {
+      await suspendMigrationSource(migration.id);
+      toast.success(`${migration.account_username} suspended on the source server`);
+      setSuspendOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, 'Failed to suspend the source account'));
+    }
+  };
+  const handleUnsuspendSource = async () => {
+    try {
+      await unsuspendMigrationSource(migration.id);
+      toast.success(`${migration.account_username} re-enabled on the source server`);
+      setUnsuspendOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, 'Failed to unsuspend the source account'));
+    }
+  };
   const warningLogs = logs.filter((log) => log.level === 'warn');
   const domains = migration.export_data?.domains?.map((d) => d.name).filter(Boolean) ?? [];
   const hostsEntry = migration.target_ip && domains.length > 0 ? `${migration.target_ip} ${domains.join(' ')}` : null;
@@ -144,11 +171,32 @@ export default function MigrationDetail() {
         eyebrow="Migration"
         title={<span className="font-mono">{migration.account_username}</span>}
         description={`${sourceServer?.name ?? 'Unknown source'} → ${targetServer?.name ?? 'Unknown target'} · created ${formatRelativeTime(migration.created_at)}`}
-        meta={<StatusBadge status={migration.status} />}
+        meta={
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={migration.status} />
+            {isCompleted && (
+              <Badge tone={sourceSuspended ? 'neutral' : 'info'} dot>
+                {sourceSuspended ? 'Source suspended' : 'Source still active'}
+              </Badge>
+            )}
+          </div>
+        }
         actions={
-          <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
-            Refresh
-          </Button>
+          <>
+            <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
+              Refresh
+            </Button>
+            {isCompleted && !sourceSuspended && (
+              <Button variant="primary" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)}>
+                Suspend source
+              </Button>
+            )}
+            {isCompleted && sourceSuspended && (
+              <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
+                Unsuspend source
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -170,6 +218,38 @@ export default function MigrationDetail() {
       )}
 
       <WarningsCard warnings={warningLogs} />
+
+      <ConfirmDialog
+        open={suspendOpen}
+        onClose={() => setSuspendOpen(false)}
+        tone="warning"
+        title="Suspend the source account?"
+        message={
+          <>
+            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</span> will be suspended on{' '}
+            <span className="font-medium">{sourceServer?.name ?? 'the source server'}</span>. Do this only after the IP/DNS switch, once the site is
+            verified to load from the new server. The migrated site on the target is not affected, and you can unsuspend at any time.
+          </>
+        }
+        confirmLabel="Suspend on source"
+        cancelLabel="Not yet"
+        onConfirm={handleSuspendSource}
+      />
+
+      <ConfirmDialog
+        open={unsuspendOpen}
+        onClose={() => setUnsuspendOpen(false)}
+        tone="brand"
+        title="Re-enable the source account?"
+        message={
+          <>
+            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</span> will be active again on{' '}
+            <span className="font-medium">{sourceServer?.name ?? 'the source server'}</span>.
+          </>
+        }
+        confirmLabel="Unsuspend"
+        onConfirm={handleUnsuspendSource}
+      />
 
       <section className="space-y-3" aria-labelledby="migration-log-heading">
         <div className="flex flex-wrap items-end justify-between gap-3">
