@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -86,11 +88,29 @@ func main() {
 	handler.SetupRoutes(r)
 
 	// Serve static files for frontend
-	r.Static("/assets", "./frontend/dist/assets")
-	r.StaticFile("/", "./frontend/dist/index.html")
-	r.StaticFile("/vite.svg", "./frontend/dist/vite.svg")
+	// index.html must never be cached: a stale shell keeps loading an old JS bundle after a deploy.
+	distDir := "./frontend/dist"
+	serveIndex := func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.File(filepath.Join(distDir, "index.html"))
+	}
+	r.Static("/assets", filepath.Join(distDir, "assets"))
+	r.GET("/", serveIndex)
 	r.NoRoute(func(c *gin.Context) {
-		c.File("./frontend/dist/index.html")
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		// Root-level files produced by the frontend build (logo.svg, favicons, manifest).
+		clean := filepath.Clean("/" + c.Request.URL.Path)
+		if clean != "/" && !strings.Contains(clean, "..") {
+			if st, err := os.Stat(filepath.Join(distDir, clean)); err == nil && !st.IsDir() {
+				c.File(filepath.Join(distDir, clean))
+				return
+			}
+		}
+		serveIndex(c)
 	})
 
 	// Create server

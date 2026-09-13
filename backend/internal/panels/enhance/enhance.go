@@ -600,8 +600,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 	totalSteps := 9
 	step := 0
 	sendProgress := func(name string) {
+		e.logf("info", "%s", name) // written synchronously so warnings of the step never precede its heading
 		if progress != nil {
-			progress <- common.MigrationProgress{Status: "running", CurrentStep: name, TotalSteps: totalSteps, CompletedSteps: step}
+			progress <- common.MigrationProgress{Status: "running", CurrentStep: name, TotalSteps: totalSteps, CompletedSteps: step, Logged: true}
 		}
 		step++
 	}
@@ -1133,7 +1134,7 @@ func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (str
 
 	// 2. Leftover files: debug logs, All-in-One .wpress exports, archives and dumps outside uploads,
 	//    plus known backup-plugin folders even when they live under uploads.
-	find := fmt.Sprintf(`cd %s && find . -type f \( -name 'debug.log' -o -iname '*.wpress' -o -path '*/ai1wm-backups/*' -o -path '*/updraft/*' -o -path '*/backups-dup-lite/*' -o -path '*/backups-dup-pro/*' -o -path '*/backupbuddy_backups/*' -o -path '*/backwpup-*' -o -path '*/wp-staging/*' -o \( \( -iname '*.zip' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.sql' -o -iname '*.sql.gz' -o -iname '*.tar' \) -not -path './wp-content/uploads/*' \) \) -printf '%%s\t%%p\n' 2>/dev/null | sort -k2`, shq(ws.DocRoot))
+	find := fmt.Sprintf(`cd %s && find . -type f \( -name 'debug.log' -o -iname '*.wpress' -o -path '*/ai1wm-backups/*' -o -path '*/updraft/*' -o -path '*/backups-dup-lite/*' -o -path '*/backups-dup-pro/*' -o -path '*/backupbuddy_backups/*' -o -path '*/uploads/backwpup-*' -o -path '*/uploads/wp-staging/*' -o \( \( -iname '*.zip' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.sql' -o -iname '*.sql.gz' -o -iname '*.tar' \) -not -path './wp-content/uploads/*' \) \) -not -path './wp-content/plugins/*' -not -path './wp-content/mu-plugins/*' -not -path './wp-content/themes/*' -not -path './wp-admin/*' -not -path './wp-includes/*' -not -name '.htaccess' -not -name 'index.html' -not -name 'index.php' -not -name 'robots.txt' -not -name 'web.config' -printf '%%s\t%%p\n' 2>/dev/null | sort -k2`, shq(ws.DocRoot))
 	listing, err := e.nodeRun(ctx, find)
 	if err != nil && listing == "" {
 		return strings.Join(report, "; "), fmt.Errorf("listing leftover files failed: %v", err)

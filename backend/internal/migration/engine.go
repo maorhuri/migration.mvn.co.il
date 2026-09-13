@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -45,23 +46,24 @@ type MigrationRequest struct {
 
 // MigrationResult represents the state of a migration as exposed by the API
 type MigrationResult struct {
-	ID              string                    `json:"id"`
-	SourceServerID  string                    `json:"source_server_id"`
-	TargetServerID  string                    `json:"target_server_id"`
-	AccountUsername string                    `json:"account_username"`
-	Status          string                    `json:"status"`
-	CurrentStep     string                    `json:"current_step,omitempty"`
-	TotalSteps      int                       `json:"total_steps"`
-	CompletedSteps  int                       `json:"completed_steps"`
-	TargetIP        string                    `json:"target_ip,omitempty"`
-	TargetNode      string                    `json:"target_node,omitempty"`
-	Warnings        int                       `json:"warnings"`
-	ExportData      *common.ExportData        `json:"export_data,omitempty"`
-	Error           string                    `json:"error,omitempty"`
-	CreatedAt       time.Time                 `json:"created_at"`
-	StartedAt       time.Time                 `json:"started_at"`
-	CompletedAt     *time.Time                `json:"completed_at,omitempty"`
-	Progress        *common.MigrationProgress `json:"progress,omitempty"`
+	ID                string                    `json:"id"`
+	SourceServerID    string                    `json:"source_server_id"`
+	TargetServerID    string                    `json:"target_server_id"`
+	AccountUsername   string                    `json:"account_username"`
+	Status            string                    `json:"status"`
+	CurrentStep       string                    `json:"current_step,omitempty"`
+	TotalSteps        int                       `json:"total_steps"`
+	CompletedSteps    int                       `json:"completed_steps"`
+	TargetIP          string                    `json:"target_ip,omitempty"`
+	TargetNode        string                    `json:"target_node,omitempty"`
+	Warnings          int                       `json:"warnings"`
+	ExportData        *common.ExportData        `json:"export_data,omitempty"`
+	Error             string                    `json:"error,omitempty"`
+	CreatedAt         time.Time                 `json:"created_at"`
+	StartedAt         time.Time                 `json:"started_at"`
+	CompletedAt       *time.Time                `json:"completed_at,omitempty"`
+	SourceSuspendedAt *time.Time                `json:"source_suspended_at,omitempty"` // source account suspended after migration
+	Progress          *common.MigrationProgress `json:"progress,omitempty"`
 }
 
 // StartMigration starts a new migration
@@ -125,14 +127,27 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 // runMigration executes the migration process
 func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceServer, targetServer *storage.Server, req *MigrationRequest, workDir string) {
 	progressChan := make(chan common.MigrationProgress, 100)
+	consumerDone := make(chan struct{})
+	lastTotalSteps := 0
 	go func() {
+		defer close(consumerDone)
 		for progress := range progressChan {
 			progress.ID = migrationID
+			if progress.TotalSteps > 0 {
+				lastTotalSteps = progress.TotalSteps
+			}
 			e.db.UpdateMigrationProgress(ctx, migrationID, &progress)
-			e.db.AddMigrationLog(ctx, migrationID, "info", progress.CurrentStep, nil)
+			if !progress.Logged {
+				e.db.AddMigrationLog(ctx, migrationID, "info", progress.CurrentStep, nil)
+			}
 		}
 	}()
-	defer close(progressChan)
+	// drain closes the progress channel and waits until every queued progress update has been
+	// written, so a final "completed"/"failed" status can never be overwritten by a stale "running".
+	var drainOnce sync.Once
+	drain := func() { drainOnce.Do(func() { close(progressChan); <-consumerDone }) }
+	defer drain()
+	fail := func(msg string) { drain(); e.failMigration(ctx, migrationID, msg) }
 
 	defer func() {
 		if err := os.RemoveAll(workDir); err != nil {
@@ -154,7 +169,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	migrationLog("info", fmt.Sprintf("Starting export from %s (%s)", sourceServer.Name, sourceServer.PanelType))
 	exportData, err := e.exportFromSource(ctx, sourceServer, req.Username, workDir, progressChan, migrationLog)
 	if err != nil {
-		e.failMigration(ctx, migrationID, fmt.Sprintf("export failed: %v", err))
+		fail(fmt.Sprintf("export failed: %v", err))
 		return
 	}
 	exportJSON, _ := json.Marshal(exportData)
@@ -166,7 +181,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		"cron_jobs": len(exportData.CronJobs),
 	})
 	if len(exportData.Databases) == 0 && len(exportData.Account.Databases) > 0 {
-		e.failMigration(ctx, migrationID, fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
+		fail(fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
 		return
 	}
 
@@ -176,7 +191,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Connecting to cluster node"}
 		en, err := e.connectEnhanceTarget(ctx, migrationID, targetServer, req.TargetClusterServerID, migrationLog)
 		if err != nil {
-			e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
+			fail(fmt.Sprintf("import failed: %v", err))
 			return
 		}
 		defer en.Disconnect()
@@ -186,7 +201,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		warnings += len(en.Warnings())
 		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
 		if err != nil {
-			e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
+			fail(fmt.Sprintf("import failed: %v", err))
 			return
 		}
 		summary, _ := json.Marshal(result)
@@ -198,7 +213,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 			warn("Target cleanup warning: %v", err)
 		}
 	default:
-		e.failMigration(ctx, migrationID, fmt.Sprintf("unsupported target panel type: %s", targetServer.PanelType))
+		fail(fmt.Sprintf("unsupported target panel type: %s", targetServer.PanelType))
 		return
 	}
 
@@ -206,9 +221,11 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		warn("Source cleanup warning: %v", err)
 	}
 
+	drain()
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
-		ID: migrationID, Status: "completed", CurrentStep: "Migration completed", CompletedAt: &now,
+		ID: migrationID, Status: "completed", CurrentStep: "Migration completed",
+		TotalSteps: lastTotalSteps, CompletedSteps: lastTotalSteps, CompletedAt: &now,
 	})
 	e.db.SetMigrationWarnings(ctx, migrationID, warnings)
 	if warnings > 0 {
@@ -354,6 +371,59 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 	}
 }
 
+// SetSourceSuspended suspends or unsuspends the migrated account on the SOURCE panel. It is a manual
+// post-migration step (after the DNS/IP switch) and is only allowed for completed migrations.
+func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, suspend bool) (*MigrationResult, error) {
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "completed" {
+		return nil, fmt.Errorf("only completed migrations can suspend their source account (status: %s)", m.Status)
+	}
+	server, err := e.db.GetServer(ctx, m.SourceServerID)
+	if err != nil {
+		return nil, fmt.Errorf("source server not found: %w", err)
+	}
+	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
+		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
+	}
+	action := "unsuspend"
+	if suspend {
+		action = "suspend"
+	}
+	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
+
+	config := e.db.ToConnectionConfig(server)
+	password, _ := e.db.GetServerPassword(ctx, server.ID)
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+	da := directadmin.New()
+	da.SetLogger(logFn)
+	if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
+		logFn("error", fmt.Sprintf("Source account %s: %s failed: cannot connect to %s: %v", m.AccountUsername, action, server.Name, err))
+		return nil, fmt.Errorf("failed to connect to DirectAdmin %s: %w", server.Name, err)
+	}
+	defer da.Disconnect()
+
+	if err := da.SetAccountSuspended(ctx, m.AccountUsername, suspend); err != nil {
+		logFn("error", fmt.Sprintf("Source account %s: %s on %s failed: %v", m.AccountUsername, action, server.Name, err))
+		return nil, err
+	}
+	if err := e.db.SetMigrationSourceSuspended(ctx, migrationID, suspend); err != nil {
+		return nil, fmt.Errorf("account %sed but the migration record could not be updated: %w", action, err)
+	}
+	if suspend {
+		logFn("info", fmt.Sprintf("Source account %s suspended on %s (%s); the site is now served only by the new server", m.AccountUsername, server.Name, server.Host))
+	} else {
+		logFn("info", fmt.Sprintf("Source account %s unsuspended on %s (%s)", m.AccountUsername, server.Name, server.Host))
+	}
+	return e.GetMigrationStatus(ctx, migrationID)
+}
+
 // cleanupSourceServer removes temporary files from the source server
 func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server) error {
 	config := e.db.ToConnectionConfig(server)
@@ -403,6 +473,9 @@ func toResult(m *storage.Migration) *MigrationResult {
 	}
 	if m.CompletedAt.Valid {
 		result.CompletedAt = &m.CompletedAt.Time
+	}
+	if m.SourceSuspendedAt.Valid {
+		result.SourceSuspendedAt = &m.SourceSuspendedAt.Time
 	}
 	if m.ErrorMessage.Valid {
 		result.Error = m.ErrorMessage.String

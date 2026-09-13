@@ -159,6 +159,7 @@ type MigrationProgress struct {
 	CompletedAt      *time.Time `json:"completed_at,omitempty"`
 	Error            string     `json:"error,omitempty"`
 	Logs             []string   `json:"logs"`
+	Logged           bool       `json:"-"` // step name already written to the migration log by the sender
 }
 
 // PanelExporter interface for exporting data from a panel

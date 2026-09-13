@@ -181,6 +181,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_ip VARCHAR(64)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_node VARCHAR(255)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS warnings INTEGER DEFAULT 0`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS source_suspended_at TIMESTAMPTZ`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -280,24 +281,25 @@ func (nj *NullableJSON) Scan(value interface{}) error {
 
 // Migration represents a migration record
 type Migration struct {
-	ID               string         `db:"id" json:"id"`
-	SourceServerID   string         `db:"source_server_id" json:"source_server_id"`
-	TargetServerID   string         `db:"target_server_id" json:"target_server_id"`
-	AccountUsername  string         `db:"account_username" json:"account_username"`
-	Status           string         `db:"status" json:"status"`
-	CurrentStep      sql.NullString `db:"current_step" json:"current_step,omitempty"`
-	TotalSteps       int            `db:"total_steps" json:"total_steps"`
-	CompletedSteps   int            `db:"completed_steps" json:"completed_steps"`
-	BytesTransferred int64          `db:"bytes_transferred" json:"bytes_transferred"`
-	TotalBytes       int64          `db:"total_bytes" json:"total_bytes"`
-	ErrorMessage     sql.NullString `db:"error_message" json:"error_message,omitempty"`
-	ExportData       NullableJSON   `db:"export_data" json:"export_data,omitempty"`
-	TargetIP         NullString     `db:"target_ip" json:"target_ip"`
-	TargetNode       NullString     `db:"target_node" json:"target_node"`
-	Warnings         int            `db:"warnings" json:"warnings"`
-	StartedAt        sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
-	CompletedAt      sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
-	CreatedAt        time.Time      `db:"created_at" json:"created_at"`
+	ID                string         `db:"id" json:"id"`
+	SourceServerID    string         `db:"source_server_id" json:"source_server_id"`
+	TargetServerID    string         `db:"target_server_id" json:"target_server_id"`
+	AccountUsername   string         `db:"account_username" json:"account_username"`
+	Status            string         `db:"status" json:"status"`
+	CurrentStep       sql.NullString `db:"current_step" json:"current_step,omitempty"`
+	TotalSteps        int            `db:"total_steps" json:"total_steps"`
+	CompletedSteps    int            `db:"completed_steps" json:"completed_steps"`
+	BytesTransferred  int64          `db:"bytes_transferred" json:"bytes_transferred"`
+	TotalBytes        int64          `db:"total_bytes" json:"total_bytes"`
+	ErrorMessage      sql.NullString `db:"error_message" json:"error_message,omitempty"`
+	ExportData        NullableJSON   `db:"export_data" json:"export_data,omitempty"`
+	TargetIP          NullString     `db:"target_ip" json:"target_ip"`
+	TargetNode        NullString     `db:"target_node" json:"target_node"`
+	Warnings          int            `db:"warnings" json:"warnings"`
+	SourceSuspendedAt sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
+	StartedAt         sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt       sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
+	CreatedAt         time.Time      `db:"created_at" json:"created_at"`
 }
 
 // MigrationLog represents a log entry for a migration
@@ -628,7 +630,9 @@ func (d *Database) ListMigrations(ctx context.Context) ([]Migration, error) {
 func (d *Database) UpdateMigrationProgress(ctx context.Context, id string, progress *common.MigrationProgress) error {
 	query := `
 		UPDATE migrations SET 
-			status = $2, current_step = $3, total_steps = $4, completed_steps = $5,
+			status = $2, current_step = $3,
+			total_steps = CASE WHEN $4 > 0 THEN $4 ELSE total_steps END,
+			completed_steps = CASE WHEN $4 > 0 THEN $5 ELSE completed_steps END,
 			bytes_transferred = $6, total_bytes = $7, error_message = $8,
 			started_at = COALESCE(started_at, $9),
 			completed_at = $10
@@ -658,6 +662,12 @@ func (d *Database) SetMigrationTarget(ctx context.Context, id, targetIP, targetN
 // SetMigrationWarnings stores the number of warnings collected so far
 func (d *Database) SetMigrationWarnings(ctx context.Context, id string, warnings int) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET warnings = $2 WHERE id = $1", id, warnings)
+	return err
+}
+
+// SetMigrationSourceSuspended records when the source account was suspended after migration (NULL = active)
+func (d *Database) SetMigrationSourceSuspended(ctx context.Context, id string, suspended bool) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET source_suspended_at = CASE WHEN $2 THEN NOW() ELSE NULL END WHERE id = $1", id, suspended)
 	return err
 }
 
