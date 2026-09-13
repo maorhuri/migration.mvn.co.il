@@ -20,3 +20,13 @@ func (h *Handler) setSourceSuspended(c *gin.Context, suspend bool) {
 	}
 	c.JSON(http.StatusOK, result)
 }
+
+// clearMigrations deletes every finished migration (completed, failed, cancelled) with its logs.
+func (h *Handler) clearMigrations(c *gin.Context) {
+	n, err := h.engine.ClearFinishedMigrations(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": n})
+}

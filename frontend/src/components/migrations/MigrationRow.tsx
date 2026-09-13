@@ -73,7 +73,7 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
         )}
       </TD>
 
-      <TD className="min-w-[180px]" onClick={isCompleted ? stop : undefined} onKeyDown={isCompleted ? stop : undefined}>
+      <TD className="min-w-[180px]" onClick={isCompleted || canCancel ? stop : undefined} onKeyDown={isCompleted || canCancel ? stop : undefined}>
         <StatusBadge status={m.status} size="sm" />
         {isRunning && (
           <div className="mt-1.5 max-w-[220px]">
@@ -90,6 +90,18 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
                 {m.completed_steps}/{m.total_steps}
               </span>
             </div>
+            <div className="mt-2">
+              <Button variant="danger" size="sm" leftIcon={<StopIcon />} onClick={onCancel}>
+                Cancel migration
+              </Button>
+            </div>
+          </div>
+        )}
+        {m.status === 'pending' && (
+          <div className="mt-2">
+            <Button variant="danger" size="sm" leftIcon={<StopIcon />} onClick={onCancel}>
+              Cancel migration
+            </Button>
           </div>
         )}
         {isCompleted && !sourceSuspended && (
@@ -145,11 +157,6 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
 
       <TD align="right" onClick={stop} onKeyDown={stop} className="whitespace-nowrap">
         <div className="inline-flex items-center gap-0.5">
-          {canCancel && (
-            <Tooltip content="Cancel">
-              <IconButton aria-label="Cancel migration" icon={<StopIcon />} size="sm" tone="danger" onClick={onCancel} />
-            </Tooltip>
-          )}
           {canDelete && (
             <Tooltip content="Delete">
               <IconButton aria-label="Delete migration" icon={<TrashIcon />} size="sm" tone="danger" onClick={onDelete} />

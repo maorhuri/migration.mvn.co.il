@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { PlusIcon } from '@heroicons/react/20/solid';
+import { PlusIcon, TrashIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import {
   Badge,
@@ -21,7 +21,7 @@ import {
   TR,
 } from '../components/ui';
 import { MigrationRow } from '../components/migrations/MigrationRow';
-import { getMigrations, getServers, cancelMigration, deleteMigration, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { getMigrations, getServers, cancelMigration, deleteMigration, clearFinishedMigrations, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, Server } from '../types';
 
 export default function Migrations() {
@@ -35,6 +35,7 @@ export default function Migrations() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [toDelete, setToDelete] = useState<Migration | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [clearOpen, setClearOpen] = useState(false);
   const [toSuspend, setToSuspend] = useState<Migration | null>(null);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [toUnsuspend, setToUnsuspend] = useState<Migration | null>(null);
@@ -120,7 +121,20 @@ export default function Migrations() {
     }
   };
 
+  const handleClear = async () => {
+    try {
+      const { deleted } = await clearFinishedMigrations();
+      toast.success(deleted === 1 ? '1 migration cleared' : `${deleted} migrations cleared`);
+      setClearOpen(false);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to clear migrations:', error);
+      toast.error(apiError(error, 'Failed to clear migrations'));
+    }
+  };
+
   const runningCount = migrations.filter((m) => m.status === 'running').length;
+  const finishedCount = migrations.filter((m) => m.status !== 'running' && m.status !== 'pending').length;
   const showLoadError = !loading && !!fetchError && migrations.length === 0;
 
   return (
@@ -129,9 +143,16 @@ export default function Migrations() {
         title="Migrations"
         description="View and manage account migrations between servers."
         actions={
-          <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
-            New migration
-          </Button>
+          <>
+            {finishedCount > 0 && (
+              <Button variant="secondary" leftIcon={<TrashIcon />} onClick={() => setClearOpen(true)}>
+                Clear history
+              </Button>
+            )}
+            <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
+              New migration
+            </Button>
+          </>
         }
       />
 
@@ -276,6 +297,20 @@ export default function Migrations() {
         onConfirm={async () => {
           if (toDelete) await handleDelete(toDelete.id);
         }}
+      />
+
+      <ConfirmDialog
+        open={clearOpen}
+        onClose={() => setClearOpen(false)}
+        title="Clear migration history?"
+        message={
+          <>
+            This permanently deletes {finishedCount === 1 ? 'the finished migration' : `all ${finishedCount} finished migrations`} (completed, failed and
+            cancelled) together with their logs. Running migrations are kept. Accounts on the source and target servers are not affected.
+          </>
+        }
+        confirmLabel="Clear history"
+        onConfirm={handleClear}
       />
 
       <ConfirmDialog

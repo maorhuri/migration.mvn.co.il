@@ -25,11 +25,14 @@ type Engine struct {
 	db      *storage.Database
 	logger  *logger.Logger
 	workDir string
+
+	mu      sync.Mutex
+	cancels map[string]context.CancelFunc // live workers by migration id
 }
 
 // NewEngine creates a new migration engine
 func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine {
-	return &Engine{db: db, logger: log, workDir: workDir}
+	return &Engine{db: db, logger: log, workDir: workDir, cancels: map[string]context.CancelFunc{}}
 }
 
 // ErrClusterServerRequired is returned when an Enhance target is used without an explicit cluster server.
@@ -147,7 +150,25 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	var drainOnce sync.Once
 	drain := func() { drainOnce.Do(func() { close(progressChan); <-consumerDone }) }
 	defer drain()
-	fail := func(msg string) { drain(); e.failMigration(ctx, migrationID, msg) }
+	// workCtx is cancelled by CancelMigration; DB writes keep using ctx so the final status is always recorded.
+	workCtx, cancelWork := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.cancels[migrationID] = cancelWork
+	e.mu.Unlock()
+	defer func() {
+		cancelWork()
+		e.mu.Lock()
+		delete(e.cancels, migrationID)
+		e.mu.Unlock()
+	}()
+	fail := func(msg string) {
+		drain()
+		if workCtx.Err() != nil {
+			e.cancelMigrationRecord(ctx, migrationID, msg)
+			return
+		}
+		e.failMigration(ctx, migrationID, msg)
+	}
 
 	defer func() {
 		if err := os.RemoveAll(workDir); err != nil {
@@ -167,7 +188,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 
 	// Phase 1: export
 	migrationLog("info", fmt.Sprintf("Starting export from %s (%s)", sourceServer.Name, sourceServer.PanelType))
-	exportData, err := e.exportFromSource(ctx, sourceServer, req.Username, workDir, progressChan, migrationLog)
+	exportData, err := e.exportFromSource(workCtx, sourceServer, req.Username, workDir, progressChan, migrationLog)
 	if err != nil {
 		fail(fmt.Sprintf("export failed: %v", err))
 		return
@@ -189,15 +210,19 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	switch common.PanelType(targetServer.PanelType) {
 	case common.PanelTypeEnhance:
 		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Connecting to cluster node"}
-		en, err := e.connectEnhanceTarget(ctx, migrationID, targetServer, req.TargetClusterServerID, migrationLog)
+		en, err := e.connectEnhanceTarget(workCtx, migrationID, targetServer, req.TargetClusterServerID, migrationLog)
 		if err != nil {
 			fail(fmt.Sprintf("import failed: %v", err))
 			return
 		}
 		defer en.Disconnect()
-		defer en.CleanupTempFiles(ctx) // also on failure: never leave dumps in /tmp on the node
+		defer func() { // also on failure/cancel: never leave dumps in /tmp on the node
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			en.CleanupTempFiles(cleanupCtx)
+		}()
 
-		result, err := en.ImportAccount(ctx, exportData, progressChan)
+		result, err := en.ImportAccount(workCtx, exportData, progressChan)
 		warnings += len(en.Warnings())
 		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
 		if err != nil {
@@ -540,10 +565,32 @@ func (e *Engine) CancelMigration(ctx context.Context, migrationID string) error 
 	if migration.Status != "running" && migration.Status != "pending" {
 		return fmt.Errorf("migration is not running or pending (status: %s)", migration.Status)
 	}
+	e.mu.Lock()
+	cancel, live := e.cancels[migrationID]
+	e.mu.Unlock()
+	if live {
+		// The worker aborts its current command and records the cancelled status itself.
+		e.db.AddMigrationLog(ctx, migrationID, "warn", "Cancellation requested by user; aborting the current step", nil)
+		cancel()
+		return nil
+	}
+	// No live worker (e.g. the service restarted): mark the record directly.
+	e.cancelMigrationRecord(ctx, migrationID, "no running worker")
+	return nil
+}
+
+// cancelMigrationRecord marks a migration as cancelled by the user.
+func (e *Engine) cancelMigrationRecord(ctx context.Context, migrationID, detail string) {
 	now := time.Now()
-	return e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
-		ID: migrationID, Status: "cancelled", Error: "Cancelled by user", CompletedAt: &now,
+	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
+		ID: migrationID, Status: "cancelled", CurrentStep: "Cancelled", Error: "Cancelled by user", CompletedAt: &now,
 	})
+	e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Migration cancelled by user (%s). Anything already created on the target is left in place; re-running reuses the website on the same node.", detail), nil)
+}
+
+// ClearFinishedMigrations deletes every completed, failed or cancelled migration with its logs.
+func (e *Engine) ClearFinishedMigrations(ctx context.Context) (int64, error) {
+	return e.db.DeleteFinishedMigrations(ctx)
 }
 
 // DeleteMigration deletes a migration record

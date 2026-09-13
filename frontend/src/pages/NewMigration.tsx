@@ -307,6 +307,7 @@ export default function NewMigration() {
               ['Importing databases', 8],
               ['Registering WordPress', 8],
               ['WordPress cleanup', 8],
+              ['Configuring PHP', 8],
               ['Importing email', 9],
               ['Importing cron', 9],
               ['Setting up SSL', 9],

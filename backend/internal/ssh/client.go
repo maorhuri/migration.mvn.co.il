@@ -144,12 +144,7 @@ func (c *Client) RunCommand(ctx context.Context, command string) (string, error)
 	}
 	defer session.Close()
 
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		return string(output), fmt.Errorf("command failed: %w, output: %s", err, string(output))
-	}
-
-	return string(output), nil
+	return runSession(ctx, session, command)
 }
 
 // RunCommandWithStdin executes a command with stdin input
@@ -169,12 +164,7 @@ func (c *Client) RunCommandWithStdin(ctx context.Context, command string, stdin 
 	defer session.Close()
 
 	session.Stdin = stdin
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		return string(output), fmt.Errorf("command failed: %w, output: %s", err, string(output))
-	}
-
-	return string(output), nil
+	return runSession(ctx, session, command)
 }
 
 // Upload uploads a file via SFTP
@@ -770,7 +760,9 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 		}
 
 		cmd := execCommand("rsync", rsyncArgs...)
+		stopWatch := killOnCancel(ctx, cmd)
 		output, err := cmd.CombinedOutput()
+		stopWatch()
 		if err != nil {
 			return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
 		}
@@ -834,4 +826,43 @@ func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath s
 
 	// For password auth, use tar+ssh through existing SSH connection
 	return c.FastUploadDirectory(ctx, localPath, remotePath, nil)
+}
+
+// runSession runs command on the session and aborts it (SIGKILL + session close) when ctx is cancelled.
+func runSession(ctx context.Context, session *ssh.Session, command string) (string, error) {
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := session.CombinedOutput(command)
+		done <- result{out, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return string(r.out), fmt.Errorf("command failed: %w, output: %s", r.err, string(r.out))
+		}
+		return string(r.out), nil
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		session.Close()
+		return "", fmt.Errorf("command aborted: %w", ctx.Err())
+	}
+}
+
+// killOnCancel kills cmd when ctx is cancelled. Call the returned func once the command has finished.
+func killOnCancel(ctx context.Context, cmd *exec.Cmd) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
 }

@@ -75,6 +75,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.GET("/:id", h.getMigration)
 			migrations.GET("/:id/logs", h.getMigrationLogs)
 			migrations.POST("/:id/cancel", h.cancelMigration)
+			migrations.POST("/clear", h.clearMigrations)
 			migrations.POST("/:id/source/suspend", h.suspendSource)
 			migrations.POST("/:id/source/unsuspend", h.unsuspendSource)
 			migrations.DELETE("/:id", h.deleteMigration)

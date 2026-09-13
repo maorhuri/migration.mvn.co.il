@@ -142,6 +142,12 @@ export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
 };
 
+/** Delete every finished migration (completed, failed, cancelled) with its logs. Running ones are kept. */
+export const clearFinishedMigrations = async (): Promise<{ deleted: number }> => {
+  const { data } = await api.post('/migrations/clear');
+  return data;
+};
+
 /** Suspend the migrated account on the SOURCE panel (manual step after the IP switch). Never automatic. */
 export const suspendMigrationSource = async (id: string): Promise<Migration> => {
   const { data } = await api.post(`/migrations/${id}/source/suspend`);

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, StopIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { getMigration, getMigrationLogs, getServer, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogs, getServer, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -43,6 +43,7 @@ export default function MigrationDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
   const fetchData = async () => {
@@ -140,6 +141,16 @@ export default function MigrationDetail() {
   const sourceSuspended = !!migration.source_suspended_at;
   const apiError = (error: unknown, fallback: string) =>
     (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
+  const handleCancel = async () => {
+    try {
+      await cancelMigration(migration.id);
+      toast.success('Cancellation requested; the current step is being aborted');
+      setCancelOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, 'Failed to cancel the migration'));
+    }
+  };
   const handleSuspendSource = async () => {
     try {
       await suspendMigrationSource(migration.id);
@@ -186,6 +197,11 @@ export default function MigrationDetail() {
             <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
               Refresh
             </Button>
+            {(isRunning || migration.status === 'pending') && (
+              <Button variant="danger" leftIcon={<StopIcon />} onClick={() => setCancelOpen(true)}>
+                Cancel migration
+              </Button>
+            )}
             {isCompleted && !sourceSuspended && (
               <Button variant="primary" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)}>
                 Suspend source
@@ -218,6 +234,22 @@ export default function MigrationDetail() {
       )}
 
       <WarningsCard warnings={warningLogs} />
+
+      <ConfirmDialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        tone="warning"
+        title="Cancel this migration?"
+        message={
+          <>
+            The current step is aborted immediately. Anything already created on the target (website, uploaded files, database) stays in place, and a
+            re-run reuses the website on the same node.
+          </>
+        }
+        confirmLabel="Cancel migration"
+        cancelLabel="Keep running"
+        onConfirm={handleCancel}
+      />
 
       <ConfirmDialog
         open={suspendOpen}

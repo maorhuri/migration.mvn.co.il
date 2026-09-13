@@ -597,7 +597,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		return nil, err
 	}
 
-	totalSteps := 9
+	totalSteps := 10
 	step := 0
 	sendProgress := func(name string) {
 		e.logf("info", "%s", name) // written synchronously so warnings of the step never precede its heading
@@ -611,6 +611,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 1. Websites
 	sendProgress("Creating websites")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	if len(data.Domains) == 0 {
 		return nil, fmt.Errorf("export contains no domains")
 	}
@@ -628,6 +631,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 2. Files
 	sendProgress("Uploading files")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	if data.FilesPath == "" {
 		return nil, fmt.Errorf("export has no files path")
 	}
@@ -644,6 +650,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 3. Databases
 	sendProgress("Importing databases")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	if len(data.Databases) > 0 {
 		main := e.websites[strings.ToLower(data.Account.Domain)]
 		if main == nil {
@@ -666,6 +675,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 4. WordPress registration: app discovery + web server rewrite (warnings only)
 	sendProgress("Registering WordPress")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	for _, ws := range e.websites {
 		if err := e.registerWordPress(ctx, orgID, ws); err != nil {
 			e.warnf("WordPress registration for %s incomplete: %v", ws.Domain.Domain, err)
@@ -674,6 +686,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 5. WordPress cleanup: debug off, leftover backups/archives removed, migration backup removed (warnings only)
 	sendProgress("WordPress cleanup")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	for _, ws := range e.websites {
 		summary, err := e.cleanupWordPress(ctx, ws)
 		if err != nil {
@@ -684,8 +699,20 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
+	// 6. PHP: always-on extensions + ionCube loader (warnings only)
+	sendProgress("Configuring PHP")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
+	for _, ws := range e.websites {
+		e.configurePHP(ctx, ws)
+	}
+
 	// 6. Emails (warnings only)
 	sendProgress("Importing email accounts")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	for _, em := range data.Emails {
 		if addr, err := e.importEmail(ctx, orgID, em); err != nil {
 			e.warnf("Email %s not created: %v", em.Email, err)
@@ -699,6 +726,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 7. Cron jobs (warnings only)
 	sendProgress("Importing cron jobs")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	if len(data.CronJobs) > 0 {
 		main := e.websites[strings.ToLower(data.Account.Domain)]
 		if main == nil {
@@ -711,6 +741,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 8. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
 	sendProgress("Setting up SSL certificates")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	for _, d := range data.Domains {
 		if d.SSL == nil {
 			continue
@@ -723,6 +756,9 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 
 	// 9. Permissions (fatal)
 	sendProgress("Fixing file permissions")
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("migration cancelled: %w", err)
+	}
 	for _, ws := range e.websites {
 		if err := e.fixPermissions(ctx, ws); err != nil {
 			return nil, err
@@ -1314,4 +1350,85 @@ func (e *Enhance) CleanupTempFiles(ctx context.Context) error {
 	}
 	e.tmpPaths = nil
 	return nil
+}
+
+// defaultPHPExtensions are enabled on every migrated website (baseline requested by the operator);
+// the ionCube loader is switched on as well because shop plugins depend on it.
+var defaultPHPExtensions = []string{"apcu", "brotli"}
+
+// configurePHP enables the baseline PHP extensions and the ionCube loader for a website (warnings only).
+func (e *Enhance) configurePHP(ctx context.Context, ws *EnhanceWebsite) {
+	domain := ws.Domain.Domain
+	has := func(list []string, name string) bool {
+		for _, x := range list {
+			if strings.EqualFold(x, name) {
+				return true
+			}
+		}
+		return false
+	}
+	var available, enabled []string
+	raw, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/websites/%s/available_php_extensions", ws.ID), nil)
+	if err != nil {
+		e.warnf("PHP extensions for %s not configured: cannot list available extensions: %v", domain, err)
+		return
+	}
+	_ = json.Unmarshal(raw, &available)
+	if raw, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/websites/%s/php_extensions", ws.ID), nil); err == nil {
+		_ = json.Unmarshal(raw, &enabled)
+	}
+
+	var turnedOn, already, missing []string
+	for _, ext := range defaultPHPExtensions {
+		switch {
+		case has(enabled, ext):
+			already = append(already, ext)
+		case !has(available, ext):
+			missing = append(missing, ext)
+		default:
+			if _, err := e.apiRequest(ctx, "POST", fmt.Sprintf("/websites/%s/php_extensions", ws.ID), ext); err != nil {
+				e.warnf("PHP extension %s not enabled for %s: %v", ext, domain, err)
+			} else {
+				turnedOn = append(turnedOn, ext)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		e.warnf("PHP extensions not available for %s on its PHP version: %s", domain, strings.Join(missing, ", "))
+	}
+
+	ion := "unchanged"
+	var ionOn bool
+	if raw, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/websites/%s/ioncube", ws.ID), nil); err == nil {
+		_ = json.Unmarshal(raw, &ionOn)
+	}
+	switch {
+	case ionOn:
+		ion = "already on"
+	default:
+		if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("/websites/%s/ioncube", ws.ID), true); err != nil {
+			e.warnf("ionCube loader not enabled for %s: %v", domain, err)
+			ion = "failed"
+		} else {
+			ion = "enabled"
+		}
+	}
+
+	// Verify what the API reports now.
+	var after []string
+	if raw, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/websites/%s/php_extensions", ws.ID), nil); err == nil {
+		_ = json.Unmarshal(raw, &after)
+	}
+	for _, ext := range turnedOn {
+		if !has(after, ext) {
+			e.warnf("PHP extension %s for %s was accepted by the API but is not reported as enabled", ext, domain)
+		}
+	}
+	join := func(l []string) string {
+		if len(l) == 0 {
+			return "none"
+		}
+		return strings.Join(l, ", ")
+	}
+	e.logf("info", "PHP for %s: extensions enabled now: %s; already on: %s; ionCube loader: %s", domain, join(turnedOn), join(already), ion)
 }
