@@ -60,6 +60,7 @@ export interface ClusterServer {
   hostname: string;
   ip: string;
   role: string;
+  roles?: string[];
   is_main: boolean;
   status: string;
 }

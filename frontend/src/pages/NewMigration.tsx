@@ -15,8 +15,8 @@ import {
   CircleStackIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, refreshServerAccounts } from '../api/client';
-import type { Server, Account } from '../types';
+import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts } from '../api/client';
+import type { Server, Account, MigrationLog } from '../types';
 
 type MigrationStep = 'select_source' | 'select_accounts' | 'select_target' | 'review' | 'migrating' | 'completed';
 
@@ -50,6 +50,9 @@ export default function NewMigration() {
   const [migrationSteps, setMigrationSteps] = useState<MigrationStepStatus[]>([]);
   const [currentMigrationStep, setCurrentMigrationStep] = useState(0);
   const [hostsEntry, setHostsEntry] = useState<string>('');
+  const [warningLogs, setWarningLogs] = useState<MigrationLog[]>([]);
+  const [warningCount, setWarningCount] = useState(0);
+  const [targetNode, setTargetNode] = useState<string>('');
   const [overallProgress, setOverallProgress] = useState(0);
   const [sortField, setSortField] = useState<string>('domain');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -72,11 +75,11 @@ export default function NewMigration() {
     { id: 'export_cron', name: 'Export Cron Jobs', status: 'pending', details: 'Saving scheduled tasks...' },
     { id: 'export_files', name: 'Download Files', status: 'pending', details: 'Downloading website files...' },
     // Import phase (to target)
-    { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'Creating website via API...' },
-    { id: 'import_db', name: 'Import Databases', status: 'pending', details: 'Restoring MySQL databases...' },
-    { id: 'import_emails', name: 'Import Emails', status: 'pending', details: 'Creating email accounts...' },
-    { id: 'import_files', name: 'Upload Files', status: 'pending', details: 'Uploading website files...' },
-    { id: 'fix_permissions', name: 'Fix Permissions', status: 'pending', details: 'Setting file permissions...' },
+    { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'Creating website on the selected cluster server...' },
+    { id: 'import_files', name: 'Upload Files', status: 'pending', details: 'Uploading website files to the cluster node...' },
+    { id: 'import_db', name: 'Import Databases', status: 'pending', details: 'Creating databases, importing dumps, updating wp-config...' },
+    { id: 'import_emails', name: 'Import Emails, Cron & SSL', status: 'pending', details: 'Creating mailboxes, cron jobs and certificates...' },
+    { id: 'fix_permissions', name: 'Fix Permissions', status: 'pending', details: 'Setting ownership and file permissions...' },
     { id: 'cleanup', name: 'Cleanup', status: 'pending', details: 'Removing temporary files...' },
   ];
 
@@ -173,6 +176,11 @@ export default function NewMigration() {
     setMigrationSteps([...initialMigrationSteps]);
     setCurrentMigrationStep(0);
     setOverallProgress(0);
+    setWarningLogs([]);
+    setWarningCount(0);
+    setTargetNode('');
+    let accumulatedWarnings = 0;
+    let accumulatedTargetIP = '';
 
     try {
       // Start migration for each selected account
@@ -190,6 +198,7 @@ export default function NewMigration() {
         let completed = false;
         const startTime = Date.now();
         let lastStepIndex = -1;
+        let lastTargetIP = '';
 
         // Start first step as running
         updateStepStatus(0, 'running');
@@ -199,6 +208,10 @@ export default function NewMigration() {
 
           try {
             const status = await getMigration(migration.id);
+            if (status.target_ip) {
+              lastTargetIP = status.target_ip;
+              setTargetNode(status.target_node ? `${status.target_node} (${status.target_ip})` : status.target_ip);
+            }
 
             // Update UI based on current step from backend
             const currentStepName = status.current_step || '';
@@ -217,10 +230,12 @@ export default function NewMigration() {
               ['Starting import', 5],
               ['Creating websites', 5],
               ['Creating website', 5],
-              ['Importing databases', 6],
-              ['Importing email', 7],
-              ['Importing files', 8],
-              ['Uploading files', 8],
+              ['Uploading files', 6],
+              ['Importing files', 6],
+              ['Importing databases', 7],
+              ['Importing email', 8],
+              ['Importing cron', 8],
+              ['Setting up SSL', 8],
               ['Fixing file permissions', 9],
               ['Fixing permissions', 9],
               ['Cleaning up', 10],
@@ -256,7 +271,17 @@ export default function NewMigration() {
                 updateStepStatus(i, 'completed');
               }
               setOverallProgress(100);
-            } else if (status.status === 'failed') {
+              accumulatedWarnings += status.warnings || 0;
+              setWarningCount(accumulatedWarnings);
+              try {
+                const logs = await getMigrationLogs(migration.id);
+                const warns = logs.filter((l: MigrationLog) => l.level === 'warn');
+                setWarningLogs((prev: MigrationLog[]) => [...prev, ...warns]);
+              } catch (e) {
+                console.error('Failed to load migration logs', e);
+              }
+              if (lastTargetIP) accumulatedTargetIP = lastTargetIP;
+            } else if (status.status === 'failed' || status.status === 'cancelled') {
               const errorMsg = status.error || 'Migration failed';
               
               // Determine which step failed based on lastStepIndex and error message
@@ -265,18 +290,17 @@ export default function NewMigration() {
               // If error mentions import, it's in the import phase (step 5+)
               if (errorMsg.toLowerCase().includes('import')) {
                 // Export was successful, fail on appropriate import step
-                if (errorMsg.toLowerCase().includes('enhance_org_id') || 
-                    errorMsg.toLowerCase().includes('website') || 
-                    errorMsg.toLowerCase().includes('create')) {
-                  failedStep = 5; // Create Website on Enhance
-                } else if (errorMsg.toLowerCase().includes('database')) {
-                  failedStep = 6;
-                } else if (errorMsg.toLowerCase().includes('email')) {
+                const lower = errorMsg.toLowerCase();
+                if (lower.includes('permission')) {
+                  failedStep = 9;
+                } else if (lower.includes('database') || lower.includes('mysql')) {
                   failedStep = 7;
-                } else if (errorMsg.toLowerCase().includes('file')) {
+                } else if (lower.includes('email') || lower.includes('cron') || lower.includes('ssl')) {
                   failedStep = 8;
+                } else if (lower.includes('upload') || lower.includes('files')) {
+                  failedStep = 6;
                 } else {
-                  failedStep = 5; // Default to first import step
+                  failedStep = 5; // website creation / node connection
                 }
               }
               
@@ -309,7 +333,8 @@ export default function NewMigration() {
       // Generate hosts entry
       const targetServer = servers.find((s: Server) => s.id === formData.target_server_id);
       const domains = selectedAccounts.map((a: Account) => a.domain).join(' ');
-      setHostsEntry(`${targetServer?.host || 'TARGET_IP'} ${domains}`);
+      const hostsIP = accumulatedTargetIP || clusterServers.find((c: ClusterServer) => c.id === formData.target_cluster_server_id)?.ip || targetServer?.host || 'TARGET_IP';
+      setHostsEntry(`${hostsIP} ${domains}`);
       
       setCurrentStep('completed');
       toast.success('Migration completed successfully!');
@@ -846,9 +871,12 @@ export default function NewMigration() {
                         <span className="px-2 py-0.5 bg-purple-200 text-purple-800 text-xs rounded ml-2 flex-shrink-0">Main</span>
                       )}
                     </div>
-                    <p className="text-sm text-gray-500">{server.ip}</p>
+                    <p className="text-sm text-gray-500">{server.ip || 'no IP reported'}</p>
                     {server.hostname && server.hostname !== server.friendly_name && (
                       <p className="text-xs text-gray-400 truncate">{server.hostname}</p>
+                    )}
+                    {server.role && (
+                      <p className="text-xs text-purple-600 truncate mt-1">{server.role}</p>
                     )}
                   </button>
                 ))}
@@ -1089,8 +1117,17 @@ export default function NewMigration() {
             <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
               <CheckCircleIcon className="w-12 h-12 text-green-500" />
             </div>
-            <h2 className="text-2xl font-bold text-green-700">Migration Completed!</h2>
-            <p className="text-gray-600 mt-2">All accounts have been successfully migrated.</p>
+            <h2 className={`text-2xl font-bold ${warningCount > 0 ? 'text-yellow-700' : 'text-green-700'}`}>
+              {warningCount > 0 ? 'Migration Completed with Warnings' : 'Migration Completed!'}
+            </h2>
+            <p className="text-gray-600 mt-2">
+              {warningCount > 0
+                ? 'Files, databases and permissions are in place. Review the warnings below before switching DNS.'
+                : 'Files, databases, permissions and settings were migrated and verified.'}
+            </p>
+            {targetNode && (
+              <p className="text-sm text-gray-500 mt-1">Target node: {targetNode}</p>
+            )}
           </div>
 
           {/* Summary Stats */}
@@ -1106,12 +1143,24 @@ export default function NewMigration() {
               <p className="text-sm text-green-700">Steps Completed</p>
             </div>
             <div className="text-center p-4 bg-yellow-50 rounded-lg">
-              <p className="text-3xl font-bold text-yellow-600">
-                {migrationSteps.filter((s: MigrationStepStatus) => s.status === 'warning').length}
-              </p>
+              <p className="text-3xl font-bold text-yellow-600">{warningCount}</p>
               <p className="text-sm text-yellow-700">Warnings</p>
             </div>
           </div>
+
+          {warningLogs.length > 0 && (
+            <div className="border border-yellow-200 bg-yellow-50 rounded-lg p-4 mb-6">
+              <h3 className="font-medium text-yellow-900 mb-2 flex items-center">
+                <ExclamationTriangleIcon className="w-5 h-5 mr-2" />
+                Things to check manually
+              </h3>
+              <ul className="space-y-1 text-sm text-yellow-800 list-disc list-inside">
+                {warningLogs.map((log: MigrationLog) => (
+                  <li key={log.id} className="break-words">{log.message}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Hosts Entry */}
           <div className="p-4 bg-gray-900 rounded-lg mb-6">
@@ -1154,6 +1203,9 @@ export default function NewMigration() {
                 setSelectedAccounts([]);
                 setMigrationSteps([]);
                 setOverallProgress(0);
+                setWarningLogs([]);
+                setWarningCount(0);
+                setTargetNode('');
                 setFormData({
                   source_server_id: '',
                   target_server_id: '',

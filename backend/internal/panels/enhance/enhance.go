@@ -1,16 +1,24 @@
-// Package enhance implements Enhance panel operations via API
+// Package enhance implements Enhance panel operations via the Enhance API v2 plus
+// root SSH access to the cluster node that hosts the migrated website.
+//
+// Enhance is a cluster: the control panel (console) is one server, websites live on
+// application nodes. Files, databases and permissions must therefore be handled on
+// the node returned by the API for the selected server, never on the console.
 package enhance
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,21 +29,40 @@ import (
 // LogFunc receives log lines from the Enhance module (level: info|warn|error)
 type LogFunc func(level, message string)
 
-// Enhance implements the Panel interface for Enhance servers
+// Enhance implements Enhance import operations
 type Enhance struct {
 	config                *common.ConnectionConfig
 	apiKey                string
 	httpClient            *http.Client
-	sshClient             *ssh.Client
 	connected             bool
-	targetClusterServerID string // Target server ID for website creation
+	targetClusterServerID string
 	logFn                 LogFunc
+
+	// SSH session to the cluster node that hosts the website
+	node     *ssh.Client
+	nodeHost string
+
+	warnings []string
+	tmpPaths []string // files we created on the node and must remove
+	websites map[string]*EnhanceWebsite
+}
+
+// New creates a new Enhance panel instance
+func New() *Enhance {
+	return &Enhance{
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+		websites:   make(map[string]*EnhanceWebsite),
+	}
 }
 
 // SetLogger routes module log lines to the given function (in addition to stdout)
-func (e *Enhance) SetLogger(fn LogFunc) {
-	e.logFn = fn
-}
+func (e *Enhance) SetLogger(fn LogFunc) { e.logFn = fn }
+
+// SetTargetClusterServerID sets the cluster server on which websites are created
+func (e *Enhance) SetTargetClusterServerID(serverID string) { e.targetClusterServerID = serverID }
+
+// Warnings returns the non-fatal problems collected during import
+func (e *Enhance) Warnings() []string { return e.warnings }
 
 func (e *Enhance) logf(level, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
@@ -45,79 +72,91 @@ func (e *Enhance) logf(level, format string, args ...interface{}) {
 	}
 }
 
-// New creates a new Enhance panel instance
-func New() *Enhance {
-	return &Enhance{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		sshClient: ssh.NewClient(),
+func (e *Enhance) warnf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	e.warnings = append(e.warnings, msg)
+	e.logf("warn", "%s", msg)
+}
+
+// ---------------------------------------------------------------------------
+// Connection
+// ---------------------------------------------------------------------------
+
+// ConnectAPI prepares API access (no SSH). This is all that is needed for
+// listing servers/orgs/websites.
+func (e *Enhance) ConnectAPI(ctx context.Context, config *common.ConnectionConfig, apiKey string) error {
+	if config == nil || config.APIEndpoint == "" {
+		return fmt.Errorf("Enhance API endpoint not configured")
 	}
-}
-
-// Connect establishes connection to the Enhance server
-func (e *Enhance) Connect(ctx context.Context, config *common.ConnectionConfig) error {
-	e.config = config
-	return nil
-}
-
-// ConnectWithCredentials connects with API key and optionally SSH
-func (e *Enhance) ConnectWithCredentials(ctx context.Context, config *common.ConnectionConfig, apiKey string, password string, privateKey []byte) error {
+	if apiKey == "" {
+		return fmt.Errorf("Enhance API key not configured")
+	}
 	e.config = config
 	e.apiKey = apiKey
-
-	// Connect via SSH if credentials provided (for file transfers)
-	if config.AuthMethod == common.AuthMethodSSHKey || config.AuthMethod == common.AuthMethodPassword {
-		if err := e.sshClient.Connect(ctx, config, password, privateKey); err != nil {
-			return fmt.Errorf("failed to connect via SSH: %w", err)
-		}
-		if err := e.sshClient.ConnectSFTP(); err != nil {
-			return fmt.Errorf("failed to connect via SFTP: %w", err)
-		}
-	}
-
 	e.connected = true
 	return nil
 }
 
-// Disconnect closes the connection
+// ConnectWithCredentials is kept for callers that only need the API.
+func (e *Enhance) ConnectWithCredentials(ctx context.Context, config *common.ConnectionConfig, apiKey string, password string, privateKey []byte) error {
+	return e.ConnectAPI(ctx, config, apiKey)
+}
+
+// ConnectNode opens root SSH (+SFTP) to the cluster node that hosts the website.
+func (e *Enhance) ConnectNode(ctx context.Context, nodeConfig *common.ConnectionConfig, password string, privateKey []byte) error {
+	client := ssh.NewClient()
+	if err := client.Connect(ctx, nodeConfig, password, privateKey); err != nil {
+		return fmt.Errorf("SSH to node %s failed: %w", nodeConfig.Host, err)
+	}
+	if err := client.ConnectSFTP(); err != nil {
+		client.Disconnect()
+		return fmt.Errorf("SFTP to node %s failed: %w", nodeConfig.Host, err)
+	}
+	e.node = client
+	e.nodeHost = nodeConfig.Host
+	out, err := client.RunCommand(ctx, "hostname; id -u")
+	if err != nil {
+		return fmt.Errorf("node %s: cannot run commands: %w", nodeConfig.Host, err)
+	}
+	lines := strings.Fields(out)
+	if len(lines) == 2 && lines[1] != "0" {
+		return fmt.Errorf("node %s: SSH user %s is not root (uid %s); root is required", nodeConfig.Host, nodeConfig.Username, lines[1])
+	}
+	e.logf("info", "Connected to cluster node %s (hostname %s) as root", nodeConfig.Host, strings.Join(lines[:1], ""))
+	return nil
+}
+
+// Disconnect closes the node SSH session
 func (e *Enhance) Disconnect() error {
 	e.connected = false
-	return e.sshClient.Disconnect()
+	if e.node != nil {
+		err := e.node.Disconnect()
+		e.node = nil
+		return err
+	}
+	return nil
 }
 
-// SetTargetClusterServerID sets the target server ID for website creation
-func (e *Enhance) SetTargetClusterServerID(serverID string) {
-	e.targetClusterServerID = serverID
-}
-
-// TestConnection tests if the connection is working
+// TestConnection tests API access
 func (e *Enhance) TestConnection(ctx context.Context) error {
 	if !e.connected {
 		return fmt.Errorf("not connected")
 	}
-
-	// Test API connection using /servers endpoint (always accessible)
-	_, err := e.apiRequest(ctx, "GET", "/servers", nil)
-	if err != nil {
+	if _, err := e.apiRequest(ctx, "GET", "/servers", nil); err != nil {
 		return fmt.Errorf("API connection failed: %w", err)
 	}
-
 	return nil
 }
 
 // GetPanelType returns the panel type
-func (e *Enhance) GetPanelType() common.PanelType {
-	return common.PanelTypeEnhance
-}
+func (e *Enhance) GetPanelType() common.PanelType { return common.PanelTypeEnhance }
 
-// apiRequest makes an API request to Enhance
+// apiRequest performs a JSON request against the Enhance API (v2 prefix added automatically)
 func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
-	// Ensure endpoint starts with /v2
 	if !strings.HasPrefix(endpoint, "/v2") {
 		endpoint = "/v2" + endpoint
 	}
-	url := fmt.Sprintf("%s%s", e.config.APIEndpoint, endpoint)
+	url := strings.TrimRight(e.config.APIEndpoint, "/") + endpoint
 
 	var reqBody io.Reader
 	if body != nil {
@@ -132,8 +171,7 @@ func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", e.apiKey))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -147,408 +185,299 @@ func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body 
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{Status: resp.StatusCode, Method: method, Endpoint: endpoint, Body: strings.TrimSpace(string(respBody))}
 	}
-
 	return respBody, nil
 }
 
-// EnhanceOrg represents an organization in Enhance
+// APIError is an HTTP error from the Enhance API
+type APIError struct {
+	Status   int
+	Method   string
+	Endpoint string
+	Body     string
+}
+
+func (a *APIError) Error() string {
+	return fmt.Sprintf("Enhance API %s %s returned %d: %s", a.Method, a.Endpoint, a.Status, a.Body)
+}
+
+func apiStatus(err error) int {
+	if ae, ok := err.(*APIError); ok {
+		return ae.Status
+	}
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// API types (field names follow the Enhance OpenAPI spec)
+// ---------------------------------------------------------------------------
+
+// ServerIP is one IP of a cluster server
+type ServerIP struct {
+	IP        string `json:"ip"`
+	IsPrimary bool   `json:"isPrimary"`
+}
+
+// EnhanceServer is a server in the Enhance cluster
+type EnhanceServer struct {
+	ID               string                     `json:"id"`
+	FriendlyName     string                     `json:"friendlyName"`
+	Hostname         string                     `json:"hostname"`
+	IsControlPanel   bool                       `json:"isControlPanel"`
+	IsConfigured     bool                       `json:"isConfigured"`
+	IsDecommissioned bool                       `json:"isDecommissioned"`
+	IPs              []ServerIP                 `json:"ips"`
+	Roles            map[string]json.RawMessage `json:"roles"`
+}
+
+// PrimaryIP returns the primary IPv4 of the server
+func (s EnhanceServer) PrimaryIP() string {
+	for _, ip := range s.IPs {
+		if ip.IsPrimary {
+			return ip.IP
+		}
+	}
+	if len(s.IPs) > 0 {
+		return s.IPs[0].IP
+	}
+	return ""
+}
+
+// EnabledRoles returns the roles that are enabled on the server (application, database, ...)
+func (s EnhanceServer) EnabledRoles() []string {
+	var roles []string
+	for name, raw := range s.Roles {
+		var state string
+		if json.Unmarshal(raw, &state) == nil {
+			if state == "enabled" {
+				roles = append(roles, name)
+			}
+			continue
+		}
+		var obj map[string]interface{}
+		if json.Unmarshal(raw, &obj) == nil {
+			if st, ok := obj["state"].(string); ok && st == "enabled" {
+				roles = append(roles, name)
+			} else if len(obj) > 0 && st == "" {
+				roles = append(roles, name)
+			}
+		}
+	}
+	return roles
+}
+
+// EnhanceOrg represents an organization
 type EnhanceOrg struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// EnhanceWebsite represents a website in Enhance
-// EnhanceDomain represents a domain object in Enhance API
-type EnhanceDomain struct {
-	ID     string `json:"id"`
-	Domain string `json:"domain"`
-}
-
-type EnhanceWebsite struct {
-	ID           string        `json:"id"`
-	Domain       EnhanceDomain `json:"domain"`
-	DomainStr    string        `json:"-"` // For convenience
-	Kind         string        `json:"kind"`
-	Status       string        `json:"status"`
-	ServerID     string        `json:"serverId"`
-	AppServerID  string        `json:"appServerId"`
-	DbServerID   string        `json:"dbServerId"`
-	MailServerID string        `json:"mailServerId"`
-	UnixUser     string        `json:"unixUser"`
-	HomeDir      string        `json:"homeDir"`
-}
-
-// EnhanceDatabase represents a database in Enhance
-type EnhanceDatabase struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-}
-
-// EnhanceEmail represents an email account in Enhance
-type EnhanceEmail struct {
-	ID      string `json:"id"`
-	Address string `json:"address"`
-	QuotaMB int64  `json:"quotaMb"`
-	UsedMB  int64  `json:"usedMb"`
-}
-
-// EnhanceServer represents a server in Enhance cluster
-type EnhanceServer struct {
+// WebsiteDomain is a domain mapped to a website
+type WebsiteDomain struct {
 	ID           string `json:"id"`
-	FriendlyName string `json:"friendlyName"`
-	Hostname     string `json:"hostname"`
-	IP           string `json:"primaryIpv4"`
-	Role         string `json:"role"`
-	IsMain       bool   `json:"isControlPanel"`
-	Status       string `json:"status"`
+	Domain       string `json:"domain"`
+	DocumentRoot string `json:"documentRoot"`
+	Kind         string `json:"kind"`
 }
 
-// ListServers returns all servers in the Enhance cluster
+// EnhanceWebsite is a website as returned by the API
+type EnhanceWebsite struct {
+	ID            string          `json:"id"`
+	Domain        WebsiteDomain   `json:"domain"`
+	Aliases       []WebsiteDomain `json:"aliases"`
+	Kind          string          `json:"kind"`
+	Status        string          `json:"status"`
+	AppServerID   string          `json:"appServerId"`
+	DbServerID    string          `json:"dbServerId"`
+	EmailServerID string          `json:"emailServerId"`
+	UnixUser      string          `json:"unixUser"`
+	PhpVersion    string          `json:"phpVersion"`
+	DbServerIps   []ServerIP      `json:"dbServerIps"`
+	ServerIps     []ServerIP      `json:"serverIps"`
+
+	// Resolved on the node, not part of the API
+	HomeDir string `json:"-"`
+	DocRoot string `json:"-"`
+}
+
+// DBResult describes a database created on Enhance
+type DBResult struct {
+	SourceName string `json:"source_name"`
+	Name       string `json:"name"`
+	User       string `json:"user"`
+	Password   string `json:"password"`
+	Host       string `json:"host"`
+	Tables     int    `json:"tables"`
+	WPConfig   bool   `json:"wp_config_updated"`
+}
+
+// ImportResult summarises what was created on Enhance
+type ImportResult struct {
+	NodeHost  string                     `json:"node_host"`
+	Websites  map[string]*EnhanceWebsite `json:"websites"`
+	Databases []DBResult                 `json:"databases"`
+	Emails    []string                   `json:"emails"`
+	Warnings  []string                   `json:"warnings"`
+}
+
+// ---------------------------------------------------------------------------
+// Servers / orgs / websites
+// ---------------------------------------------------------------------------
+
+// ListServers returns all servers in the cluster
 func (e *Enhance) ListServers(ctx context.Context) ([]EnhanceServer, error) {
 	if !e.connected {
 		return nil, fmt.Errorf("not connected")
 	}
-
 	resp, err := e.apiRequest(ctx, "GET", "/servers", nil)
 	if err != nil {
 		return nil, err
 	}
-
-	var serversResponse struct {
-		Items []EnhanceServer `json:"items"`
+	var listing struct {
+		Items json.RawMessage `json:"items"`
 	}
-	if err := json.Unmarshal(resp, &serversResponse); err != nil {
+	if err := json.Unmarshal(resp, &listing); err != nil {
 		return nil, fmt.Errorf("failed to parse servers response: %w", err)
 	}
-
-	return serversResponse.Items, nil
-}
-
-// CreateWebsiteOnServer creates a website on a specific server in the cluster
-func (e *Enhance) CreateWebsiteOnServer(ctx context.Context, orgID string, domain string, serverID string) (*EnhanceWebsite, error) {
-	if !e.connected {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	websiteReq := map[string]interface{}{
-		"domain": domain,
-		"kind":   "website",
-	}
-
-	// If serverID is provided, specify the target server
-	if serverID != "" {
-		websiteReq["appServerId"] = serverID
-		websiteReq["dbServerId"] = serverID
-		websiteReq["mailServerId"] = serverID
-	}
-
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
-	if err != nil {
-		return nil, err
-	}
-
-	var website EnhanceWebsite
-	if err := json.Unmarshal(resp, &website); err != nil {
-		return nil, fmt.Errorf("failed to parse website response: %w", err)
-	}
-
-	return &website, nil
-}
-
-// GetWebsiteInfo returns detailed info about a website including paths
-func (e *Enhance) GetWebsiteInfo(ctx context.Context, orgID string, websiteID string) (*EnhanceWebsite, error) {
-	if !e.connected {
-		return nil, fmt.Errorf("not connected")
-	}
-
-	endpoint := fmt.Sprintf("/orgs/%s/websites/%s", orgID, websiteID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var website EnhanceWebsite
-	if err := json.Unmarshal(resp, &website); err != nil {
-		return nil, fmt.Errorf("failed to parse website response: %w", err)
-	}
-
-	return &website, nil
-}
-
-// UploadToTmp uploads files to /tmp on the main server
-func (e *Enhance) UploadToTmp(ctx context.Context, localPath string, remoteName string) (string, error) {
-	if !e.connected {
-		return "", fmt.Errorf("not connected")
-	}
-
-	remotePath := fmt.Sprintf("/tmp/migration_%s_%d", remoteName, time.Now().Unix())
-
-	// Create remote directory
-	if _, err := e.sshClient.RunCommand(ctx, fmt.Sprintf("mkdir -p %s", remotePath)); err != nil {
-		return "", fmt.Errorf("failed to create tmp directory: %w", err)
-	}
-
-	// Upload files
-	progressChan := make(chan int64, 100)
-	go func() {
-		for range progressChan {
-			// Just drain the channel
+	var servers []EnhanceServer
+	if err := json.Unmarshal(listing.Items, &servers); err != nil {
+		// grouped form: map[groupId][]server
+		var grouped map[string][]EnhanceServer
+		if err2 := json.Unmarshal(listing.Items, &grouped); err2 != nil {
+			return nil, fmt.Errorf("failed to parse servers list: %w", err)
 		}
-	}()
-
-	if err := e.sshClient.UploadDirectory(ctx, localPath, remotePath, progressChan); err != nil {
-		close(progressChan)
-		return "", fmt.Errorf("failed to upload to tmp: %w", err)
+		for _, list := range grouped {
+			servers = append(servers, list...)
+		}
 	}
-	close(progressChan)
-
-	return remotePath, nil
+	return servers, nil
 }
 
-// MoveFromTmpToWebsite moves files from /tmp to the website directory
-// If the website is on a different server, it uses rsync internally
-func (e *Enhance) MoveFromTmpToWebsite(ctx context.Context, tmpPath string, website *EnhanceWebsite) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
+// GetServer returns one cluster server by ID
+func (e *Enhance) GetServer(ctx context.Context, serverID string) (*EnhanceServer, error) {
+	servers, err := e.ListServers(ctx)
+	if err != nil {
+		return nil, err
 	}
-
-	destPath := filepath.Join(website.HomeDir, "public_html")
-
-	// Check if we need to rsync to another server
-	// The main server has access to all servers in the cluster
-	cmd := fmt.Sprintf("rsync -avz --delete %s/ %s/", tmpPath, destPath)
-
-	if _, err := e.sshClient.RunCommand(ctx, cmd); err != nil {
-		return fmt.Errorf("failed to move files: %w", err)
+	for i := range servers {
+		if servers[i].ID == serverID {
+			return &servers[i], nil
+		}
 	}
-
-	// Cleanup tmp
-	cleanupCmd := fmt.Sprintf("rm -rf %s", tmpPath)
-	e.sshClient.RunCommand(ctx, cleanupCmd)
-
-	// Fix permissions
-	chownCmd := fmt.Sprintf("chown -R %s:%s %s", website.UnixUser, website.UnixUser, destPath)
-	e.sshClient.RunCommand(ctx, chownCmd)
-
-	return nil
+	return nil, fmt.Errorf("cluster server %s not found", serverID)
 }
 
-// ListAccounts returns all accounts (organizations) on the server
+// ListAccounts returns all organizations (used by the servers page)
 func (e *Enhance) ListAccounts(ctx context.Context) ([]common.Account, error) {
 	if !e.connected {
 		return nil, fmt.Errorf("not connected")
 	}
-
 	resp, err := e.apiRequest(ctx, "GET", "/orgs", nil)
 	if err != nil {
 		return nil, err
 	}
-
 	var orgsResponse struct {
 		Items []EnhanceOrg `json:"items"`
 	}
 	if err := json.Unmarshal(resp, &orgsResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse orgs response: %w", err)
 	}
-
 	var accounts []common.Account
 	for _, org := range orgsResponse.Items {
 		accounts = append(accounts, common.Account{
 			Username: org.Name,
-			Metadata: map[string]string{
-				"org_id": org.ID,
-			},
+			Metadata: map[string]string{"org_id": org.ID},
 		})
 	}
-
 	return accounts, nil
 }
 
-// GetAccount returns details for a specific account
-func (e *Enhance) GetAccount(ctx context.Context, username string) (*common.Account, error) {
-	// In Enhance, we work with organizations
-	accounts, err := e.ListAccounts(ctx)
+func (e *Enhance) orgID() (string, error) {
+	if e.config != nil && e.config.Metadata != nil && e.config.Metadata["enhance_org_id"] != "" {
+		return e.config.Metadata["enhance_org_id"], nil
+	}
+	return "", fmt.Errorf("enhance_org_id not configured - please set it in server settings")
+}
+
+// GetWebsiteInfo returns full details of a website (includes unixUser and server IDs)
+func (e *Enhance) GetWebsiteInfo(ctx context.Context, orgID string, websiteID string) (*EnhanceWebsite, error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s", orgID, websiteID), nil)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, acc := range accounts {
-		if acc.Username == username {
-			return &acc, nil
-		}
+	var website EnhanceWebsite
+	if err := json.Unmarshal(resp, &website); err != nil {
+		return nil, fmt.Errorf("failed to parse website response: %w", err)
 	}
-
-	return nil, fmt.Errorf("account not found: %s", username)
+	return &website, nil
 }
 
-// CreateAccount creates a new organization and website in Enhance
-func (e *Enhance) CreateAccount(ctx context.Context, account *common.Account, password string) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Create organization
-	orgReq := map[string]interface{}{
-		"name": account.Username,
-	}
-
-	resp, err := e.apiRequest(ctx, "POST", "/orgs", orgReq)
+// getWebsiteByDomain finds a website of the org by primary domain and returns its full details
+func (e *Enhance) getWebsiteByDomain(ctx context.Context, orgID, domain string) (*EnhanceWebsite, error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000", orgID), nil)
 	if err != nil {
-		return fmt.Errorf("failed to create organization: %w", err)
+		return nil, err
 	}
-
-	var orgResp struct {
-		ID string `json:"id"`
+	var listing struct {
+		Items []EnhanceWebsite `json:"items"`
 	}
-	if err := json.Unmarshal(resp, &orgResp); err != nil {
-		return fmt.Errorf("failed to parse org response: %w", err)
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
 	}
-
-	// Store org ID in metadata
-	if account.Metadata == nil {
-		account.Metadata = make(map[string]string)
+	for _, ws := range listing.Items {
+		if strings.EqualFold(ws.Domain.Domain, domain) {
+			return e.GetWebsiteInfo(ctx, orgID, ws.ID)
+		}
 	}
-	account.Metadata["org_id"] = orgResp.ID
-
-	return nil
+	return nil, fmt.Errorf("website not found: %s", domain)
 }
 
-// ImportAccount imports all data for an account
-func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, password string, progress chan<- common.MigrationProgress) (*common.Account, error) {
-	if !e.connected {
-		return nil, fmt.Errorf("not connected")
+// mapPHPVersion converts a DirectAdmin PHP version ("8.1") to Enhance's ("php81")
+func (e *Enhance) mapPHPVersion(version string) string {
+	if version == "" || version == "default" || version == "phpdefault" {
+		return "php81"
 	}
-
-	sendProgress := func(step string, completed, total int) {
-		if progress != nil {
-			progress <- common.MigrationProgress{
-				Status:         "running",
-				CurrentStep:    step,
-				TotalSteps:     total,
-				CompletedSteps: completed,
-			}
-		}
+	version = strings.TrimPrefix(strings.ToLower(version), "php")
+	version = strings.ReplaceAll(version, ".", "")
+	valid := map[string]bool{"56": true, "70": true, "71": true, "72": true, "73": true, "74": true, "80": true, "81": true, "82": true, "83": true, "84": true, "85": true}
+	if valid[version] {
+		return "php" + version
 	}
-
-	totalSteps := 5
-	currentStep := 0
-
-	// Get org_id from config metadata (already exists in Enhance)
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return nil, fmt.Errorf("enhance_org_id not configured - please set it in server settings")
-	}
-
-	// Store org_id in account metadata for later use
-	if data.Account.Metadata == nil {
-		data.Account.Metadata = make(map[string]string)
-	}
-	data.Account.Metadata["org_id"] = orgID
-
-	// 1. Create websites (domains). A website that cannot be created or verified on the
-	// selected cluster server aborts the import: nothing below has a safe place to land.
-	sendProgress("Creating websites", currentStep, totalSteps)
-	for _, domain := range data.Domains {
-		if err := e.createWebsite(ctx, orgID, &domain); err != nil {
-			e.logf("error", "Failed to create website %s: %v", domain.Name, err)
-			return nil, fmt.Errorf("failed to create website %s: %w", domain.Name, err)
-		}
-	}
-	currentStep++
-
-	// 2. Import databases
-	sendProgress("Importing databases", currentStep, totalSteps)
-	if len(data.Databases) > 0 {
-		dbDir := filepath.Join(filepath.Dir(data.FilesPath), "databases")
-		if err := e.ImportDatabases(ctx, data.Account.Username, data.Databases, dbDir, data.Domains); err != nil {
-			fmt.Printf("Warning: failed to import databases: %v\n", err)
-		}
-	}
-	currentStep++
-
-	// 3. Import emails
-	sendProgress("Importing email accounts", currentStep, totalSteps)
-	if len(data.Emails) > 0 {
-		if err := e.ImportEmails(ctx, data.Account.Username, data.Emails); err != nil {
-			fmt.Printf("Warning: failed to import emails: %v\n", err)
-		}
-	}
-	currentStep++
-
-	// 4. Import files
-	sendProgress("Importing files", currentStep, totalSteps)
-	if data.FilesPath != "" {
-		if err := e.ImportFiles(ctx, data.Account.Username, data.FilesPath, progress); err != nil {
-			return nil, fmt.Errorf("failed to import files: %w", err)
-		}
-	}
-	currentStep++
-
-	// 5. Setup SSL certificates
-	sendProgress("Setting up SSL certificates", currentStep, totalSteps)
-	for _, domain := range data.Domains {
-		if domain.SSL != nil {
-			if err := e.SetupSSL(ctx, domain.Name, domain.SSL); err != nil {
-				fmt.Printf("Warning: failed to setup SSL for %s: %v\n", domain.Name, err)
-			}
-		}
-	}
-	currentStep++
-
-	return &data.Account, nil
+	return "php81"
 }
 
-// createWebsite creates a website in Enhance on the selected cluster server and verifies
-// that Enhance actually placed it there. It never falls back to default placement.
-func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *common.Domain) error {
+// createWebsite creates a website on the selected cluster server and verifies placement.
+func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *common.Domain) (*EnhanceWebsite, error) {
 	target := e.targetClusterServerID
 	if target == "" {
-		return fmt.Errorf("no target cluster server selected; refusing default placement")
+		return nil, fmt.Errorf("no target cluster server selected; refusing default placement")
 	}
 
-	// Re-run safety: if the website already exists, reuse it only when it sits on the selected server.
+	// Re-run safety: reuse an existing website only when it sits on the selected server.
 	if existing, err := e.getWebsiteByDomain(ctx, orgID, domain.Name); err == nil && existing != nil {
 		if existing.AppServerID != target {
-			return fmt.Errorf("website %s already exists on a different server (appServerId=%s, selected=%s); move or delete it in Enhance first",
+			return nil, fmt.Errorf("website %s already exists on a different server (appServerId=%s, selected=%s); move or delete it in Enhance first",
 				domain.Name, existing.AppServerID, target)
 		}
 		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s); reusing it",
 			domain.Name, existing.ID, existing.UnixUser)
-		return nil
+		return existing, nil
 	}
 
 	websiteReq := map[string]interface{}{
 		"domain":      domain.Name,
-		"kind":        "website",
 		"appServerId": target,
 		"dbServerId":  target,
+		"phpVersion":  e.mapPHPVersion(domain.PHPVersion),
 	}
+	e.logf("info", "Creating website %s on cluster server %s (php=%s)", domain.Name, target, websiteReq["phpVersion"])
 
-	// Set PHP version from source domain if available
-	if domain.PHPVersion != "" {
-		if phpVersion := e.mapPHPVersion(domain.PHPVersion); phpVersion != "" {
-			websiteReq["phpVersion"] = phpVersion
-		}
-	}
-
-	e.logf("info", "Creating website %s on cluster server %s (request: %+v)", domain.Name, target, websiteReq)
-
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
+	resp, err := e.apiRequest(ctx, "POST", fmt.Sprintf("/orgs/%s/websites", orgID), websiteReq)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	// Verify where Enhance actually put it
 	var created struct {
 		ID string `json:"id"`
 	}
@@ -562,643 +491,616 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		website, err = e.getWebsiteByDomain(ctx, orgID, domain.Name)
 	}
 	if err != nil || website == nil {
-		return fmt.Errorf("website %s was created (id=%q) but could not be read back to verify placement: %v", domain.Name, created.ID, err)
+		return nil, fmt.Errorf("website %s was created (id=%q) but could not be read back: %v", domain.Name, created.ID, err)
 	}
-
 	if website.AppServerID != target {
-		return fmt.Errorf("PLACEMENT MISMATCH: website %s (id=%s) landed on server %s instead of selected server %s; check it in Enhance before retrying",
+		return nil, fmt.Errorf("PLACEMENT MISMATCH: website %s (id=%s) landed on server %s instead of selected server %s; check it in Enhance before retrying",
 			domain.Name, website.ID, website.AppServerID, target)
 	}
+	e.logf("info", "Website %s created on server %s (id=%s, unixUser=%s)", domain.Name, website.AppServerID, website.ID, website.UnixUser)
+	return website, nil
+}
 
-	e.logf("info", "Website %s created on server %s (id=%s, dbServerId=%s, unixUser=%s, homeDir=%s)",
-		domain.Name, website.AppServerID, website.ID, website.DbServerID, website.UnixUser, website.HomeDir)
+// ---------------------------------------------------------------------------
+// Node helpers
+// ---------------------------------------------------------------------------
 
+func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+func (e *Enhance) nodeRun(ctx context.Context, cmd string) (string, error) {
+	if e.node == nil {
+		return "", fmt.Errorf("not connected to cluster node")
+	}
+	out, err := e.node.RunCommand(ctx, cmd)
+	return strings.TrimSpace(out), err
+}
+
+// resolveWebsitePaths finds the website home and document root on the node.
+func (e *Enhance) resolveWebsitePaths(ctx context.Context, ws *EnhanceWebsite) error {
+	if ws.UnixUser == "" {
+		return fmt.Errorf("website %s has no unixUser in the API response", ws.Domain.Domain)
+	}
+	home, err := e.nodeRun(ctx, fmt.Sprintf("getent passwd %s | cut -d: -f6", shq(ws.UnixUser)))
+	if err != nil || home == "" {
+		// Enhance keeps websites under /var/www/<website id>
+		fallback := "/var/www/" + ws.ID
+		if _, err2 := e.nodeRun(ctx, "test -d "+shq(fallback)); err2 != nil {
+			return fmt.Errorf("cannot find home of unix user %s on node %s (getent failed: %v, %s missing)", ws.UnixUser, e.nodeHost, err, fallback)
+		}
+		home = fallback
+	}
+	ws.HomeDir = home
+	docRoot := ws.Domain.DocumentRoot
+	if docRoot == "" {
+		docRoot = "public_html"
+	}
+	if !strings.HasPrefix(docRoot, "/") {
+		docRoot = filepath.Join(home, docRoot)
+	}
+	if _, err := e.nodeRun(ctx, "test -d "+shq(docRoot)); err != nil {
+		// give Enhance a moment: the directory is created asynchronously after the API call
+		time.Sleep(3 * time.Second)
+		if _, err := e.nodeRun(ctx, "test -d "+shq(docRoot)); err != nil {
+			return fmt.Errorf("document root %s does not exist on node %s", docRoot, e.nodeHost)
+		}
+	}
+	ws.DocRoot = docRoot
+	e.logf("info", "Website %s on node %s: home=%s docroot=%s user=%s", ws.Domain.Domain, e.nodeHost, home, docRoot, ws.UnixUser)
 	return nil
 }
 
-// mapPHPVersion converts PHP version from DirectAdmin format to Enhance format
-func (e *Enhance) mapPHPVersion(version string) string {
-	// DirectAdmin formats: "8.1", "8.2", "7.4", "default", etc.
-	// Enhance formats: "php81", "php82", "php74", etc.
-
-	// Handle default/empty - use PHP 8.1 as default
-	if version == "" || version == "default" || version == "phpdefault" {
-		return "php81"
-	}
-
-	// Remove dots and add "php" prefix
-	version = strings.TrimPrefix(version, "php")
-	version = strings.Replace(version, ".", "", -1)
-
-	// Valid PHP versions for Enhance
-	validVersions := map[string]bool{
-		"56": true, "70": true, "71": true, "72": true, "73": true,
-		"74": true, "80": true, "81": true, "82": true, "83": true, "84": true,
-	}
-
-	// Validate it's a reasonable PHP version
-	if len(version) >= 2 && validVersions[version] {
-		return "php" + version
-	}
-
-	// Default to PHP 8.1 if invalid
-	return "php81"
-}
-
-// getWebsiteByDomain gets a website by domain name
-func (e *Enhance) getWebsiteByDomain(ctx context.Context, orgID, domain string) (*EnhanceWebsite, error) {
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var websitesResp struct {
-		Items []EnhanceWebsite `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &websitesResp); err != nil {
-		return nil, err
-	}
-
-	for _, ws := range websitesResp.Items {
-		// Domain is now an object with a domain field
-		if ws.Domain.Domain == domain {
-			ws.DomainStr = ws.Domain.Domain
-			return &ws, nil
-		}
-	}
-
-	return nil, fmt.Errorf("website not found: %s", domain)
-}
-
-// ImportFiles imports files to an account via SFTP/rsync
-func (e *Enhance) ImportFiles(ctx context.Context, username string, sourcePath string, progress chan<- common.MigrationProgress) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	// Get websites for this org
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return err
-	}
-
-	var websitesResp struct {
-		Items []EnhanceWebsite `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &websitesResp); err != nil {
-		return err
-	}
-
-	if len(websitesResp.Items) == 0 {
-		return fmt.Errorf("no websites found for organization")
-	}
-
-	// Upload files for each domain
-	domainsDir := filepath.Join(sourcePath, "domains")
-	entries, err := os.ReadDir(domainsDir)
-	if err != nil {
-		// Try direct upload if no domains subdirectory
-		return e.uploadFilesToWebsite(ctx, &websitesResp.Items[0], sourcePath, progress)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
+func randomPassword(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			b[i] = alphabet[i%len(alphabet)]
 			continue
 		}
-
-		domainName := entry.Name()
-		localPath := filepath.Join(domainsDir, domainName)
-
-		// Find matching website
-		for _, ws := range websitesResp.Items {
-			if ws.Domain.Domain == domainName {
-				if err := e.uploadFilesToWebsite(ctx, &ws, localPath, progress); err != nil {
-					fmt.Printf("Warning: failed to upload files for %s: %v\n", domainName, err)
-				}
-				break
-			}
-		}
+		b[i] = alphabet[idx.Int64()]
 	}
-
-	return nil
+	return string(b)
 }
 
-// uploadFilesToWebsite uploads files to a specific website
-func (e *Enhance) uploadFilesToWebsite(ctx context.Context, website *EnhanceWebsite, localPath string, progress chan<- common.MigrationProgress) error {
-	remotePath := filepath.Join(website.HomeDir, "public_html")
+var dbNameSanitizer = regexp.MustCompile(`[^0-9a-z_]`)
 
-	// Check if public_html exists in local path
-	publicHtmlLocal := filepath.Join(localPath, "public_html")
-	if _, err := os.Stat(publicHtmlLocal); err == nil {
-		localPath = publicHtmlLocal
-	}
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
 
-	if progress != nil {
-		progress <- common.MigrationProgress{
-			Status:      "running",
-			CurrentStep: fmt.Sprintf("Uploading files to %s", website.Domain.Domain),
-		}
-	}
-
-	// Use rsync/tar for faster upload
-	err := e.sshClient.RsyncUploadWithKey(ctx, localPath, remotePath)
-	if err != nil {
-		return fmt.Errorf("failed to upload files: %w", err)
-	}
-
-	return nil
-}
-
-// ImportDatabases imports databases to Enhance
-func (e *Enhance) ImportDatabases(ctx context.Context, username string, databases []common.Database, dumpDir string, domains []common.Domain) error {
+// ImportAccount imports everything exported from the source into Enhance.
+// Websites, files, databases and permissions are fatal on failure; emails, cron
+// jobs and SSL are recorded as warnings.
+func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, progress chan<- common.MigrationProgress) (*ImportResult, error) {
 	if !e.connected {
-		return fmt.Errorf("not connected")
+		return nil, fmt.Errorf("not connected")
 	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
+	if e.node == nil {
+		return nil, fmt.Errorf("not connected to the cluster node; cannot import files")
 	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	// Get websites for this org
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
+	orgID, err := e.orgID()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var websitesResp struct {
-		Items []EnhanceWebsite `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &websitesResp); err != nil {
-		return err
-	}
-
-	if len(websitesResp.Items) == 0 {
-		return fmt.Errorf("no websites found for organization")
-	}
-
-	// Find the website that matches one of our domains
-	var website *EnhanceWebsite
-	for _, domain := range domains {
-		for i, ws := range websitesResp.Items {
-			if ws.Domain.Domain == domain.Name {
-				website = &websitesResp.Items[i]
-				fmt.Printf("Found website for domain %s: ID=%s\n", domain.Name, ws.ID)
-				break
-			}
+	totalSteps := 7
+	step := 0
+	sendProgress := func(name string) {
+		if progress != nil {
+			progress <- common.MigrationProgress{Status: "running", CurrentStep: name, TotalSteps: totalSteps, CompletedSteps: step}
 		}
-		if website != nil {
+		step++
+	}
+
+	result := &ImportResult{NodeHost: e.nodeHost, Websites: e.websites}
+
+	// 1. Websites
+	sendProgress("Creating websites")
+	if len(data.Domains) == 0 {
+		return nil, fmt.Errorf("export contains no domains")
+	}
+	for i := range data.Domains {
+		d := &data.Domains[i]
+		ws, err := e.createWebsite(ctx, orgID, d)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create website %s: %w", d.Name, err)
+		}
+		if err := e.resolveWebsitePaths(ctx, ws); err != nil {
+			return nil, err
+		}
+		e.websites[strings.ToLower(d.Name)] = ws
+	}
+
+	// 2. Files
+	sendProgress("Uploading files")
+	if data.FilesPath == "" {
+		return nil, fmt.Errorf("export has no files path")
+	}
+	for _, d := range data.Domains {
+		ws := e.websites[strings.ToLower(d.Name)]
+		localDocRoot := filepath.Join(data.FilesPath, "domains", d.Name, "public_html")
+		if _, err := os.Stat(localDocRoot); err != nil {
+			return nil, fmt.Errorf("exported files for %s not found at %s", d.Name, localDocRoot)
+		}
+		if err := e.uploadFiles(ctx, ws, localDocRoot, progress); err != nil {
+			return nil, fmt.Errorf("failed to upload files for %s: %w", d.Name, err)
+		}
+	}
+
+	// 3. Databases
+	sendProgress("Importing databases")
+	if len(data.Databases) > 0 {
+		main := e.websites[strings.ToLower(data.Account.Domain)]
+		if main == nil {
+			main = e.websites[strings.ToLower(data.Domains[0].Name)]
+		}
+		dumpDir := filepath.Join(filepath.Dir(data.FilesPath), "databases")
+		for _, db := range data.Databases {
+			res, err := e.importDatabase(ctx, orgID, main, db, dumpDir, data.Account.Username)
+			if err != nil {
+				return nil, fmt.Errorf("failed to import database %s: %w", db.Name, err)
+			}
+			result.Databases = append(result.Databases, *res)
+		}
+		if err := e.updateWPConfigs(ctx, result.Databases); err != nil {
+			return nil, err
+		}
+	} else {
+		e.logf("info", "No databases in export; skipping database import")
+	}
+
+	// 4. Emails (warnings only)
+	sendProgress("Importing email accounts")
+	for _, em := range data.Emails {
+		if addr, err := e.importEmail(ctx, orgID, em); err != nil {
+			e.warnf("Email %s not created: %v", em.Email, err)
+		} else {
+			result.Emails = append(result.Emails, addr)
+		}
+	}
+	if len(data.Emails) > 0 {
+		e.warnf("%d mailbox(es) created with new random passwords (see log); mailbox contents were not migrated", len(result.Emails))
+	}
+
+	// 5. Cron jobs (warnings only)
+	sendProgress("Importing cron jobs")
+	if len(data.CronJobs) > 0 {
+		main := e.websites[strings.ToLower(data.Account.Domain)]
+		if main == nil {
+			main = e.websites[strings.ToLower(data.Domains[0].Name)]
+		}
+		if err := e.importCronJobs(ctx, orgID, main, data); err != nil {
+			e.warnf("Cron jobs not imported: %v", err)
+		}
+	}
+
+	// 6. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
+	sendProgress("Setting up SSL certificates")
+	for _, d := range data.Domains {
+		if d.SSL == nil {
+			continue
+		}
+		ws := e.websites[strings.ToLower(d.Name)]
+		if err := e.setupSSL(ctx, ws, d.SSL); err != nil {
+			e.warnf("SSL certificate for %s not installed (Enhance will issue Let's Encrypt after DNS change): %v", d.Name, err)
+		}
+	}
+
+	// 7. Permissions (fatal)
+	sendProgress("Fixing file permissions")
+	for _, ws := range e.websites {
+		if err := e.fixPermissions(ctx, ws); err != nil {
+			return nil, err
+		}
+	}
+
+	result.Warnings = e.warnings
+	return result, nil
+}
+
+// uploadFiles uploads a document root to the website's document root on the node and verifies it.
+func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocRoot string, progress chan<- common.MigrationProgress) error {
+	localFiles := 0
+	filepath.Walk(localDocRoot, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			localFiles++
+		}
+		return nil
+	})
+	if progress != nil {
+		progress <- common.MigrationProgress{Status: "running", CurrentStep: fmt.Sprintf("Uploading files to %s", ws.Domain.Domain)}
+	}
+	e.logf("info", "Uploading %d files for %s to %s:%s", localFiles, ws.Domain.Domain, e.nodeHost, ws.DocRoot)
+
+	// Remove Enhance's placeholder index.html when the site brings its own entry point
+	if _, err := os.Stat(filepath.Join(localDocRoot, "index.html")); os.IsNotExist(err) {
+		e.nodeRun(ctx, fmt.Sprintf("[ -f %s/index.html ] && rm -f %s/index.html || true", shq(ws.DocRoot), shq(ws.DocRoot)))
+	}
+
+	start := time.Now()
+	if err := e.node.RsyncUploadWithKey(ctx, localDocRoot, ws.DocRoot); err != nil {
+		return err
+	}
+
+	out, err := e.nodeRun(ctx, fmt.Sprintf("find %s -type f | wc -l; du -sh %s | cut -f1", shq(ws.DocRoot), shq(ws.DocRoot)))
+	if err != nil {
+		return fmt.Errorf("could not verify uploaded files: %w", err)
+	}
+	parts := strings.Fields(out)
+	remoteFiles, _ := strconv.Atoi(parts[0])
+	size := ""
+	if len(parts) > 1 {
+		size = parts[1]
+	}
+	e.logf("info", "Upload for %s done in %s: %d files on node (%s), %d files locally", ws.Domain.Domain, time.Since(start).Round(time.Second), remoteFiles, size, localFiles)
+	if localFiles > 0 && remoteFiles == 0 {
+		return fmt.Errorf("no files found in %s on node after upload", ws.DocRoot)
+	}
+	if remoteFiles < localFiles*9/10 {
+		return fmt.Errorf("only %d of %d files arrived in %s on node", remoteFiles, localFiles, ws.DocRoot)
+	}
+	return nil
+}
+
+// importDatabase creates the database and user via the API and loads the dump on the node.
+func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceWebsite, db common.Database, dumpDir, sourceUser string) (*DBResult, error) {
+	base := strings.ToLower(db.Name)
+	if sourceUser != "" {
+		base = strings.TrimPrefix(base, strings.ToLower(sourceUser)+"_")
+	}
+	base = dbNameSanitizer.ReplaceAllString(base, "_")
+	if base == "" {
+		base = "db"
+	}
+
+	// Create DB (409 = already exists, reuse)
+	dbEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, ws.ID)
+	if _, err := e.apiRequest(ctx, "POST", dbEndpoint, map[string]interface{}{"name": base}); err != nil {
+		if apiStatus(err) != 409 {
+			return nil, fmt.Errorf("create database: %w", err)
+		}
+		e.logf("info", "Database %s already exists for %s; reusing", base, ws.Domain.Domain)
+	}
+	actualDB, err := e.findMySQLName(ctx, dbEndpoint, base, ws.UnixUser)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create user
+	userBase := base
+	if len(userBase) > 16 {
+		userBase = userBase[:16]
+	}
+	password := randomPassword(24)
+	userEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-users", orgID, ws.ID)
+	if _, err := e.apiRequest(ctx, "POST", userEndpoint, map[string]interface{}{"username": userBase, "password": password}); err != nil {
+		if apiStatus(err) != 409 {
+			return nil, fmt.Errorf("create database user: %w", err)
+		}
+		// exists: reset the password so we know it
+		actualUser, ferr := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("%s/%s", userEndpoint, actualUser), map[string]interface{}{"password": password}); err != nil {
+			return nil, fmt.Errorf("database user %s exists and password reset failed: %w", actualUser, err)
+		}
+	}
+	actualUser, err := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
+	if err != nil {
+		return nil, err
+	}
+
+	// Grant privileges
+	privEndpoint := fmt.Sprintf("%s/%s/privileges", userEndpoint, actualUser)
+	granted := false
+	var lastErr error
+	for _, grants := range [][]string{{"ALL PRIVILEGES"}, {"ALL"}, {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "INDEX", "ALTER", "CREATE TEMPORARY TABLES", "LOCK TABLES", "EXECUTE", "CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT", "TRIGGER", "REFERENCES"}} {
+		if _, err := e.apiRequest(ctx, "PUT", privEndpoint, map[string]interface{}{"dbName": actualDB, "grants": grants}); err != nil {
+			lastErr = err
+			continue
+		}
+		granted = true
+		break
+	}
+	if !granted {
+		return nil, fmt.Errorf("grant privileges on %s to %s: %w", actualDB, actualUser, lastErr)
+	}
+	e.logf("info", "Database %s and user %s created for %s", actualDB, actualUser, ws.Domain.Domain)
+
+	// Locate dump
+	dumpFile := ""
+	for _, cand := range []string{db.Name + ".sql.gz", db.Name + ".sql"} {
+		if _, err := os.Stat(filepath.Join(dumpDir, cand)); err == nil {
+			dumpFile = filepath.Join(dumpDir, cand)
 			break
 		}
 	}
-
-	if website == nil {
-		return fmt.Errorf("no matching website found for domains")
+	res := &DBResult{SourceName: db.Name, Name: actualDB, User: actualUser, Password: password}
+	if dumpFile == "" {
+		return nil, fmt.Errorf("dump for %s not found in %s", db.Name, dumpDir)
 	}
 
-	for _, db := range databases {
-		// Create database via API
-		dbReq := map[string]interface{}{
-			"name": db.Name,
-			"kind": "mysql",
-		}
+	// Upload dump to the node
+	remoteDump := fmt.Sprintf("/tmp/migration_%s_%d%s", base, time.Now().Unix(), strings.TrimPrefix(filepath.Ext(dumpFile), ""))
+	if strings.HasSuffix(dumpFile, ".sql.gz") {
+		remoteDump = fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", base, time.Now().Unix())
+	}
+	if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
+		return nil, fmt.Errorf("upload dump to node: %w", err)
+	}
+	e.tmpPaths = append(e.tmpPaths, remoteDump)
 
-		dbEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, website.ID)
-		dbResp, err := e.apiRequest(ctx, "POST", dbEndpoint, dbReq)
-		if err != nil {
-			fmt.Printf("Warning: failed to create database %s: %v\n", db.Name, err)
+	reader := "cat " + shq(remoteDump)
+	if strings.HasSuffix(remoteDump, ".gz") {
+		reader = "zcat " + shq(remoteDump)
+	}
+	hosts := []string{"", "127.0.0.1"}
+	for _, ip := range ws.DbServerIps {
+		hosts = append(hosts, ip.IP)
+	}
+	imported := false
+	var importErr error
+	for _, host := range hosts {
+		hostFlag := ""
+		if host != "" {
+			hostFlag = " -h " + shq(host)
+		}
+		cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | mysql%s -u %s -p%s %s 2>&1",
+			reader, hostFlag, shq(actualUser), shq(password), shq(actualDB))
+		out, err := e.nodeRun(ctx, cmd)
+		if err == nil {
+			imported = true
+			if host == "" {
+				res.Host = "localhost"
+			} else {
+				res.Host = host
+			}
+			break
+		}
+		importErr = fmt.Errorf("%v", out)
+		if !strings.Contains(out, "Can't connect") && !strings.Contains(out, "Access denied") {
+			break // real SQL error: no point trying other hosts
+		}
+	}
+	if !imported {
+		return nil, fmt.Errorf("mysql import of %s failed on node: %v", actualDB, importErr)
+	}
+
+	countOut, err := e.nodeRun(ctx, fmt.Sprintf("mysql -u %s -p%s -N -e %s", shq(actualUser), shq(password),
+		shq(fmt.Sprintf("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", actualDB))))
+	if err == nil {
+		res.Tables, _ = strconv.Atoi(strings.TrimSpace(countOut))
+	}
+	if res.Tables == 0 {
+		return nil, fmt.Errorf("database %s has no tables after import", actualDB)
+	}
+	e.nodeRun(ctx, "rm -f "+shq(remoteDump))
+	e.logf("info", "Database %s imported on node: %d tables (user %s, host %s)", actualDB, res.Tables, actualUser, res.Host)
+	return res, nil
+}
+
+// findMySQLName lists mysql-dbs or mysql-users and returns the actual (possibly prefixed) name
+func (e *Enhance) findMySQLName(ctx context.Context, listEndpoint, base, unixUser string) (string, error) {
+	resp, err := e.apiRequest(ctx, "GET", listEndpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("list %s: %w", listEndpoint, err)
+	}
+	var listing struct {
+		Items []struct {
+			Name     string `json:"name"`
+			Username string `json:"username"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return "", fmt.Errorf("parse %s: %w", listEndpoint, err)
+	}
+	var names []string
+	for _, it := range listing.Items {
+		if it.Name != "" {
+			names = append(names, it.Name)
+		} else {
+			names = append(names, it.Username)
+		}
+	}
+	for _, cand := range []string{base, unixUser + "_" + base} {
+		for _, n := range names {
+			if n == cand {
+				return n, nil
+			}
+		}
+	}
+	for _, n := range names {
+		if strings.HasSuffix(n, "_"+base) {
+			return n, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in Enhance listing after creation (have: %s)", base, strings.Join(names, ", "))
+}
+
+// updateWPConfigs rewrites DB credentials in wp-config.php of every migrated website
+func (e *Enhance) updateWPConfigs(ctx context.Context, dbs []DBResult) error {
+	if len(dbs) == 0 {
+		return nil
+	}
+	dbHost := e.detectDBHost(ctx)
+	for _, ws := range e.websites {
+		wpConfig := ws.DocRoot + "/wp-config.php"
+		if _, err := e.nodeRun(ctx, "test -f "+shq(wpConfig)); err != nil {
 			continue
 		}
-
-		var newDB struct {
-			ID string `json:"id"`
-		}
-		json.Unmarshal(dbResp, &newDB)
-
-		// Create database users
-		for _, user := range db.Users {
-			userReq := map[string]interface{}{
-				"username": user.Username,
+		current, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "define\( *['\"]DB_NAME['\"] *, *['\"][^'\"]*['\"]" %s | head -1 | sed -E "s/.*, *['\"]([^'\"]*)['\"]/\1/"`, shq(wpConfig)))
+		var match *DBResult
+		for i := range dbs {
+			if dbs[i].SourceName == current {
+				match = &dbs[i]
 			}
-			userEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs/%s/users", orgID, website.ID, newDB.ID)
-			e.apiRequest(ctx, "POST", userEndpoint, userReq)
 		}
-
-		// Import dump file if exists
-		dumpFile := filepath.Join(dumpDir, fmt.Sprintf("%s.sql", db.Name))
-		if _, err := os.Stat(dumpFile); err == nil {
-			// Upload dump file
-			remoteDumpPath := fmt.Sprintf("/tmp/%s_%d.sql", db.Name, time.Now().Unix())
-			if err := e.sshClient.Upload(ctx, dumpFile, remoteDumpPath); err != nil {
-				fmt.Printf("Warning: failed to upload dump for %s: %v\n", db.Name, err)
+		if match == nil {
+			if len(dbs) == 1 {
+				match = &dbs[0]
+				e.warnf("wp-config.php of %s references DB %q which was not in the export; pointing it to %s", ws.Domain.Domain, current, match.Name)
+			} else {
+				e.warnf("wp-config.php of %s references DB %q; could not decide which imported database to use, update it manually", ws.Domain.Domain, current)
 				continue
 			}
-
-			// Import dump
-			// Note: This requires knowing the database credentials
-			// In production, you'd get these from the API or use a different import method
-			importCmd := fmt.Sprintf("mysql %s < %s && rm -f %s", db.Name, remoteDumpPath, remoteDumpPath)
-			if _, err := e.sshClient.RunCommand(ctx, importCmd); err != nil {
-				fmt.Printf("Warning: failed to import dump for %s: %v\n", db.Name, err)
+		}
+		e.nodeRun(ctx, fmt.Sprintf("cp -a %s %s.pre-migration", shq(wpConfig), shq(wpConfig)))
+		for key, val := range map[string]string{"DB_NAME": match.Name, "DB_USER": match.User, "DB_PASSWORD": match.Password, "DB_HOST": dbHost} {
+			cmd := fmt.Sprintf(`sed -i -E "s|define\( *['\"]%s['\"] *, *['\"][^'\"]*['\"] *\)|define('%s', '%s')|" %s`, key, key, val, shq(wpConfig))
+			if out, err := e.nodeRun(ctx, cmd); err != nil {
+				return fmt.Errorf("update %s in wp-config.php of %s: %v %s", key, ws.Domain.Domain, err, out)
 			}
 		}
+		check, _ := e.nodeRun(ctx, fmt.Sprintf("grep -c %s %s", shq("'"+match.Name+"'"), shq(wpConfig)))
+		if strings.TrimSpace(check) == "0" {
+			return fmt.Errorf("wp-config.php of %s still does not reference database %s after update", ws.Domain.Domain, match.Name)
+		}
+		match.WPConfig = true
+		match.Host = dbHost
+		e.nodeRun(ctx, fmt.Sprintf("chown %s:%s %s.pre-migration && chmod 600 %s.pre-migration", shq(ws.UnixUser), shq(ws.UnixUser), shq(wpConfig), shq(wpConfig)))
+		e.logf("info", "wp-config.php of %s updated: DB_NAME=%s DB_USER=%s DB_HOST=%s (backup: wp-config.php.pre-migration)", ws.Domain.Domain, match.Name, match.User, dbHost)
 	}
-
+	for _, db := range dbs {
+		if !db.WPConfig {
+			e.warnf("Database %s imported but no wp-config.php was updated; new credentials: user=%s password=%s host=%s", db.Name, db.User, db.Password, dbHost)
+		}
+	}
 	return nil
 }
 
-// ImportEmails imports email accounts to Enhance
-func (e *Enhance) ImportEmails(ctx context.Context, username string, emails []common.EmailAccount) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
+// detectDBHost looks at other websites on the node to learn the DB_HOST Enhance uses
+func (e *Enhance) detectDBHost(ctx context.Context) string {
+	exclude := ""
+	for _, ws := range e.websites {
+		exclude += " -not -path " + shq(ws.DocRoot+"/*")
 	}
+	cmd := fmt.Sprintf(`find /var/www -maxdepth 3 -name wp-config.php%s 2>/dev/null | head -20 | xargs -r grep -hoE "define\( *['\"]DB_HOST['\"] *, *['\"][^'\"]*['\"]" 2>/dev/null | sed -E "s/.*, *['\"]([^'\"]*)['\"]/\1/" | sort | uniq -c | sort -rn | head -1 | awk '{print $2}'`, exclude)
+	out, err := e.nodeRun(ctx, cmd)
+	if err == nil && out != "" {
+		e.logf("info", "Using DB_HOST=%s (learned from existing websites on the node)", out)
+		return out
+	}
+	e.logf("info", "Using DB_HOST=localhost (no other WordPress sites on the node to learn from)")
+	return "localhost"
+}
 
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
+// importEmail creates a mailbox with a new random password
+func (e *Enhance) importEmail(ctx context.Context, orgID string, em common.EmailAccount) (string, error) {
+	parts := strings.SplitN(em.Email, "@", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid address")
 	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
+	ws := e.websites[strings.ToLower(parts[1])]
+	if ws == nil {
+		return "", fmt.Errorf("no migrated website for domain %s", parts[1])
 	}
-
-	// Get websites
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return err
+	password := randomPassword(16)
+	req := map[string]interface{}{"username": parts[0], "mailboxPassword": password}
+	if em.Quota > 0 {
+		req["quota"] = em.Quota / (1024 * 1024)
 	}
-
-	var websitesResp struct {
-		Items []EnhanceWebsite `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &websitesResp); err != nil {
-		return err
-	}
-
-	for _, email := range emails {
-		parts := strings.Split(email.Email, "@")
-		if len(parts) != 2 {
-			continue
+	endpoint := fmt.Sprintf("/orgs/%s/websites/%s/domains/%s/emails", orgID, ws.ID, ws.Domain.ID)
+	if _, err := e.apiRequest(ctx, "POST", endpoint, req); err != nil {
+		if apiStatus(err) == 409 {
+			e.logf("info", "Mailbox %s already exists; left unchanged", em.Email)
+			return em.Email, nil
 		}
+		return "", err
+	}
+	e.logf("info", "Mailbox %s created with password %s", em.Email, password)
+	return em.Email, nil
+}
 
-		localPart := parts[0]
-		domain := parts[1]
-
-		// Find website for this domain
-		var websiteID string
-		for _, ws := range websitesResp.Items {
-			if ws.Domain.Domain == domain {
-				websiteID = ws.ID
-				break
+// importCronJobs appends the source cron jobs to the website crontab, rewriting paths
+func (e *Enhance) importCronJobs(ctx context.Context, orgID string, ws *EnhanceWebsite, data *common.ExportData) error {
+	endpoint := fmt.Sprintf("/orgs/%s/websites/%s/crontab", orgID, ws.ID)
+	existing := 0
+	if resp, err := e.apiRequest(ctx, "GET", endpoint, nil); err == nil && len(resp) > 0 {
+		var listing struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(resp, &listing) == nil {
+			existing = len(listing.Items)
+		}
+	}
+	var items []map[string]interface{}
+	for i, cj := range data.CronJobs {
+		cmd := cj.Command
+		for _, d := range data.Domains {
+			if w := e.websites[strings.ToLower(d.Name)]; w != nil && d.DocumentRoot != "" {
+				cmd = strings.ReplaceAll(cmd, d.DocumentRoot, w.DocRoot)
 			}
 		}
-
-		if websiteID == "" {
-			fmt.Printf("Warning: no website found for email domain %s\n", domain)
-			continue
-		}
-
-		// Create email account
-		emailReq := map[string]interface{}{
-			"address": localPart,
-			"quotaMb": email.Quota / (1024 * 1024), // Convert bytes to MB
-		}
-
-		emailEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/emails", orgID, websiteID)
-		if _, err := e.apiRequest(ctx, "POST", emailEndpoint, emailReq); err != nil {
-			fmt.Printf("Warning: failed to create email %s: %v\n", email.Email, err)
-		}
+		cmd = strings.ReplaceAll(cmd, "/home/"+data.Account.Username+"/domains/", "/var/www/")
+		cmd = strings.ReplaceAll(cmd, "/usr/local/bin/php", "php")
+		cmd = strings.ReplaceAll(cmd, "/usr/bin/php", "php")
+		expr := fmt.Sprintf("%s %s %s %s %s %s", cj.Minute, cj.Hour, cj.Day, cj.Month, cj.Weekday, cmd)
+		items = append(items, map[string]interface{}{"cronCmd": map[string]interface{}{"lineNumber": existing + i + 1, "expr": expr}})
 	}
-
-	return nil
-}
-
-// ImportCronJobs imports cron jobs to Enhance
-func (e *Enhance) ImportCronJobs(ctx context.Context, username string, cronJobs []common.CronJob, domains []common.Domain) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	// Get websites for this org
-	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	resp, err := e.apiRequest(ctx, "GET", endpoint, nil)
-	if err != nil {
+	if _, err := e.apiRequest(ctx, "PATCH", endpoint, map[string]interface{}{"items": items}); err != nil {
 		return err
 	}
+	e.logf("info", "%d cron job(s) added to %s", len(items), ws.Domain.Domain)
+	return nil
+}
 
-	var websitesResp struct {
-		Items []EnhanceWebsite `json:"items"`
+// setupSSL uploads the source certificate for the website domain
+func (e *Enhance) setupSSL(ctx context.Context, ws *EnhanceWebsite, cert *common.SSLCert) error {
+	if !cert.ExpiresAt.IsZero() && cert.ExpiresAt.Before(time.Now()) {
+		return fmt.Errorf("source certificate expired on %s", cert.ExpiresAt.Format("2006-01-02"))
 	}
-	if err := json.Unmarshal(resp, &websitesResp); err != nil {
+	fullCert := strings.TrimSpace(cert.Certificate)
+	if strings.TrimSpace(cert.CABundle) != "" {
+		fullCert += "\n" + strings.TrimSpace(cert.CABundle)
+	}
+	body := map[string]interface{}{"cert": fullCert, "key": strings.TrimSpace(cert.PrivateKey), "pkey": strings.TrimSpace(cert.PrivateKey)}
+	if _, err := e.apiRequest(ctx, "POST", fmt.Sprintf("/v2/domains/%s/ssl", ws.Domain.ID), body); err != nil {
 		return err
 	}
-
-	if len(websitesResp.Items) == 0 {
-		return fmt.Errorf("no websites found for organization")
-	}
-
-	// Find the website that matches one of our domains
-	var website *EnhanceWebsite
-	for _, domain := range domains {
-		for i, ws := range websitesResp.Items {
-			if ws.Domain.Domain == domain.Name {
-				website = &websitesResp.Items[i]
-				break
-			}
-		}
-		if website != nil {
-			break
-		}
-	}
-
-	if website == nil {
-		return fmt.Errorf("no matching website found for cron jobs")
-	}
-
-	for _, cron := range cronJobs {
-		// Create cron job via API
-		cronReq := map[string]interface{}{
-			"minute":  cron.Minute,
-			"hour":    cron.Hour,
-			"day":     cron.Day,
-			"month":   cron.Month,
-			"weekday": cron.Weekday,
-			"command": cron.Command,
-		}
-
-		cronEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/cron-jobs", orgID, website.ID)
-		if _, err := e.apiRequest(ctx, "POST", cronEndpoint, cronReq); err != nil {
-			fmt.Printf("Warning: failed to create cron job: %v\n", err)
-		}
-	}
-
+	e.logf("info", "SSL certificate installed for %s", ws.Domain.Domain)
 	return nil
 }
 
-// ImportEmailData imports email maildir data to Enhance
-func (e *Enhance) ImportEmailData(ctx context.Context, website *EnhanceWebsite, emailUser string, localMailDir string) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
+// fixPermissions sets ownership and modes on the website document root
+func (e *Enhance) fixPermissions(ctx context.Context, ws *EnhanceWebsite) error {
+	if ws.UnixUser == "" || ws.DocRoot == "" {
+		return fmt.Errorf("cannot fix permissions for %s: unknown unix user or docroot", ws.Domain.Domain)
 	}
-
-	// Upload maildir to the correct location
-	// Enhance uses /home/<unixuser>/mail/<domain>/<user>/
-	remoteMailDir := fmt.Sprintf("/home/%s/mail/%s/%s", website.UnixUser, website.Domain.Domain, emailUser)
-
-	// Create directory
-	mkdirCmd := fmt.Sprintf("mkdir -p %s", remoteMailDir)
-	if _, err := e.sshClient.RunCommand(ctx, mkdirCmd); err != nil {
-		return fmt.Errorf("failed to create mail directory: %w", err)
+	group, err := e.nodeRun(ctx, fmt.Sprintf("id -gn %s", shq(ws.UnixUser)))
+	if err != nil || group == "" {
+		group = ws.UnixUser
 	}
-
-	// Upload maildir
-	progressChan := make(chan int64, 100)
-	go func() {
-		for range progressChan {
+	steps := []string{
+		fmt.Sprintf("chown -R %s:%s %s", shq(ws.UnixUser), shq(group), shq(ws.DocRoot)),
+		fmt.Sprintf("find %s -type d -exec chmod 755 {} +", shq(ws.DocRoot)),
+		fmt.Sprintf("find %s -type f -exec chmod 644 {} +", shq(ws.DocRoot)),
+		fmt.Sprintf("[ -f %s/wp-config.php ] && chmod 600 %s/wp-config.php || true", shq(ws.DocRoot), shq(ws.DocRoot)),
+	}
+	for _, cmd := range steps {
+		if out, err := e.nodeRun(ctx, cmd); err != nil {
+			return fmt.Errorf("permission fix failed for %s (%s): %v %s", ws.Domain.Domain, cmd, err, out)
 		}
-	}()
-
-	if err := e.sshClient.UploadDirectory(ctx, localMailDir, remoteMailDir, progressChan); err != nil {
-		close(progressChan)
-		return fmt.Errorf("failed to upload maildir: %w", err)
 	}
-	close(progressChan)
-
-	// Fix permissions
-	chownCmd := fmt.Sprintf("chown -R %s:%s %s", website.UnixUser, website.UnixUser, remoteMailDir)
-	e.sshClient.RunCommand(ctx, chownCmd)
-
+	owner, _ := e.nodeRun(ctx, fmt.Sprintf("stat -c '%%U:%%G %%a' %s", shq(ws.DocRoot)))
+	e.logf("info", "Permissions fixed for %s: %s is %s, dirs 755, files 644", ws.Domain.Domain, ws.DocRoot, owner)
 	return nil
 }
 
-// SetupDomain configures a domain in Enhance
-func (e *Enhance) SetupDomain(ctx context.Context, username string, domain *common.Domain) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
+// CleanupTempFiles removes files this import created on the node (exact paths only)
+func (e *Enhance) CleanupTempFiles(ctx context.Context) error {
+	if e.node == nil {
+		return nil
 	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	return e.createWebsite(ctx, orgID, domain)
-}
-
-// SetupSSL configures SSL for a domain in Enhance
-func (e *Enhance) SetupSSL(ctx context.Context, domain string, cert *common.SSLCert) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	website, err := e.getWebsiteByDomain(ctx, orgID, domain)
-	if err != nil {
-		return fmt.Errorf("website not found for domain %s: %w", domain, err)
-	}
-
-	// Upload SSL certificate
-	sslReq := map[string]interface{}{
-		"cert":  cert.Certificate,
-		"key":   cert.PrivateKey,
-		"chain": cert.CABundle,
-	}
-
-	endpoint := fmt.Sprintf("/orgs/%s/websites/%s/ssl", orgID, website.ID)
-	if _, err := e.apiRequest(ctx, "POST", endpoint, sslReq); err != nil {
-		return fmt.Errorf("failed to setup SSL: %w", err)
-	}
-
-	return nil
-}
-
-// ExportAccount exports all data for an account (for backup purposes)
-func (e *Enhance) ExportAccount(ctx context.Context, username string, outputDir string, progress chan<- common.MigrationProgress) (*common.ExportData, error) {
-	return nil, fmt.Errorf("Enhance export not implemented - use DirectAdmin for export")
-}
-
-// ExportFiles exports files for an account
-func (e *Enhance) ExportFiles(ctx context.Context, username string, outputDir string, progress chan<- common.MigrationProgress) error {
-	return fmt.Errorf("Enhance export not implemented - use DirectAdmin for export")
-}
-
-// ExportDatabases exports databases for an account
-func (e *Enhance) ExportDatabases(ctx context.Context, username string, outputDir string) ([]common.Database, error) {
-	return nil, fmt.Errorf("Enhance export not implemented - use DirectAdmin for export")
-}
-
-// ExportEmails exports email accounts and data
-func (e *Enhance) ExportEmails(ctx context.Context, username string, outputDir string) ([]common.EmailAccount, error) {
-	return nil, fmt.Errorf("Enhance export not implemented - use DirectAdmin for export")
-}
-
-// uploadFile uploads a file using multipart form
-func (e *Enhance) uploadFile(ctx context.Context, endpoint, fieldName, filePath string) error {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
-	}
-	defer file.Close()
-
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
-	if err != nil {
-		return fmt.Errorf("failed to create form file: %w", err)
-	}
-
-	if _, err := io.Copy(part, file); err != nil {
-		return fmt.Errorf("failed to copy file: %w", err)
-	}
-
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("failed to close writer: %w", err)
-	}
-
-	url := fmt.Sprintf("%s%s", e.config.APIEndpoint, endpoint)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, body)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", e.apiKey))
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("upload failed (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
-}
-
-// FixPermissions fixes file permissions for a website
-func (e *Enhance) FixPermissions(ctx context.Context, websitePath, unixUser string) error {
-	if !e.connected || e.sshClient == nil {
-		return fmt.Errorf("SSH not connected")
-	}
-
-	// Change ownership to the website user
-	chownCmd := fmt.Sprintf("chown -R %s:%s %s", unixUser, unixUser, websitePath)
-	if _, err := e.sshClient.RunCommand(ctx, chownCmd); err != nil {
-		return fmt.Errorf("failed to change ownership: %w", err)
-	}
-
-	// Fix directory permissions (775)
-	dirPermCmd := fmt.Sprintf("find %s -type d -exec chmod 775 {} \\;", websitePath)
-	if _, err := e.sshClient.RunCommand(ctx, dirPermCmd); err != nil {
-		fmt.Printf("Warning: failed to fix directory permissions: %v\n", err)
-	}
-
-	// Fix file permissions (644)
-	filePermCmd := fmt.Sprintf("find %s -type f -exec chmod 644 {} \\;", websitePath)
-	if _, err := e.sshClient.RunCommand(ctx, filePermCmd); err != nil {
-		fmt.Printf("Warning: failed to fix file permissions: %v\n", err)
-	}
-
-	// Secure wp-config.php if exists
-	wpConfigPath := filepath.Join(websitePath, "wp-config.php")
-	secureWpCmd := fmt.Sprintf("[ -f %s ] && chmod 600 %s || true", wpConfigPath, wpConfigPath)
-	e.sshClient.RunCommand(ctx, secureWpCmd)
-
-	return nil
-}
-
-// FixPermissionsForDomain fixes permissions for a specific domain by looking up the website
-func (e *Enhance) FixPermissionsForDomain(ctx context.Context, domainName string) error {
-	if !e.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Get org_id from config metadata
-	orgID := ""
-	if e.config != nil && e.config.Metadata != nil {
-		orgID = e.config.Metadata["enhance_org_id"]
-	}
-	if orgID == "" {
-		return fmt.Errorf("enhance_org_id not configured")
-	}
-
-	// Find the website for this domain
-	website, err := e.getWebsiteByDomain(ctx, orgID, domainName)
-	if err != nil {
-		return fmt.Errorf("website not found for domain %s: %w", domainName, err)
-	}
-
-	// Use the actual website path and unix user from Enhance
-	websitePath := filepath.Join(website.HomeDir, "public_html")
-	unixUser := website.UnixUser
-
-	fmt.Printf("Fixing permissions for %s: path=%s, user=%s\n", domainName, websitePath, unixUser)
-
-	return e.FixPermissions(ctx, websitePath, unixUser)
-}
-
-// CleanupTempFiles removes temporary migration files from the server
-func (e *Enhance) CleanupTempFiles(ctx context.Context, paths []string) error {
-	if !e.connected || e.sshClient == nil {
-		return fmt.Errorf("SSH not connected")
-	}
-
-	for _, path := range paths {
-		// Safety check - only delete from /tmp or specific migration directories
-		if !strings.HasPrefix(path, "/tmp/") && !strings.Contains(path, "migration") {
-			fmt.Printf("Skipping cleanup of unsafe path: %s\n", path)
+	for _, p := range e.tmpPaths {
+		if !strings.HasPrefix(p, "/tmp/migration_") {
 			continue
 		}
-
-		rmCmd := fmt.Sprintf("rm -rf %s", path)
-		if _, err := e.sshClient.RunCommand(ctx, rmCmd); err != nil {
-			fmt.Printf("Warning: failed to cleanup %s: %v\n", path, err)
-		} else {
-			fmt.Printf("Cleaned up: %s\n", path)
+		if _, err := e.nodeRun(ctx, "rm -f "+shq(p)); err != nil {
+			e.warnf("could not remove %s on node: %v", p, err)
 		}
 	}
-
+	e.tmpPaths = nil
 	return nil
 }

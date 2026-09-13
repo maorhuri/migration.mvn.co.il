@@ -144,6 +144,11 @@ func (d *Database) Migrate(ctx context.Context) error {
 			UNIQUE(server_id, username)
 		)`,
 
+		// Columns added later (idempotent)
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_ip VARCHAR(64)`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_node VARCHAR(255)`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS warnings INTEGER DEFAULT 0`,
+
 		// Create indexes
 		`CREATE INDEX IF NOT EXISTS idx_servers_panel_type ON servers(panel_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status)`,
@@ -252,6 +257,9 @@ type Migration struct {
 	TotalBytes       int64          `db:"total_bytes" json:"total_bytes"`
 	ErrorMessage     sql.NullString `db:"error_message" json:"error_message,omitempty"`
 	ExportData       NullableJSON   `db:"export_data" json:"export_data,omitempty"`
+	TargetIP         sql.NullString `db:"target_ip" json:"target_ip,omitempty"`
+	TargetNode       sql.NullString `db:"target_node" json:"target_node,omitempty"`
+	Warnings         int            `db:"warnings" json:"warnings"`
 	StartedAt        sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt      sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
 	CreatedAt        time.Time      `db:"created_at" json:"created_at"`
@@ -573,6 +581,47 @@ func (d *Database) UpdateMigrationProgress(ctx context.Context, id string, progr
 	)
 
 	return err
+}
+
+// SetMigrationTarget records the cluster node a migration is importing into
+func (d *Database) SetMigrationTarget(ctx context.Context, id, targetIP, targetNode string) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET target_ip = $2, target_node = $3 WHERE id = $1", id, targetIP, targetNode)
+	return err
+}
+
+// SetMigrationWarnings stores the number of warnings collected so far
+func (d *Database) SetMigrationWarnings(ctx context.Context, id string, warnings int) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET warnings = $2 WHERE id = $1", id, warnings)
+	return err
+}
+
+// SetMigrationExportData stores the export metadata JSON
+func (d *Database) SetMigrationExportData(ctx context.Context, id string, exportJSON []byte) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET export_data = $2 WHERE id = $1", id, exportJSON)
+	return err
+}
+
+// FindServerByHost finds a server record whose host or name matches one of the given values
+func (d *Database) FindServerByHost(ctx context.Context, candidates ...string) (*Server, error) {
+	var clean []string
+	for _, c := range candidates {
+		if c != "" {
+			clean = append(clean, c)
+		}
+	}
+	if len(clean) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	var server Server
+	query, args, err := sqlx.In("SELECT * FROM servers WHERE host IN (?) OR name IN (?) ORDER BY created_at LIMIT 1", clean, clean)
+	if err != nil {
+		return nil, err
+	}
+	query = d.db.Rebind(query)
+	if err := d.db.GetContext(ctx, &server, query, args...); err != nil {
+		return nil, err
+	}
+	return &server, nil
 }
 
 // AddMigrationLog adds a log entry for a migration

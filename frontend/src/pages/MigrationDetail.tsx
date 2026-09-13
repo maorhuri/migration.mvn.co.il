@@ -182,9 +182,11 @@ export default function MigrationDetail() {
         {/* Success */}
         {migration.status === 'completed' && (
           <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <p className="text-green-700 font-medium">Migration completed successfully!</p>
+            <p className="text-green-700 font-medium">
+              {migration.warnings ? `Migration completed with ${migration.warnings} warning(s)` : 'Migration completed successfully!'}
+            </p>
             <p className="text-green-600 mt-1">
-              The account has been migrated to the target server.
+              {migration.warnings ? 'Review the warnings in the log below before switching DNS.' : 'The account has been migrated to the target server.'}
             </p>
           </div>
         )}
@@ -230,6 +232,12 @@ export default function MigrationDetail() {
                 <span className="text-gray-500">Host</span>
                 <span className="text-gray-900">{targetServer.host}</span>
               </div>
+              {migration.target_ip && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Cluster node</span>
+                  <span className="text-gray-900">{migration.target_node || ''} {migration.target_ip}</span>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-gray-500">Server details not available</p>

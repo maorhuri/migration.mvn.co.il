@@ -28,11 +28,7 @@ type Engine struct {
 
 // NewEngine creates a new migration engine
 func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine {
-	return &Engine{
-		db:      db,
-		logger:  log,
-		workDir: workDir,
-	}
+	return &Engine{db: db, logger: log, workDir: workDir}
 }
 
 // ErrClusterServerRequired is returned when an Enhance target is used without an explicit cluster server.
@@ -47,20 +43,29 @@ type MigrationRequest struct {
 	NewPassword           string `json:"new_password,omitempty"` // Password for new account
 }
 
-// MigrationResult represents the result of a migration
+// MigrationResult represents the state of a migration as exposed by the API
 type MigrationResult struct {
-	ID          string                    `json:"id"`
-	Status      string                    `json:"status"`
-	ExportData  *common.ExportData        `json:"export_data,omitempty"`
-	Error       string                    `json:"error,omitempty"`
-	StartedAt   time.Time                 `json:"started_at"`
-	CompletedAt *time.Time                `json:"completed_at,omitempty"`
-	Progress    *common.MigrationProgress `json:"progress,omitempty"`
+	ID              string                    `json:"id"`
+	SourceServerID  string                    `json:"source_server_id"`
+	TargetServerID  string                    `json:"target_server_id"`
+	AccountUsername string                    `json:"account_username"`
+	Status          string                    `json:"status"`
+	CurrentStep     string                    `json:"current_step,omitempty"`
+	TotalSteps      int                       `json:"total_steps"`
+	CompletedSteps  int                       `json:"completed_steps"`
+	TargetIP        string                    `json:"target_ip,omitempty"`
+	TargetNode      string                    `json:"target_node,omitempty"`
+	Warnings        int                       `json:"warnings"`
+	ExportData      *common.ExportData        `json:"export_data,omitempty"`
+	Error           string                    `json:"error,omitempty"`
+	CreatedAt       time.Time                 `json:"created_at"`
+	StartedAt       time.Time                 `json:"started_at"`
+	CompletedAt     *time.Time                `json:"completed_at,omitempty"`
+	Progress        *common.MigrationProgress `json:"progress,omitempty"`
 }
 
 // StartMigration starts a new migration
 func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*MigrationResult, error) {
-	// Create migration record in database first to get the ID
 	migration := &storage.Migration{
 		SourceServerID:  req.SourceServerID,
 		TargetServerID:  req.TargetServerID,
@@ -69,56 +74,50 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 	if err := e.db.CreateMigration(ctx, migration); err != nil {
 		return nil, fmt.Errorf("failed to create migration record: %w", err)
 	}
-
 	migrationID := migration.ID
 
 	result := &MigrationResult{
-		ID:        migrationID,
-		Status:    "running",
-		StartedAt: time.Now(),
-		Progress: &common.MigrationProgress{
-			ID:        migrationID,
-			Status:    "running",
-			StartedAt: time.Now(),
-		},
+		ID:              migrationID,
+		SourceServerID:  req.SourceServerID,
+		TargetServerID:  req.TargetServerID,
+		AccountUsername: req.Username,
+		Status:          "running",
+		StartedAt:       time.Now(),
+		Progress:        &common.MigrationProgress{ID: migrationID, Status: "running", StartedAt: time.Now()},
 	}
 
-	// Get source and target server configs
 	sourceServer, err := e.db.GetServer(ctx, req.SourceServerID)
 	if err != nil {
-		e.failMigration(ctx, migration.ID, fmt.Sprintf("failed to get source server: %v", err))
+		e.failMigration(ctx, migrationID, fmt.Sprintf("failed to get source server: %v", err))
 		return nil, fmt.Errorf("failed to get source server: %w", err)
 	}
-
 	targetServer, err := e.db.GetServer(ctx, req.TargetServerID)
 	if err != nil {
-		e.failMigration(ctx, migration.ID, fmt.Sprintf("failed to get target server: %v", err))
+		e.failMigration(ctx, migrationID, fmt.Sprintf("failed to get target server: %v", err))
 		return nil, fmt.Errorf("failed to get target server: %w", err)
 	}
 
 	// Safety: never let Enhance pick a default server on a production cluster.
 	if common.PanelType(targetServer.PanelType) == common.PanelTypeEnhance && req.TargetClusterServerID == "" {
-		e.failMigration(ctx, migration.ID, ErrClusterServerRequired.Error())
+		e.failMigration(ctx, migrationID, ErrClusterServerRequired.Error())
 		return nil, ErrClusterServerRequired
 	}
 
-	e.db.AddMigrationLog(ctx, migration.ID, "info", "Migration requested", map[string]interface{}{
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Migration requested", map[string]interface{}{
 		"source":                   sourceServer.Name,
 		"target":                   targetServer.Name,
 		"target_cluster_server_id": req.TargetClusterServerID,
 		"username":                 req.Username,
 	})
 
-	// Create work directory for this migration
-	migrationDir := filepath.Join(e.workDir, migration.ID)
+	migrationDir := filepath.Join(e.workDir, migrationID)
 	if err := os.MkdirAll(migrationDir, 0755); err != nil {
-		e.failMigration(ctx, migration.ID, fmt.Sprintf("failed to create work directory: %v", err))
+		e.failMigration(ctx, migrationID, fmt.Sprintf("failed to create work directory: %v", err))
 		return nil, fmt.Errorf("failed to create work directory: %w", err)
 	}
 
-	// Run migration in background with a new context (not tied to HTTP request)
-	bgCtx := context.Background()
-	go e.runMigration(bgCtx, migration.ID, sourceServer, targetServer, req, migrationDir)
+	// Run in background with a context that outlives the HTTP request
+	go e.runMigration(context.Background(), migrationID, sourceServer, targetServer, req, migrationDir)
 
 	return result, nil
 }
@@ -126,8 +125,6 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 // runMigration executes the migration process
 func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceServer, targetServer *storage.Server, req *MigrationRequest, workDir string) {
 	progressChan := make(chan common.MigrationProgress, 100)
-
-	// Progress updater
 	go func() {
 		for progress := range progressChan {
 			progress.ID = migrationID
@@ -135,99 +132,160 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 			e.db.AddMigrationLog(ctx, migrationID, "info", progress.CurrentStep, nil)
 		}
 	}()
-
 	defer close(progressChan)
 
-	// Always cleanup local work directory on exit (success or failure)
 	defer func() {
 		if err := os.RemoveAll(workDir); err != nil {
 			e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Local cleanup warning: %v", err), nil)
 		}
 	}()
 
-	// Phase 1: Export from source
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Starting export from source server", map[string]interface{}{
-		"source": sourceServer.Name,
-		"panel":  sourceServer.PanelType,
-	})
+	migrationLog := func(level, message string) {
+		e.db.AddMigrationLog(ctx, migrationID, level, message, nil)
+	}
+	warnings := 0
+	warn := func(format string, args ...interface{}) {
+		warnings++
+		migrationLog("warn", fmt.Sprintf(format, args...))
+		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
+	}
 
-	exportData, err := e.exportFromSource(ctx, sourceServer, req.Username, workDir, progressChan)
+	// Phase 1: export
+	migrationLog("info", fmt.Sprintf("Starting export from %s (%s)", sourceServer.Name, sourceServer.PanelType))
+	exportData, err := e.exportFromSource(ctx, sourceServer, req.Username, workDir, progressChan, migrationLog)
 	if err != nil {
 		e.failMigration(ctx, migrationID, fmt.Sprintf("export failed: %v", err))
 		return
 	}
-
-	// Save export data to database
 	exportJSON, _ := json.Marshal(exportData)
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Export completed successfully", map[string]interface{}{
+	e.db.SetMigrationExportData(ctx, migrationID, exportJSON)
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Export completed", map[string]interface{}{
 		"domains":   len(exportData.Domains),
 		"databases": len(exportData.Databases),
 		"emails":    len(exportData.Emails),
+		"cron_jobs": len(exportData.CronJobs),
 	})
-
-	// Phase 2: Import to target
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Starting import to target server", map[string]interface{}{
-		"target": targetServer.Name,
-		"panel":  targetServer.PanelType,
-	})
-
-	migrationLog := func(level, message string) {
-		e.db.AddMigrationLog(ctx, migrationID, level, message, nil)
-	}
-	if err := e.importToTarget(ctx, targetServer, exportData, req.NewPassword, req.TargetClusterServerID, progressChan, migrationLog); err != nil {
-		e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
+	if len(exportData.Databases) == 0 && len(exportData.Account.Databases) > 0 {
+		e.failMigration(ctx, migrationID, fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
 		return
 	}
 
-	// Phase 3: Fix permissions on target
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Fixing permissions on target server", nil)
-	progressChan <- common.MigrationProgress{
-		Status:      "running",
-		CurrentStep: "Fixing file permissions",
+	// Phase 2: import
+	switch common.PanelType(targetServer.PanelType) {
+	case common.PanelTypeEnhance:
+		en, err := e.connectEnhanceTarget(ctx, migrationID, targetServer, req.TargetClusterServerID, migrationLog)
+		if err != nil {
+			e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
+			return
+		}
+		defer en.Disconnect()
+
+		result, err := en.ImportAccount(ctx, exportData, progressChan)
+		warnings += len(en.Warnings())
+		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
+		if err != nil {
+			e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
+			return
+		}
+		summary, _ := json.Marshal(result)
+		e.db.AddMigrationLog(ctx, migrationID, "info", "Import completed", map[string]interface{}{"result": string(summary)})
+
+		// Phase 3: cleanup
+		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Cleaning up temporary files"}
+		if err := en.CleanupTempFiles(ctx); err != nil {
+			warn("Target cleanup warning: %v", err)
+		}
+	default:
+		e.failMigration(ctx, migrationID, fmt.Sprintf("unsupported target panel type: %s", targetServer.PanelType))
+		return
 	}
 
-	if err := e.fixPermissionsOnTarget(ctx, targetServer, exportData); err != nil {
-		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Permission fix warning: %v", err), nil)
+	if err := e.cleanupSourceServer(ctx, sourceServer); err != nil {
+		warn("Source cleanup warning: %v", err)
 	}
 
-	// Phase 4: Cleanup temporary files
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Cleaning up temporary files", nil)
-	progressChan <- common.MigrationProgress{
-		Status:      "running",
-		CurrentStep: "Cleaning up temporary files",
-	}
-
-	// Cleanup on source server (remove any temp files created during export)
-	if err := e.cleanupSourceServer(ctx, sourceServer, workDir); err != nil {
-		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Source cleanup warning: %v", err), nil)
-	}
-
-	// Cleanup on target server (remove any temp files created during import)
-	if err := e.cleanupTargetServer(ctx, targetServer); err != nil {
-		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Target cleanup warning: %v", err), nil)
-	}
-
-	// Local work directory cleanup is handled by defer at the start of runMigration
-
-	// Mark as completed
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
-		ID:          migrationID,
-		Status:      "completed",
-		CurrentStep: "Migration completed",
-		CompletedAt: &now,
+		ID: migrationID, Status: "completed", CurrentStep: "Migration completed", CompletedAt: &now,
 	})
+	e.db.SetMigrationWarnings(ctx, migrationID, warnings)
+	if warnings > 0 {
+		migrationLog("info", fmt.Sprintf("Migration completed with %d warning(s); review them before switching DNS", warnings))
+	} else {
+		migrationLog("info", "Migration completed successfully")
+	}
+}
 
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Migration completed successfully", map[string]interface{}{
-		"export_data": string(exportJSON),
-	})
+// connectEnhanceTarget connects to the Enhance API and to the cluster node that will host the website.
+func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, server *storage.Server, clusterServerID string, logFn enhance.LogFunc) (*enhance.Enhance, error) {
+	config := e.db.ToConnectionConfig(server)
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+
+	en := enhance.New()
+	en.SetLogger(logFn)
+	if err := en.ConnectAPI(ctx, config, apiKey); err != nil {
+		return nil, err
+	}
+	if err := en.TestConnection(ctx); err != nil {
+		return nil, fmt.Errorf("Enhance API test failed: %w", err)
+	}
+	en.SetTargetClusterServerID(clusterServerID)
+
+	node, err := en.GetServer(ctx, clusterServerID)
+	if err != nil {
+		return nil, err
+	}
+	nodeIP := node.PrimaryIP()
+	if nodeIP == "" {
+		return nil, fmt.Errorf("cluster server %s (%s) has no IP in the Enhance API", node.FriendlyName, node.ID)
+	}
+	if node.IsDecommissioned {
+		return nil, fmt.Errorf("cluster server %s is decommissioned", node.FriendlyName)
+	}
+	e.db.SetMigrationTarget(ctx, migrationID, nodeIP, node.FriendlyName)
+	logFn("info", fmt.Sprintf("Target node: %s (hostname %s, ip %s, roles %s)", node.FriendlyName, node.Hostname, nodeIP, strings.Join(node.EnabledRoles(), ",")))
+
+	// SSH credentials: a server record whose host matches the node wins, otherwise the Enhance entry's own credentials.
+	nodeCfg := &common.ConnectionConfig{Host: nodeIP, Port: 22, Username: "root", AuthMethod: config.AuthMethod}
+	var password string
+	var privateKey []byte
+	credSource := server.Name
+	if rec, err := e.db.FindServerByHost(ctx, nodeIP, node.FriendlyName, node.Hostname); err == nil && rec != nil && rec.ID != server.ID {
+		credSource = rec.Name
+		nodeCfg.Port = rec.Port
+		nodeCfg.Username = rec.Username
+		nodeCfg.AuthMethod = common.AuthMethod(rec.AuthMethod)
+		password, _ = e.db.GetServerPassword(ctx, rec.ID)
+		if rec.SSHKeyID.Valid {
+			keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, rec.SSHKeyID.String)
+			privateKey = []byte(keyData)
+		}
+	} else {
+		if server.Port > 0 {
+			nodeCfg.Port = server.Port
+		}
+		if server.Username != "" {
+			nodeCfg.Username = server.Username
+		}
+		password, _ = e.db.GetServerPassword(ctx, server.ID)
+		if server.SSHKeyID.Valid {
+			keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+			privateKey = []byte(keyData)
+		}
+	}
+	if nodeCfg.AuthMethod != common.AuthMethodPassword && nodeCfg.AuthMethod != common.AuthMethodSSHKey {
+		return nil, fmt.Errorf("no SSH credentials for node %s: add a server entry with host %s (or %s) and SSH access", node.FriendlyName, nodeIP, node.FriendlyName)
+	}
+	logFn("info", fmt.Sprintf("Connecting to node %s via SSH as %s using credentials of %q", nodeIP, nodeCfg.Username, credSource))
+	if err := en.ConnectNode(ctx, nodeCfg, password, privateKey); err != nil {
+		return nil, fmt.Errorf("%v. Add a server entry in this tool whose host is %s with working root SSH credentials, then retry", err, nodeIP)
+	}
+	return en, nil
 }
 
 // exportFromSource exports data from the source server
-func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, username, workDir string, progress chan<- common.MigrationProgress) (*common.ExportData, error) {
+func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, username, workDir string, progress chan<- common.MigrationProgress, logFn func(level, message string)) (*common.ExportData, error) {
 	config := e.db.ToConnectionConfig(server)
-
-	// Get credentials
 	password, _ := e.db.GetServerPassword(ctx, server.ID)
 	var privateKey []byte
 	if server.SSHKeyID.Valid {
@@ -238,103 +296,29 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
 		da := directadmin.New()
+		da.SetLogger(logFn)
 		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
 			return nil, fmt.Errorf("failed to connect to DirectAdmin: %w", err)
 		}
 		defer da.Disconnect()
-
 		if err := da.TestConnection(ctx); err != nil {
 			return nil, fmt.Errorf("DirectAdmin connection test failed: %w", err)
 		}
-
 		return da.ExportAccount(ctx, username, workDir, progress)
-
 	default:
 		return nil, fmt.Errorf("unsupported source panel type: %s", server.PanelType)
 	}
 }
 
-// importToTarget imports data to the target server
-func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, data *common.ExportData, newPassword string, targetClusterServerID string, progress chan<- common.MigrationProgress, logFn enhance.LogFunc) error {
-	config := e.db.ToConnectionConfig(server)
-
-	// Get credentials
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
-	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
-	switch common.PanelType(server.PanelType) {
-	case common.PanelTypeEnhance:
-		en := enhance.New()
-		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
-			return fmt.Errorf("failed to connect to Enhance: %w", err)
-		}
-		defer en.Disconnect()
-
-		if err := en.TestConnection(ctx); err != nil {
-			return fmt.Errorf("Enhance connection test failed: %w", err)
-		}
-
-		// Set target cluster server ID for website creation and route module logs into the migration log
-		en.SetTargetClusterServerID(targetClusterServerID)
-		en.SetLogger(logFn)
-
-		_, err := en.ImportAccount(ctx, data, newPassword, progress)
-		return err
-
-	default:
-		return fmt.Errorf("unsupported target panel type: %s", server.PanelType)
-	}
-}
-
-// fixPermissionsOnTarget fixes file permissions on the target server
-func (e *Engine) fixPermissionsOnTarget(ctx context.Context, server *storage.Server, data *common.ExportData) error {
-	config := e.db.ToConnectionConfig(server)
-
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
-	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
-	switch common.PanelType(server.PanelType) {
-	case common.PanelTypeEnhance:
-		en := enhance.New()
-		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
-			return fmt.Errorf("failed to connect to Enhance: %w", err)
-		}
-		defer en.Disconnect()
-
-		// Fix permissions for each domain using the actual Enhance website info
-		for _, domain := range data.Domains {
-			if err := en.FixPermissionsForDomain(ctx, domain.Name); err != nil {
-				fmt.Printf("Warning: failed to fix permissions for %s: %v\n", domain.Name, err)
-			}
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("permission fix not implemented for panel type: %s", server.PanelType)
-	}
-}
-
 // cleanupSourceServer removes temporary files from the source server
-func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server, workDir string) error {
+func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server) error {
 	config := e.db.ToConnectionConfig(server)
-
 	password, _ := e.db.GetServerPassword(ctx, server.ID)
 	var privateKey []byte
 	if server.SSHKeyID.Valid {
 		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
 		privateKey = []byte(keyData)
 	}
-
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
 		da := directadmin.New()
@@ -342,53 +326,9 @@ func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server
 			return fmt.Errorf("failed to connect to DirectAdmin: %w", err)
 		}
 		defer da.Disconnect()
-
-		// Cleanup paths - SQL dumps, ZIP files, etc.
-		cleanupPaths := []string{
-			"/tmp/migration_*",
-			"/tmp/*.sql",
-			"/tmp/*_backup.tar.gz",
-		}
-
-		return da.CleanupTempFiles(ctx, cleanupPaths)
-
+		return da.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
 	default:
-		return nil // No cleanup needed for other panel types
-	}
-}
-
-// cleanupTargetServer removes temporary files from the target server
-func (e *Engine) cleanupTargetServer(ctx context.Context, server *storage.Server) error {
-	config := e.db.ToConnectionConfig(server)
-
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
-	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
-	switch common.PanelType(server.PanelType) {
-	case common.PanelTypeEnhance:
-		en := enhance.New()
-		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
-			return fmt.Errorf("failed to connect to Enhance: %w", err)
-		}
-		defer en.Disconnect()
-
-		// Cleanup paths - SQL dumps, ZIP files, etc.
-		cleanupPaths := []string{
-			"/tmp/migration_*",
-			"/tmp/*.sql",
-			"/tmp/*_backup.tar.gz",
-			"/tmp/*_import",
-		}
-
-		return en.CleanupTempFiles(ctx, cleanupPaths)
-
-	default:
-		return nil // No cleanup needed for other panel types
+		return nil
 	}
 }
 
@@ -396,12 +336,44 @@ func (e *Engine) cleanupTargetServer(ctx context.Context, server *storage.Server
 func (e *Engine) failMigration(ctx context.Context, migrationID, errorMsg string) {
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
-		ID:          migrationID,
-		Status:      "failed",
-		Error:       errorMsg,
-		CompletedAt: &now,
+		ID: migrationID, Status: "failed", Error: errorMsg, CompletedAt: &now,
 	})
 	e.db.AddMigrationLog(ctx, migrationID, "error", errorMsg, nil)
+}
+
+func toResult(m *storage.Migration) *MigrationResult {
+	result := &MigrationResult{
+		ID:              m.ID,
+		SourceServerID:  m.SourceServerID,
+		TargetServerID:  m.TargetServerID,
+		AccountUsername: m.AccountUsername,
+		Status:          m.Status,
+		CurrentStep:     m.CurrentStep.String,
+		TotalSteps:      m.TotalSteps,
+		CompletedSteps:  m.CompletedSteps,
+		TargetIP:        m.TargetIP.String,
+		TargetNode:      m.TargetNode.String,
+		Warnings:        m.Warnings,
+		CreatedAt:       m.CreatedAt,
+		StartedAt:       m.StartedAt.Time,
+	}
+	if m.CompletedAt.Valid {
+		result.CompletedAt = &m.CompletedAt.Time
+	}
+	if m.ErrorMessage.Valid {
+		result.Error = m.ErrorMessage.String
+	}
+	result.Progress = &common.MigrationProgress{
+		ID:               m.ID,
+		Status:           m.Status,
+		CurrentStep:      m.CurrentStep.String,
+		TotalSteps:       m.TotalSteps,
+		CompletedSteps:   m.CompletedSteps,
+		BytesTransferred: m.BytesTransferred,
+		TotalBytes:       m.TotalBytes,
+		StartedAt:        m.StartedAt.Time,
+	}
+	return result
 }
 
 // GetMigrationStatus gets the current status of a migration
@@ -410,39 +382,13 @@ func (e *Engine) GetMigrationStatus(ctx context.Context, migrationID string) (*M
 	if err != nil {
 		return nil, err
 	}
-
-	result := &MigrationResult{
-		ID:        migration.ID,
-		Status:    migration.Status,
-		StartedAt: migration.StartedAt.Time,
-	}
-
-	if migration.CompletedAt.Valid {
-		result.CompletedAt = &migration.CompletedAt.Time
-	}
-
-	if migration.ErrorMessage.Valid {
-		result.Error = migration.ErrorMessage.String
-	}
-
-	result.Progress = &common.MigrationProgress{
-		ID:               migration.ID,
-		Status:           migration.Status,
-		CurrentStep:      migration.CurrentStep.String,
-		TotalSteps:       migration.TotalSteps,
-		CompletedSteps:   migration.CompletedSteps,
-		BytesTransferred: migration.BytesTransferred,
-		TotalBytes:       migration.TotalBytes,
-		StartedAt:        migration.StartedAt.Time,
-	}
-
+	result := toResult(migration)
 	if migration.ExportData.Valid && migration.ExportData.Data != nil {
 		var exportData common.ExportData
 		if err := json.Unmarshal(migration.ExportData.Data, &exportData); err == nil {
 			result.ExportData = &exportData
 		}
 	}
-
 	return result, nil
 }
 
@@ -452,23 +398,10 @@ func (e *Engine) ListMigrations(ctx context.Context) ([]*MigrationResult, error)
 	if err != nil {
 		return nil, err
 	}
-
-	var results []*MigrationResult
-	for _, m := range migrations {
-		result := &MigrationResult{
-			ID:        m.ID,
-			Status:    m.Status,
-			StartedAt: m.StartedAt.Time,
-		}
-		if m.CompletedAt.Valid {
-			result.CompletedAt = &m.CompletedAt.Time
-		}
-		if m.ErrorMessage.Valid {
-			result.Error = m.ErrorMessage.String
-		}
-		results = append(results, result)
+	results := make([]*MigrationResult, 0, len(migrations))
+	for i := range migrations {
+		results = append(results, toResult(&migrations[i]))
 	}
-
 	return results, nil
 }
 
@@ -477,23 +410,18 @@ func (e *Engine) GetMigrationLogs(ctx context.Context, migrationID string) ([]st
 	return e.db.GetMigrationLogs(ctx, migrationID)
 }
 
-// CancelMigration cancels a running or pending migration
+// CancelMigration marks a running or pending migration as cancelled
 func (e *Engine) CancelMigration(ctx context.Context, migrationID string) error {
 	migration, err := e.db.GetMigration(ctx, migrationID)
 	if err != nil {
 		return fmt.Errorf("migration not found: %w", err)
 	}
-
 	if migration.Status != "running" && migration.Status != "pending" {
 		return fmt.Errorf("migration is not running or pending (status: %s)", migration.Status)
 	}
-
 	now := time.Now()
 	return e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
-		ID:          migrationID,
-		Status:      "cancelled",
-		Error:       "Cancelled by user",
-		CompletedAt: &now,
+		ID: migrationID, Status: "cancelled", Error: "Cancelled by user", CompletedAt: &now,
 	})
 }
 
@@ -503,11 +431,9 @@ func (e *Engine) DeleteMigration(ctx context.Context, migrationID string) error 
 	if err != nil {
 		return fmt.Errorf("migration not found: %w", err)
 	}
-
 	if migration.Status == "running" {
 		return fmt.Errorf("cannot delete running migration")
 	}
-
 	return e.db.DeleteMigration(ctx, migrationID)
 }
 
@@ -517,28 +443,17 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 	if err != nil {
 		return nil, fmt.Errorf("failed to get source server: %w", err)
 	}
-
 	targetServer, err := e.db.GetServer(ctx, targetServerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get target server: %w", err)
 	}
-
-	result := &common.CompatibilityResult{
-		Compatible: true,
-		Mappings:   make(map[string]string),
-	}
-
-	// Check panel compatibility
+	result := &common.CompatibilityResult{Compatible: true, Mappings: make(map[string]string)}
 	sourceType := common.PanelType(sourceServer.PanelType)
 	targetType := common.PanelType(targetServer.PanelType)
 
-	// Define supported migration paths
 	supportedPaths := map[common.PanelType][]common.PanelType{
-		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance, common.PanelTypeCPanel},
-		common.PanelTypeCPanel:      {common.PanelTypeEnhance, common.PanelTypeDirectAdmin},
-		common.PanelTypeEnhance:     {common.PanelTypeDirectAdmin, common.PanelTypeCPanel},
+		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance},
 	}
-
 	supported := false
 	for _, target := range supportedPaths[sourceType] {
 		if target == targetType {
@@ -546,38 +461,28 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 			break
 		}
 	}
-
 	if !supported {
 		result.Compatible = false
-		result.Errors = append(result.Errors,
-			fmt.Sprintf("Migration from %s to %s is not supported", sourceType, targetType))
+		result.Errors = append(result.Errors, fmt.Sprintf("Migration from %s to %s is not supported", sourceType, targetType))
 		return result, nil
 	}
-
 	result.Mappings["source_panel"] = string(sourceType)
 	result.Mappings["target_panel"] = string(targetType)
-
-	// Add warnings for potential issues
-	if sourceType == common.PanelTypeDirectAdmin && targetType == common.PanelTypeEnhance {
-		result.Warnings = append(result.Warnings,
-			"Some DirectAdmin-specific features may not be available in Enhance",
-			"Custom Apache configurations will need manual review",
-		)
-	}
-
+	result.Warnings = append(result.Warnings,
+		"Mailbox contents are not migrated; mailboxes are recreated with new passwords",
+		"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
+	)
 	return result, nil
 }
 
 // CreateSSHClient creates an SSH client for a server
 func (e *Engine) CreateSSHClient(server *storage.Server, password string) (*ssh.Client, error) {
 	config := e.db.ToConnectionConfig(server)
-
 	var privateKey []byte
 	if server.SSHKeyID.Valid {
 		keyData, _ := e.db.GetSSHKeyPrivateKey(context.Background(), server.SSHKeyID.String)
 		privateKey = []byte(keyData)
 	}
-
 	client := ssh.NewClient()
 	if err := client.Connect(context.Background(), config, password, privateKey); err != nil {
 		return nil, err
@@ -615,13 +520,11 @@ type ServerInfo struct {
 // GetServerInfo gets system information from a server
 func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, password string) (*ServerInfo, error) {
 	config := e.db.ToConnectionConfig(server)
-
 	var privateKey []byte
 	if server.SSHKeyID.Valid {
 		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
 		privateKey = []byte(keyData)
 	}
-
 	client := ssh.NewClient()
 	if err := client.Connect(ctx, config, password, privateKey); err != nil {
 		return nil, err
@@ -629,8 +532,6 @@ func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, pass
 	defer client.Disconnect()
 
 	info := &ServerInfo{}
-
-	// Detect web server
 	script := `
 		if command -v nginx &> /dev/null && systemctl is-active nginx &> /dev/null; then
 			echo "Nginx"
@@ -646,27 +547,20 @@ func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, pass
 			echo "Unknown"
 		fi
 		echo "---SEP---"
-		# Disk usage
 		df -h / 2>/dev/null | tail -1 | awk '{print $2 "," $3 "," $5}'
 		echo "---SEP---"
-		# OS Version
 		cat /etc/os-release 2>/dev/null | grep "PRETTY_NAME" | cut -d'"' -f2 || uname -a
 		echo "---SEP---"
-		# PHP versions available
 		ls /usr/local/php*/bin/php 2>/dev/null | xargs -I{} {} -v 2>/dev/null | grep -oP 'PHP [0-9]+\.[0-9]+' | sort -u | tr '\n' ',' || php -v 2>/dev/null | head -1 | grep -oP 'PHP [0-9]+\.[0-9]+'
 	`
-
 	output, err := client.RunCommand(ctx, script)
 	if err != nil {
-		return info, nil // Return empty info on error
+		return info, nil
 	}
-
 	parts := strings.Split(output, "---SEP---")
-
 	if len(parts) > 0 {
 		info.WebServer = strings.TrimSpace(parts[0])
 	}
-
 	if len(parts) > 1 {
 		diskParts := strings.Split(strings.TrimSpace(parts[1]), ",")
 		if len(diskParts) >= 2 {
@@ -674,73 +568,65 @@ func (e *Engine) GetServerInfo(ctx context.Context, server *storage.Server, pass
 			info.UsedDisk = diskParts[1]
 		}
 	}
-
 	if len(parts) > 2 {
 		info.OSVersion = strings.TrimSpace(parts[2])
 	}
-
 	if len(parts) > 3 {
 		info.PHPVersions = strings.TrimSuffix(strings.TrimSpace(parts[3]), ",")
 	}
-
 	return info, nil
 }
 
-// EnhanceClusterServer represents a server in Enhance cluster
+// EnhanceClusterServer represents a server in an Enhance cluster
 type EnhanceClusterServer struct {
-	ID           string `json:"id"`
-	FriendlyName string `json:"friendly_name"`
-	Hostname     string `json:"hostname"`
-	IP           string `json:"ip"`
-	Role         string `json:"role"`
-	IsMain       bool   `json:"is_main"`
-	Status       string `json:"status"`
+	ID           string   `json:"id"`
+	FriendlyName string   `json:"friendly_name"`
+	Hostname     string   `json:"hostname"`
+	IP           string   `json:"ip"`
+	Role         string   `json:"role"`
+	Roles        []string `json:"roles"`
+	IsMain       bool     `json:"is_main"`
+	Status       string   `json:"status"`
 }
 
 // GetEnhanceClusterServers gets all servers in an Enhance cluster
 func (e *Engine) GetEnhanceClusterServers(ctx context.Context, server *storage.Server, apiKey string) ([]EnhanceClusterServer, error) {
 	config := e.db.ToConnectionConfig(server)
-
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
-	// Get password for SSH
-	password, _ := e.db.GetDecryptedPassword(ctx, server.ID)
-
 	en := enhance.New()
-	if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+	if err := en.ConnectAPI(ctx, config, apiKey); err != nil {
 		return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
 	}
-	defer en.Disconnect()
-
 	servers, err := en.ListServers(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	var result []EnhanceClusterServer
+	result := make([]EnhanceClusterServer, 0, len(servers))
 	for _, s := range servers {
+		if s.IsDecommissioned {
+			continue
+		}
+		roles := s.EnabledRoles()
+		status := "configured"
+		if !s.IsConfigured {
+			status = "not configured"
+		}
 		result = append(result, EnhanceClusterServer{
 			ID:           s.ID,
-			FriendlyName: s.FriendlyName,
+			FriendlyName: strings.TrimSpace(s.FriendlyName),
 			Hostname:     s.Hostname,
-			IP:           s.IP,
-			Role:         s.Role,
-			IsMain:       s.IsMain,
-			Status:       s.Status,
+			IP:           s.PrimaryIP(),
+			Role:         strings.Join(roles, ", "),
+			Roles:        roles,
+			IsMain:       s.IsControlPanel,
+			Status:       status,
 		})
 	}
-
 	return result, nil
 }
 
 // GetServerAccounts gets all accounts from a server
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
 	config := e.db.ToConnectionConfig(server)
-
 	var privateKey []byte
 	if server.SSHKeyID.Valid {
 		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
@@ -754,15 +640,13 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 			return nil, fmt.Errorf("failed to connect to DirectAdmin: %w", err)
 		}
 		defer da.Disconnect()
-
 		accounts, err := da.ListAccounts(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list accounts: %w", err)
 		}
-
 		var result []AccountInfo
 		for _, acc := range accounts {
-			info := AccountInfo{
+			result = append(result, AccountInfo{
 				Username:      acc.Username,
 				Domain:        acc.Domain,
 				Email:         acc.Email,
@@ -777,35 +661,30 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 				SSLExpiry:     acc.SSLExpiry,
 				IsWordPress:   acc.IsWordPress,
 				DBSize:        acc.DBSize,
-			}
-			result = append(result, info)
+			})
 		}
 		return result, nil
 
 	case common.PanelTypeEnhance:
-		// Enhance uses API, not SSH
 		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
 		en := enhance.New()
-		if err := en.ConnectWithCredentials(ctx, config, apiKey, password, privateKey); err != nil {
+		if err := en.ConnectAPI(ctx, config, apiKey); err != nil {
 			return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
 		}
-
 		accounts, err := en.ListAccounts(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list accounts: %w", err)
 		}
-
 		var result []AccountInfo
 		for _, acc := range accounts {
-			info := AccountInfo{
+			result = append(result, AccountInfo{
 				Username:  acc.Username,
 				Domain:    acc.Domain,
 				Email:     acc.Email,
 				DiskUsed:  acc.DiskUsage,
 				DiskLimit: acc.DiskLimit,
 				Suspended: acc.Suspended,
-			}
-			result = append(result, info)
+			})
 		}
 		return result, nil
 

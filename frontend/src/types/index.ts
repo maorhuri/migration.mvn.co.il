@@ -51,8 +51,11 @@ export interface Migration {
   source_server_id: string;
   target_server_id: string;
   account_username: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
   current_step?: string;
+  target_ip?: string;
+  target_node?: string;
+  warnings?: number;
   total_steps: number;
   completed_steps: number;
   bytes_transferred: number;

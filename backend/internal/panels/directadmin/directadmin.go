@@ -22,7 +22,21 @@ type DirectAdmin struct {
 	sshClient *ssh.Client
 	password  string
 	connected bool
+	logFn     func(level, message string)
 }
+
+// SetLogger routes module log lines to the given function (in addition to stdout)
+func (da *DirectAdmin) SetLogger(fn func(level, message string)) { da.logFn = fn }
+
+func (da *DirectAdmin) logf(level, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Printf("[directadmin][%s] %s\n", level, msg)
+	if da.logFn != nil {
+		da.logFn(level, msg)
+	}
+}
+
+func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // New creates a new DirectAdmin panel instance
 func New() *DirectAdmin {
@@ -337,6 +351,11 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	if err != nil {
 		return nil, fmt.Errorf("failed to export domains: %w", err)
 	}
+	for i := range domains {
+		if domains[i].PHPVersion == "" || domains[i].PHPVersion == "default" {
+			domains[i].PHPVersion = account.PHPVersion
+		}
+	}
 	exportData.Domains = domains
 	currentStep++
 
@@ -344,8 +363,7 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	sendProgress("Exporting databases", currentStep, totalSteps)
 	databases, err := da.ExportDatabases(ctx, username, outputDir)
 	if err != nil {
-		// Log but don't fail
-		fmt.Printf("Warning: failed to export databases: %v\n", err)
+		return nil, fmt.Errorf("failed to export databases: %w", err)
 	}
 	exportData.Databases = databases
 	currentStep++
@@ -354,7 +372,7 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	sendProgress("Exporting emails", currentStep, totalSteps)
 	emails, err := da.ExportEmails(ctx, username, outputDir)
 	if err != nil {
-		fmt.Printf("Warning: failed to export emails: %v\n", err)
+		da.logf("warn", "Failed to export emails: %v", err)
 	}
 	exportData.Emails = emails
 	currentStep++
@@ -363,7 +381,7 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	sendProgress("Exporting cron jobs", currentStep, totalSteps)
 	cronJobs, err := da.exportCronJobs(ctx, username)
 	if err != nil {
-		fmt.Printf("Warning: failed to export cron jobs: %v\n", err)
+		da.logf("warn", "Failed to export cron jobs: %v", err)
 	}
 	exportData.CronJobs = cronJobs
 	currentStep++
@@ -372,7 +390,7 @@ func (da *DirectAdmin) ExportAccount(ctx context.Context, username string, outpu
 	sendProgress("Exporting DNS records", currentStep, totalSteps)
 	dnsRecords, err := da.exportDNSRecords(ctx, username, account.Domain)
 	if err != nil {
-		fmt.Printf("Warning: failed to export DNS records: %v\n", err)
+		da.logf("warn", "Failed to export DNS records: %v", err)
 	}
 	exportData.DNSRecords = dnsRecords
 	currentStep++
@@ -438,97 +456,88 @@ func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputD
 	return nil
 }
 
-// ExportDatabases exports databases for an account
+// ExportDatabases dumps every database of the account using DirectAdmin's own MySQL
+// credentials (/usr/local/directadmin/conf/mysql.conf), the same way GetAccount lists them.
 func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, outputDir string) ([]common.Database, error) {
 	if !da.connected {
 		return nil, fmt.Errorf("not connected")
 	}
-
 	dbDir := filepath.Join(outputDir, "databases")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create databases directory: %w", err)
 	}
 
-	// Get list of databases for user
-	dbListPath := fmt.Sprintf("/usr/local/directadmin/data/users/%s/mysql.conf", username)
-	output, err := da.sshClient.RunCommand(ctx, fmt.Sprintf("cat %s 2>/dev/null || echo ''", dbListPath))
+	credScript := `C=/usr/local/directadmin/conf/mysql.conf; grep "^user=" $C | cut -d= -f2-; grep "^passwd=" $C | cut -d= -f2-; grep "^host=" $C | cut -d= -f2-`
+	out, err := da.sshClient.RunCommand(ctx, credScript)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if err != nil || len(lines) < 2 || strings.TrimSpace(lines[0]) == "" {
+		return nil, fmt.Errorf("cannot read DirectAdmin MySQL credentials from /usr/local/directadmin/conf/mysql.conf: %v", err)
+	}
+	mysqlUser, mysqlPass := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	host := "localhost"
+	if len(lines) > 2 && strings.TrimSpace(lines[2]) != "" {
+		host = strings.TrimSpace(lines[2])
+	}
+	auth := fmt.Sprintf("-h %s -u %s -p%s", shq(host), shq(mysqlUser), shq(mysqlPass))
+
+	likePattern := strings.ReplaceAll(username, "_", `\_`) + `\_%`
+	listCmd := fmt.Sprintf("mysql %s -N -e %s", auth, shq(fmt.Sprintf("SHOW DATABASES LIKE '%s'", likePattern)))
+	out, err = da.sshClient.RunCommand(ctx, listCmd)
 	if err != nil {
-		return nil, nil // No databases
+		return nil, fmt.Errorf("listing databases failed: %v", err)
+	}
+	dbNames := strings.Fields(out)
+	if len(dbNames) == 0 {
+		da.logf("info", "No databases found for %s", username)
+		return nil, nil
 	}
 
 	var databases []common.Database
-
-	// Parse mysql.conf to get database names
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Format: dbname=username
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		dbName := strings.TrimSpace(parts[0])
-
-		// Get database size
-		sizeOutput, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf(
-			`mysql -N -e "SELECT SUM(data_length + index_length) FROM information_schema.tables WHERE table_schema='%s';"`,
-			dbName,
-		))
+	for _, dbName := range dbNames {
 		var size int64
-		if s, err := strconv.ParseInt(strings.TrimSpace(sizeOutput), 10, 64); err == nil {
-			size = s
+		sizeOut, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf("mysql %s -N -e %s", auth,
+			shq(fmt.Sprintf("SELECT COALESCE(SUM(data_length + index_length),0) FROM information_schema.tables WHERE table_schema='%s'", dbName))))
+		if v, err := strconv.ParseInt(strings.TrimSpace(sizeOut), 10, 64); err == nil {
+			size = v
 		}
 
-		// Get database users
-		usersOutput, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf(
-			`mysql -N -e "SELECT DISTINCT User FROM mysql.db WHERE Db='%s';"`,
-			dbName,
-		))
 		var dbUsers []common.DBUser
-		for _, user := range strings.Fields(usersOutput) {
-			dbUsers = append(dbUsers, common.DBUser{
-				Username: user,
-				Host:     "localhost",
-			})
+		usersOut, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf("mysql %s -N -e %s", auth,
+			shq(fmt.Sprintf("SELECT DISTINCT User FROM mysql.db WHERE Db='%s' OR Db='%s'", dbName, strings.ReplaceAll(dbName, "_", `\_`)))))
+		for _, u := range strings.Fields(usersOut) {
+			dbUsers = append(dbUsers, common.DBUser{Username: u, Host: "localhost"})
 		}
 
-		db := common.Database{
+		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", dbName, time.Now().Unix())
+		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s 2>&1 | gzip -1 > %s",
+			auth, shq(dbName), shq(remoteDump))
+		if out, err := da.sshClient.RunCommand(ctx, dumpCmd); err != nil {
+			da.sshClient.RunCommand(ctx, "rm -f "+shq(remoteDump))
+			return nil, fmt.Errorf("mysqldump of %s failed: %v %s", dbName, err, strings.TrimSpace(out))
+		}
+
+		localDump := filepath.Join(dbDir, dbName+".sql.gz")
+		if err := da.sshClient.Download(ctx, remoteDump, localDump); err != nil {
+			da.sshClient.RunCommand(ctx, "rm -f "+shq(remoteDump))
+			return nil, fmt.Errorf("failed to download dump of %s: %w", dbName, err)
+		}
+		da.sshClient.RunCommand(ctx, "rm -f "+shq(remoteDump))
+
+		st, err := os.Stat(localDump)
+		if err != nil || st.Size() < 64 {
+			return nil, fmt.Errorf("dump of %s is empty", dbName)
+		}
+		da.logf("info", "Database %s dumped: %d MB data, %d bytes compressed, users: %s",
+			dbName, size/1024/1024, st.Size(), strings.Join(strings.Fields(usersOut), ","))
+
+		databases = append(databases, common.Database{
 			Name:    dbName,
 			Type:    "mysql",
 			Size:    size,
 			Users:   dbUsers,
 			Charset: "utf8mb4",
-		}
-		databases = append(databases, db)
-
-		// Dump the database
-		dumpPath := filepath.Join(dbDir, fmt.Sprintf("%s.sql", dbName))
-		localDumpPath := dumpPath
-
-		// Create dump on remote server
-		remoteDumpPath := fmt.Sprintf("/tmp/%s_%d.sql", dbName, time.Now().Unix())
-		_, err := da.sshClient.RunCommand(ctx, fmt.Sprintf(
-			"mysqldump --single-transaction --routines --triggers %s > %s",
-			dbName, remoteDumpPath,
-		))
-		if err != nil {
-			fmt.Printf("Warning: failed to dump database %s: %v\n", dbName, err)
-			continue
-		}
-
-		// Download the dump
-		if err := da.sshClient.Download(ctx, remoteDumpPath, localDumpPath); err != nil {
-			fmt.Printf("Warning: failed to download database dump %s: %v\n", dbName, err)
-		}
-
-		// Clean up remote dump
-		da.sshClient.RunCommand(ctx, fmt.Sprintf("rm -f %s", remoteDumpPath))
+		})
 	}
-
 	return databases, nil
 }
 
@@ -601,9 +610,9 @@ func (da *DirectAdmin) ExportEmails(ctx context.Context, username string, output
 		mailDir := fmt.Sprintf("/home/%s/imap/%s/%s", username, account.Domain, emailUser)
 		localMailDir := filepath.Join(emailDir, emailUser)
 
-		// Download maildir
+		// Download maildir (mailbox contents are not imported yet; kept for future use)
 		if err := da.sshClient.DownloadDirectory(ctx, mailDir, localMailDir, nil); err != nil {
-			fmt.Printf("Warning: failed to download maildir for %s: %v\n", email.Email, err)
+			da.logf("warn", "Mailbox contents of %s not downloaded: %v", email.Email, err)
 		}
 	}
 
