@@ -798,7 +798,9 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	privEndpoint := fmt.Sprintf("%s/%s/privileges", userEndpoint, actualUser)
 	granted := false
 	var lastErr error
-	for _, grants := range [][]string{{"ALL PRIVILEGES"}, {"ALL"}, {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "INDEX", "ALTER", "CREATE TEMPORARY TABLES", "LOCK TABLES", "EXECUTE", "CREATE VIEW", "SHOW VIEW", "CREATE ROUTINE", "ALTER ROUTINE", "EVENT", "TRIGGER", "REFERENCES"}} {
+	// Enhance's MySQLUserGrants enum: all, alter, alterRoutine, create, createRoutine, createTemporaryTables,
+	// createView, delete, drop, event, execute, index, insert, lockTables, references, select, showView, trigger, update
+	for _, grants := range [][]string{{"all"}, {"select", "insert", "update", "delete", "create", "drop", "index", "alter", "createTemporaryTables", "lockTables", "execute", "createView", "showView", "createRoutine", "alterRoutine", "event", "trigger", "references"}} {
 		if _, err := e.apiRequest(ctx, "PUT", privEndpoint, map[string]interface{}{"dbName": actualDB, "grants": grants}); err != nil {
 			lastErr = err
 			continue
