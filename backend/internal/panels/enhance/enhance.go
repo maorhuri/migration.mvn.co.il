@@ -725,13 +725,16 @@ func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocR
 		return err
 	}
 
-	out, err := e.nodeRun(ctx, fmt.Sprintf("find %s -type f | wc -l; du -sh %s | cut -f1", shq(ws.DocRoot), shq(ws.DocRoot)))
+	out, err := e.nodeRun(ctx, fmt.Sprintf("find %s -type f 2>/dev/null | wc -l; du -sh %s 2>/dev/null | cut -f1", shq(ws.DocRoot), shq(ws.DocRoot)))
 	if err != nil {
 		return fmt.Errorf("could not verify uploaded files: %w", err)
 	}
 	parts := strings.Fields(out)
-	remoteFiles, _ := strconv.Atoi(parts[0])
+	remoteFiles := 0
 	size := ""
+	if len(parts) > 0 {
+		remoteFiles, _ = strconv.Atoi(parts[0])
+	}
 	if len(parts) > 1 {
 		size = parts[1]
 	}
@@ -872,17 +875,35 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 		return nil, fmt.Errorf("mysql import of %s failed on node: %v", actualDB, importErr)
 	}
 
-	countOut, err := e.nodeRun(ctx, fmt.Sprintf("mysql -u %s -p%s -N -e %s", shq(actualUser), shq(password),
-		shq(fmt.Sprintf("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", actualDB))))
-	if err == nil {
-		res.Tables, _ = strconv.Atoi(strings.TrimSpace(countOut))
+	// Verify with the same host that worked for the import; MariaDB's client prints a
+	// deprecation notice on stderr, so drop stderr and read only the last line.
+	verifyHost := ""
+	if res.Host != "" && res.Host != "localhost" {
+		verifyHost = " -h " + shq(res.Host)
 	}
+	countOut, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e %s 2>/dev/null", verifyHost, shq(actualUser), shq(password),
+		shq(fmt.Sprintf("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", actualDB))))
+	if err != nil {
+		return nil, fmt.Errorf("could not verify database %s after import: %v %s", actualDB, err, countOut)
+	}
+	res.Tables = lastInt(countOut)
 	if res.Tables == 0 {
-		return nil, fmt.Errorf("database %s has no tables after import", actualDB)
+		return nil, fmt.Errorf("database %s has no tables after import (verification output: %q)", actualDB, countOut)
 	}
 	e.nodeRun(ctx, "rm -f "+shq(remoteDump))
 	e.logf("info", "Database %s imported on node: %d tables (user %s, host %s)", actualDB, res.Tables, actualUser, res.Host)
 	return res, nil
+}
+
+// lastInt returns the integer on the last non-empty line of a command output (0 if none)
+func lastInt(out string) int {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if n, err := strconv.Atoi(strings.TrimSpace(lines[i])); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // findMySQLName lists mysql-dbs or mysql-users and returns the actual (possibly prefixed) name

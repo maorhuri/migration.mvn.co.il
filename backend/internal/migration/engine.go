@@ -180,6 +180,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 			return
 		}
 		defer en.Disconnect()
+		defer en.CleanupTempFiles(ctx) // also on failure: never leave dumps in /tmp on the node
 
 		result, err := en.ImportAccount(ctx, exportData, progressChan)
 		warnings += len(en.Warnings())
