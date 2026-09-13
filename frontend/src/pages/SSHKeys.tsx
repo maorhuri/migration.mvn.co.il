@@ -1,25 +1,57 @@
 import { useEffect, useState } from 'react';
-import { Dialog } from '@headlessui/react';
-import {
-  PlusIcon,
-  TrashIcon,
-  KeyIcon,
-} from '@heroicons/react/24/outline';
+import { ArrowUpTrayIcon, PlusIcon } from '@heroicons/react/20/solid';
+import { ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getSSHKeys, createSSHKey, deleteSSHKey } from '../api/client';
+import {
+  getSSHKeys,
+  createSSHKey,
+  deleteSSHKey,
+  generateSSHKey,
+  setDefaultSSHKey,
+  unsetDefaultSSHKey,
+} from '../api/client';
 import type { SSHKey } from '../types';
+import {
+  Badge,
+  Button,
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  ConfirmDialog,
+  EmptyState,
+  PageHeader,
+  SkeletonTable,
+} from '../components/ui';
+import { DefaultKeyCallout } from '../components/sshkeys/DefaultKeyCallout';
+import { GenerateKeyModal } from '../components/sshkeys/GenerateKeyModal';
+import { ImportKeyModal, type ImportKeyFormData } from '../components/sshkeys/ImportKeyModal';
+import { KeyViewModal } from '../components/sshkeys/KeyViewModal';
+import { SSHKeysTable } from '../components/sshkeys/SSHKeysTable';
+
+const EMPTY_FORM: ImportKeyFormData = {
+  name: '',
+  public_key: '',
+  private_key: '',
+  passphrase: '',
+};
 
 export default function SSHKeys() {
   const [keys, setKeys] = useState<SSHKey[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
 
-  const [formData, setFormData] = useState({
-    name: '',
-    public_key: '',
-    private_key: '',
-    passphrase: '',
-  });
+  const [formData, setFormData] = useState<ImportKeyFormData>(EMPTY_FORM);
+
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [generateName, setGenerateName] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  const [viewKey, setViewKey] = useState<SSHKey | null>(null);
+  const [toDelete, setToDelete] = useState<SSHKey | null>(null);
+  const [pendingDefaultId, setPendingDefaultId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchKeys();
@@ -29,7 +61,9 @@ export default function SSHKeys() {
     try {
       const data = await getSSHKeys();
       setKeys(data);
+      setLoadError(false);
     } catch (error) {
+      setLoadError(true);
       toast.error('Failed to fetch SSH keys');
     } finally {
       setLoading(false);
@@ -38,27 +72,25 @@ export default function SSHKeys() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setImporting(true);
     try {
       await createSSHKey(formData);
       toast.success('SSH key added successfully');
       setIsModalOpen(false);
-      setFormData({
-        name: '',
-        public_key: '',
-        private_key: '',
-        passphrase: '',
-      });
+      setFormData(EMPTY_FORM);
       fetchKeys();
     } catch (error) {
       toast.error('Failed to add SSH key');
+    } finally {
+      setImporting(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this SSH key?')) return;
     try {
       await deleteSSHKey(id);
       toast.success('SSH key deleted');
+      if (viewKey?.id === id) setViewKey(null);
       fetchKeys();
     } catch (error) {
       toast.error('Failed to delete SSH key');
@@ -72,180 +104,177 @@ export default function SSHKeys() {
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      setFormData({ ...formData, [field]: content });
+      setFormData((prev) => ({ ...prev, [field]: content }));
     };
     reader.readAsText(file);
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
-  }
+  const handleGenerate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGenerating(true);
+    try {
+      const created = await generateSSHKey({ name: generateName.trim() });
+      toast.success('SSH key generated');
+      setGenerateOpen(false);
+      setGenerateName('');
+      await fetchKeys();
+      setViewKey(created);
+    } catch (error) {
+      toast.error('Failed to generate SSH key');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleToggleDefault = async (key: SSHKey) => {
+    setPendingDefaultId(key.id);
+    try {
+      if (key.is_default) {
+        await unsetDefaultSSHKey(key.id);
+        toast.success(`${key.name} is no longer the default key`);
+      } else {
+        await setDefaultSSHKey(key.id);
+        toast.success(`${key.name} is now the default for cluster nodes`);
+      }
+      await fetchKeys();
+    } catch (error) {
+      toast.error(key.is_default ? 'Failed to unset default key' : 'Failed to set default key');
+    } finally {
+      setPendingDefaultId(null);
+    }
+  };
+
+  const openGenerate = () => setGenerateOpen(true);
+  const openImport = () => setIsModalOpen(true);
+
+  // Keep the view modal in sync with the freshest copy of the key (e.g. after toggling default).
+  const currentViewKey = viewKey ? keys.find((k) => k.id === viewKey.id) ?? viewKey : null;
+  const defaultKey = keys.find((k) => k.is_default) ?? null;
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">SSH Keys</h1>
-          <p className="text-gray-600">Manage SSH keys for server authentication</p>
-        </div>
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className="btn btn-primary flex items-center"
+    <div className="space-y-6">
+      <PageHeader
+        title="SSH keys"
+        description="Keys the tool uses to authenticate against servers and Enhance cluster nodes."
+        actions={
+          <>
+            <Button variant="secondary" leftIcon={<ArrowUpTrayIcon />} onClick={openImport}>
+              Import key
+            </Button>
+            <Button variant="primary" leftIcon={<PlusIcon />} onClick={openGenerate}>
+              Generate key
+            </Button>
+          </>
+        }
+      />
+
+      {!loading && keys.length > 0 && <DefaultKeyCallout defaultKey={defaultKey} onView={setViewKey} />}
+
+      <Card flush>
+        <CardHeader
+          divided
+          actions={
+            !loading && keys.length > 0 ? (
+              <Badge tone="neutral" size="sm">
+                {keys.length} {keys.length === 1 ? 'key' : 'keys'}
+              </Badge>
+            ) : undefined
+          }
         >
-          <PlusIcon className="w-5 h-5 mr-2" />
-          Add SSH Key
-        </button>
-      </div>
+          <CardTitle>All keys</CardTitle>
+          <CardDescription>Private keys are stored on the tool; only the public half is ever installed on servers.</CardDescription>
+        </CardHeader>
 
-      {keys.length === 0 ? (
-        <div className="card text-center py-12">
-          <KeyIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No SSH keys yet</h3>
-          <p className="text-gray-500 mb-4">Add SSH keys for secure server authentication</p>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="btn btn-primary"
-          >
-            Add SSH Key
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {keys.map((key) => (
-            <div key={key.id} className="card">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center">
-                  <div className="p-2 bg-gray-100 rounded-lg">
-                    <KeyIcon className="w-5 h-5 text-gray-600" />
-                  </div>
-                  <div className="ml-3">
-                    <h3 className="font-semibold text-gray-900">{key.name}</h3>
-                    {key.fingerprint && (
-                      <p className="text-xs text-gray-500 font-mono truncate max-w-[200px]">
-                        {key.fingerprint}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleDelete(key.id)}
-                  className="text-gray-400 hover:text-red-600 transition-colors"
-                >
-                  <TrashIcon className="w-5 h-5" />
-                </button>
-              </div>
+        {loading ? (
+          <SkeletonTable rows={4} columns={5} />
+        ) : loadError && keys.length === 0 ? (
+          <EmptyState
+            icon={ExclamationTriangleIcon}
+            title="Could not load SSH keys"
+            description="The API did not respond. Check that the backend is running and try again."
+            action={
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setLoading(true);
+                  fetchKeys();
+                }}
+              >
+                Retry
+              </Button>
+            }
+          />
+        ) : keys.length === 0 ? (
+          <EmptyState
+            icon={KeyIcon}
+            title="No SSH keys yet"
+            description="Generate a key on the tool or import an existing one to authenticate against servers and cluster nodes."
+            action={
+              <Button variant="primary" leftIcon={<PlusIcon />} onClick={openGenerate}>
+                Generate key
+              </Button>
+            }
+            secondaryAction={
+              <Button variant="secondary" leftIcon={<ArrowUpTrayIcon />} onClick={openImport}>
+                Import key
+              </Button>
+            }
+          />
+        ) : (
+          <SSHKeysTable
+            keys={keys}
+            onView={setViewKey}
+            onToggleDefault={handleToggleDefault}
+            onDelete={setToDelete}
+            pendingDefaultId={pendingDefaultId}
+          />
+        )}
+      </Card>
 
-              <div className="space-y-2 text-sm">
-                <div>
-                  <span className="text-gray-500">Public Key</span>
-                  <p className="text-gray-900 font-mono text-xs truncate mt-1">
-                    {key.public_key.substring(0, 50)}...
-                  </p>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Created</span>
-                  <span className="text-gray-900">
-                    {new Date(key.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <GenerateKeyModal
+        open={generateOpen}
+        onClose={() => setGenerateOpen(false)}
+        name={generateName}
+        onNameChange={setGenerateName}
+        onSubmit={handleGenerate}
+        loading={generating}
+      />
 
-      {/* Add SSH Key Modal */}
-      <Dialog open={isModalOpen} onClose={() => setIsModalOpen(false)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="mx-auto max-w-lg w-full bg-white rounded-xl shadow-xl">
-            <div className="p-6">
-              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4">
-                Add SSH Key
-              </Dialog.Title>
+      <ImportKeyModal
+        open={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        formData={formData}
+        onChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))}
+        onSubmit={handleSubmit}
+        onFileUpload={handleFileUpload}
+        loading={importing}
+      />
 
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label className="label">Key Name</label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    placeholder="My SSH Key"
-                    required
-                  />
-                </div>
+      <KeyViewModal
+        sshKey={currentViewKey}
+        onClose={() => setViewKey(null)}
+        onToggleDefault={handleToggleDefault}
+        pendingDefaultId={pendingDefaultId}
+      />
 
-                <div>
-                  <label className="label">Public Key</label>
-                  <div className="flex space-x-2">
-                    <textarea
-                      className="input font-mono text-xs"
-                      rows={3}
-                      value={formData.public_key}
-                      onChange={(e) => setFormData({ ...formData, public_key: e.target.value })}
-                      placeholder="ssh-rsa AAAA..."
-                      required
-                    />
-                  </div>
-                  <input
-                    type="file"
-                    accept=".pub"
-                    onChange={handleFileUpload('public_key')}
-                    className="mt-2 text-sm text-gray-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="label">Private Key</label>
-                  <textarea
-                    className="input font-mono text-xs"
-                    rows={3}
-                    value={formData.private_key}
-                    onChange={(e) => setFormData({ ...formData, private_key: e.target.value })}
-                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                    required
-                  />
-                  <input
-                    type="file"
-                    onChange={handleFileUpload('private_key')}
-                    className="mt-2 text-sm text-gray-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="label">Passphrase (Optional)</label>
-                  <input
-                    type="password"
-                    className="input"
-                    value={formData.passphrase}
-                    onChange={(e) => setFormData({ ...formData, passphrase: e.target.value })}
-                    placeholder="Leave empty if no passphrase"
-                  />
-                </div>
-
-                <div className="flex justify-end space-x-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(false)}
-                    className="btn btn-secondary"
-                  >
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    Add Key
-                  </button>
-                </div>
-              </form>
-            </div>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
+      <ConfirmDialog
+        open={!!toDelete}
+        onClose={() => setToDelete(null)}
+        title="Delete SSH key?"
+        message={
+          <>
+            This removes <span className="font-medium text-slate-900 dark:text-slate-100">{toDelete?.name}</span> from the tool.
+            {toDelete?.is_default && ' It is the default key for Enhance cluster nodes; migrations to those nodes will need a new default.'}{' '}
+            Servers that already have the public key installed keep accepting it until you remove it there.
+          </>
+        }
+        confirmLabel="Delete key"
+        onConfirm={async () => {
+          if (!toDelete) return;
+          await handleDelete(toDelete.id);
+          setToDelete(null);
+        }}
+      />
     </div>
   );
 }

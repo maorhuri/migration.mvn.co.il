@@ -26,6 +26,10 @@ export interface SSHKey {
   public_key: string;
   fingerprint?: string;
   created_at: string;
+  /** Default key used to SSH into Enhance cluster nodes. */
+  is_default?: boolean;
+  /** Shell command that installs the public key on a node (run as root). */
+  install_command?: string;
 }
 
 export interface Account {
@@ -64,6 +68,10 @@ export interface Migration {
   started_at?: string;
   completed_at?: string;
   created_at: string;
+  /** Export metadata stored by the backend once the source export finished (domains used for the hosts entry). */
+  export_data?: { domains?: { name: string }[] };
+  /** Live progress block returned by the API; transfer byte counters live here rather than at the top level. */
+  progress?: { bytes_transferred?: number; total_bytes?: number };
 }
 
 export interface MigrationLog {

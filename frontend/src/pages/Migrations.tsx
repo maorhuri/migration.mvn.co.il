@@ -1,21 +1,40 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { PlusIcon } from '@heroicons/react/20/solid';
+import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import {
-  PlusIcon,
-  ArrowsRightLeftIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  ClockIcon,
-  StopIcon,
-  TrashIcon,
-} from '@heroicons/react/24/outline';
+  Badge,
+  Button,
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  ConfirmDialog,
+  EmptyState,
+  PageHeader,
+  SkeletonTable,
+  Table,
+  TBody,
+  TH,
+  THead,
+  TR,
+} from '../components/ui';
+import { MigrationRow } from '../components/migrations/MigrationRow';
 import { getMigrations, getServers, cancelMigration, deleteMigration } from '../api/client';
 import type { Migration, Server } from '../types';
 
 export default function Migrations() {
+  const navigate = useNavigate();
   const [migrations, setMigrations] = useState<Migration[]>([]);
   const [servers, setServers] = useState<Record<string, Server>>({});
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Dialog targets are kept after close so the message does not blank during the exit transition.
+  const [toCancel, setToCancel] = useState<Migration | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [toDelete, setToDelete] = useState<Migration | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -24,14 +43,16 @@ export default function Migrations() {
         getServers(),
       ]);
       setMigrations(migrationsData);
-      
+
       const serversMap: Record<string, Server> = {};
       serversData.forEach((s) => {
         serversMap[s.id] = s;
       });
       setServers(serversMap);
+      setFetchError(null);
     } catch (error) {
       console.error('Failed to fetch data:', error);
+      setFetchError('Could not load migrations. Retrying automatically.');
     } finally {
       setLoading(false);
     }
@@ -45,205 +66,179 @@ export default function Migrations() {
   }, []);
 
   const handleCancel = async (id: string) => {
-    if (!confirm('Are you sure you want to cancel this migration?')) return;
     try {
       await cancelMigration(id);
+      toast.success('Migration cancelled');
+      setCancelOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to cancel migration:', error);
-      alert('Failed to cancel migration');
+      toast.error('Failed to cancel migration');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this migration?')) return;
     try {
       await deleteMigration(id);
+      toast.success('Migration deleted');
+      setDeleteOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to delete migration:', error);
-      alert('Failed to delete migration');
+      toast.error('Failed to delete migration');
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <CheckCircleIcon className="w-5 h-5 text-green-500" />;
-      case 'failed':
-        return <XCircleIcon className="w-5 h-5 text-red-500" />;
-      case 'cancelled':
-        return <StopIcon className="w-5 h-5 text-orange-500" />;
-      case 'running':
-        return <ClockIcon className="w-5 h-5 text-yellow-500 animate-pulse" />;
-      default:
-        return <ClockIcon className="w-5 h-5 text-gray-400" />;
-    }
-  };
-
-  const getStatusBadge = (status: string) => {
-    const classes: Record<string, string> = {
-      completed: 'bg-green-100 text-green-700',
-      failed: 'bg-red-100 text-red-700',
-      cancelled: 'bg-orange-100 text-orange-700',
-      running: 'bg-yellow-100 text-yellow-700',
-      pending: 'bg-gray-100 text-gray-700',
-    };
-    return (
-      <span className={`px-2 py-1 text-xs font-medium rounded-full ${classes[status] || classes.pending}`}>
-        {status}
-      </span>
-    );
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
-      </div>
-    );
-  }
+  const runningCount = migrations.filter((m) => m.status === 'running').length;
+  const showLoadError = !loading && !!fetchError && migrations.length === 0;
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Migrations</h1>
-          <p className="text-gray-600">View and manage account migrations</p>
-        </div>
-        <Link to="/migrations/new" className="btn btn-primary flex items-center">
-          <PlusIcon className="w-5 h-5 mr-2" />
-          New Migration
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Migrations"
+        description="View and manage account migrations between servers."
+        actions={
+          <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
+            New migration
+          </Button>
+        }
+      />
 
-      {migrations.length === 0 ? (
-        <div className="card text-center py-12">
-          <ArrowsRightLeftIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No migrations yet</h3>
-          <p className="text-gray-500 mb-4">Start your first migration to transfer accounts between servers</p>
-          <Link to="/migrations/new" className="btn btn-primary">
-            Start Migration
-          </Link>
-        </div>
-      ) : (
-        <div className="card overflow-hidden">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Account
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Source
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Target
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Progress
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Started
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {migrations.map((migration) => (
-                <tr key={migration.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <Link
-                      to={`/migrations/${migration.id}`}
-                      className="text-primary-600 hover:text-primary-700 font-medium"
-                    >
-                      {migration.account_username}
-                    </Link>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {servers[migration.source_server_id]?.name || 'Unknown'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {servers[migration.target_server_id]?.name || 'Unknown'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center">
-                      {getStatusIcon(migration.status)}
-                      <span className="ml-2">{getStatusBadge(migration.status)}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {migration.status === 'running' && (
-                      <div className="w-32">
-                        <div className="flex items-center">
-                          <div className="flex-1 bg-gray-200 rounded-full h-2">
-                            <div
-                              className="bg-primary-600 h-2 rounded-full transition-all"
-                              style={{
-                                width: `${migration.total_steps > 0 
-                                  ? (migration.completed_steps / migration.total_steps) * 100 
-                                  : 0}%`
-                              }}
-                            />
-                          </div>
-                          <span className="ml-2 text-xs text-gray-500">
-                            {migration.completed_steps}/{migration.total_steps}
-                          </span>
-                        </div>
-                        {migration.current_step && (
-                          <p className="text-xs text-gray-500 mt-1 truncate">
-                            {migration.current_step}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {migration.status === 'completed' && (
-                      <span className="text-sm text-green-600">Complete</span>
-                    )}
-                    {migration.status === 'failed' && (
-                      <span className="text-sm text-red-600 truncate max-w-xs block">
-                        {migration.error || 'Failed'}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {migration.started_at 
-                      ? new Date(migration.started_at).toLocaleString()
-                      : '-'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <div className="flex items-center space-x-2">
-                      {(migration.status === 'running' || migration.status === 'pending') && (
-                        <button
-                          onClick={() => handleCancel(migration.id)}
-                          className="text-yellow-600 hover:text-yellow-800 p-1 rounded hover:bg-yellow-50"
-                          title="Cancel migration"
-                        >
-                          <StopIcon className="w-5 h-5" />
-                        </button>
-                      )}
-                      {migration.status !== 'running' && (
-                        <button
-                          onClick={() => handleDelete(migration.id)}
-                          className="text-red-600 hover:text-red-800 p-1 rounded hover:bg-red-50"
-                          title="Delete migration"
-                        >
-                          <TrashIcon className="w-5 h-5" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {fetchError && migrations.length > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
+        >
+          <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium">{fetchError}</p>
+            <p className="mt-0.5 text-xs opacity-80">Showing the last data that loaded successfully.</p>
+          </div>
+          <Button size="sm" variant="secondary" onClick={() => fetchData()}>
+            Retry
+          </Button>
         </div>
       )}
+
+      <Card flush>
+        <CardHeader
+          divided
+          actions={
+            !loading && migrations.length > 0 ? (
+              <div className="flex items-center gap-2">
+                {runningCount > 0 && (
+                  <Badge tone="brand" size="sm" dot pulse>
+                    {runningCount} running
+                  </Badge>
+                )}
+                <Badge tone="neutral" size="sm">
+                  {migrations.length} total
+                </Badge>
+              </div>
+            ) : undefined
+          }
+        >
+          <CardTitle>All migrations</CardTitle>
+          <CardDescription>Refreshes automatically every 5 seconds.</CardDescription>
+        </CardHeader>
+
+        {loading ? (
+          <SkeletonTable rows={6} columns={7} />
+        ) : showLoadError ? (
+          <EmptyState
+            icon={ExclamationTriangleIcon}
+            title="Could not load migrations"
+            description="The API did not respond. It is retried every 5 seconds, or you can retry now."
+            action={
+              <Button variant="secondary" onClick={() => fetchData()}>
+                Retry
+              </Button>
+            }
+          />
+        ) : migrations.length === 0 ? (
+          <EmptyState
+            icon={ArrowsRightLeftIcon}
+            title="No migrations yet"
+            description="Start your first migration to move an account between servers."
+            action={
+              <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
+                New migration
+              </Button>
+            }
+          />
+        ) : (
+          <Table bare stickyHeader maxHeight="75vh">
+            <THead>
+              <TR hoverable={false}>
+                <TH>Account</TH>
+                <TH>Source → Target</TH>
+                <TH className="hidden xl:table-cell">Node</TH>
+                <TH>Status</TH>
+                <TH>Warnings</TH>
+                <TH>Timing</TH>
+                <TH align="right">
+                  <span className="sr-only">Actions</span>
+                </TH>
+              </TR>
+            </THead>
+            <TBody>
+              {migrations.map((migration) => (
+                <MigrationRow
+                  key={migration.id}
+                  migration={migration}
+                  source={servers[migration.source_server_id]}
+                  target={servers[migration.target_server_id]}
+                  onView={() => navigate(`/migrations/${migration.id}`)}
+                  onCancel={() => {
+                    setToCancel(migration);
+                    setCancelOpen(true);
+                  }}
+                  onDelete={() => {
+                    setToDelete(migration);
+                    setDeleteOpen(true);
+                  }}
+                />
+              ))}
+            </TBody>
+          </Table>
+        )}
+      </Card>
+
+      <ConfirmDialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        tone="warning"
+        title="Cancel this migration?"
+        message={
+          <>
+            The migration of <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toCancel?.account_username}</span> will
+            stop at its current step. Files already copied to the target are left in place.
+          </>
+        }
+        confirmLabel="Cancel migration"
+        cancelLabel="Keep running"
+        onConfirm={async () => {
+          if (toCancel) await handleCancel(toCancel.id);
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title="Delete this migration?"
+        message={
+          <>
+            This permanently removes the migration record and logs for{' '}
+            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toDelete?.account_username}</span>. The account on the
+            target server is not affected.
+          </>
+        }
+        confirmLabel="Delete migration"
+        onConfirm={async () => {
+          if (toDelete) await handleDelete(toDelete.id);
+        }}
+      />
     </div>
   );
 }
+

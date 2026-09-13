@@ -91,6 +91,22 @@ export const deleteSSHKey = async (id: string): Promise<void> => {
   await api.delete(`/ssh-keys/${id}`);
 };
 
+// Generate an ed25519 key pair server-side and store it.
+export const generateSSHKey = async (params: { name: string }): Promise<SSHKey> => {
+  const { data } = await api.post('/ssh-keys/generate', params);
+  return data;
+};
+
+// Mark a key as the default used for Enhance cluster nodes.
+export const setDefaultSSHKey = async (id: string): Promise<void> => {
+  await api.put(`/ssh-keys/${id}/default`);
+};
+
+// Clear the default flag from a key.
+export const unsetDefaultSSHKey = async (id: string): Promise<void> => {
+  await api.delete(`/ssh-keys/${id}/default`);
+};
+
 // Migrations
 export const getMigrations = async (): Promise<Migration[]> => {
   const { data } = await api.get('/migrations');

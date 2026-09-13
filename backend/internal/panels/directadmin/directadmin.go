@@ -924,12 +924,13 @@ var daUsernameRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
 // SetAccountSuspended suspends (or unsuspends) a DirectAdmin user and verifies the result in the
 // user's user.conf. It uses the `directadmin suspend-user` CLI and falls back to the local API
 // (api-url + CMD_API_SELECT_USERS) on DirectAdmin builds that lack the subcommand.
-func (da *DirectAdmin) SetAccountSuspended(ctx context.Context, username string, suspend bool) error {
+// It returns false when the account already was in the requested state.
+func (da *DirectAdmin) SetAccountSuspended(ctx context.Context, username string, suspend bool) (bool, error) {
 	if !da.connected {
-		return fmt.Errorf("not connected")
+		return false, fmt.Errorf("not connected")
 	}
 	if !daUsernameRe.MatchString(username) {
-		return fmt.Errorf("invalid DirectAdmin username %q", username)
+		return false, fmt.Errorf("invalid DirectAdmin username %q", username)
 	}
 	want, sub, apiAction := "no", "unsuspend-user", "Unsuspend"
 	if suspend {
@@ -937,11 +938,11 @@ func (da *DirectAdmin) SetAccountSuspended(ctx context.Context, username string,
 	}
 	cur, err := da.accountSuspended(ctx, username)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur == want {
 		da.logf("info", "Account %s already has suspended=%s on DirectAdmin", username, want)
-		return nil
+		return false, nil
 	}
 
 	cli := fmt.Sprintf("/usr/local/directadmin/directadmin %s --user=%s 2>&1", sub, shq(username))
@@ -951,21 +952,21 @@ func (da *DirectAdmin) SetAccountSuspended(ctx context.Context, username string,
 		api := fmt.Sprintf(`admin=$(head -n1 /usr/local/directadmin/data/admin/admin.list) && url=$(/usr/local/directadmin/directadmin api-url --user="$admin") && curl -sk -m 60 "$url/CMD_API_SELECT_USERS" --data-urlencode location=CMD_SELECT_USERS --data-urlencode suspend=%s --data-urlencode select0=%s`, apiAction, shq(username))
 		out2, err2 := da.sshClient.RunCommand(ctx, api)
 		if err2 != nil {
-			return fmt.Errorf("%s failed via CLI (%s) and via API (%v: %s)", sub, strings.TrimSpace(out), err2, strings.TrimSpace(out2))
+			return false, fmt.Errorf("%s failed via CLI (%s) and via API (%v: %s)", sub, strings.TrimSpace(out), err2, strings.TrimSpace(out2))
 		}
 		if strings.Contains(out2, "error=1") {
-			return fmt.Errorf("%s refused by the DirectAdmin API: %s", sub, strings.TrimSpace(out2))
+			return false, fmt.Errorf("%s refused by the DirectAdmin API: %s", sub, strings.TrimSpace(out2))
 		}
 	}
 
 	cur, err = da.accountSuspended(ctx, username)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur != want {
-		return fmt.Errorf("DirectAdmin still reports suspended=%s for %s after %s", cur, username, sub)
+		return false, fmt.Errorf("DirectAdmin still reports suspended=%s for %s after %s", cur, username, sub)
 	}
-	return nil
+	return true, nil
 }
 
 // accountSuspended returns the suspended= value ("yes"/"no") of the user's user.conf.

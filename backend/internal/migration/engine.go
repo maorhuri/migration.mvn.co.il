@@ -409,16 +409,20 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	}
 	defer da.Disconnect()
 
-	if err := da.SetAccountSuspended(ctx, m.AccountUsername, suspend); err != nil {
+	changed, err := da.SetAccountSuspended(ctx, m.AccountUsername, suspend)
+	if err != nil {
 		logFn("error", fmt.Sprintf("Source account %s: %s on %s failed: %v", m.AccountUsername, action, server.Name, err))
 		return nil, err
 	}
 	if err := e.db.SetMigrationSourceSuspended(ctx, migrationID, suspend); err != nil {
 		return nil, fmt.Errorf("account %sed but the migration record could not be updated: %w", action, err)
 	}
-	if suspend {
+	switch {
+	case !changed:
+		// state already matched; SetAccountSuspended logged it
+	case suspend:
 		logFn("info", fmt.Sprintf("Source account %s suspended on %s (%s); the site is now served only by the new server", m.AccountUsername, server.Name, server.Host))
-	} else {
+	default:
 		logFn("info", fmt.Sprintf("Source account %s unsuspended on %s (%s)", m.AccountUsername, server.Name, server.Host))
 	}
 	return e.GetMigrationStatus(ctx, migrationID)

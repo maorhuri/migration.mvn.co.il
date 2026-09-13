@@ -1,25 +1,52 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Dialog } from '@headlessui/react';
 import {
-  ArrowLeftIcon,
-  GlobeAltIcon,
-  EnvelopeIcon,
-  CircleStackIcon,
-  ServerStackIcon,
-  CheckCircleIcon,
-  XCircleIcon,
   ArrowPathIcon,
+  ArrowsRightLeftIcon,
+  CircleStackIcon,
+  GlobeAltIcon,
+  MagnifyingGlassIcon,
   PencilIcon,
-} from '@heroicons/react/24/outline';
+  SignalIcon,
+} from '@heroicons/react/20/solid';
+import { CpuChipIcon, ServerStackIcon as ServerStackOutlineIcon, UsersIcon as UsersOutlineIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServer, getServerAccounts, getServerInfo, testServerConnection, updateServer, getSSHKeys, refreshServerAccounts } from '../api/client';
 import type { Server, Account, SSHKey } from '../types';
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  EmptyState,
+  Input,
+  KeyValue,
+  PageHeader,
+  PanelBadge,
+  Skeleton,
+  SkeletonCard,
+  SkeletonTable,
+  Stat,
+  StatusBadge,
+} from '../components/ui';
+import { formatDate, formatRelativeTime } from '../lib/format';
+import { AccountsTable } from '../components/serverdetail/AccountsTable';
+import type { AccountSortField } from '../components/serverdetail/AccountsTable';
+import { EditServerModal } from '../components/serverdetail/EditServerModal';
+import { DatabasesModal, EmailAccountsModal } from '../components/serverdetail/AccountListModals';
 
 interface ServerAccounts {
   accounts: Account[];
   total: number;
 }
+
+const AUTH_LABELS: Record<Server['auth_method'], string> = {
+  password: 'Password',
+  ssh_key: 'SSH key',
+  api_key: 'API key',
+};
 
 export default function ServerDetail() {
   const { id } = useParams<{ id: string }>();
@@ -30,6 +57,7 @@ export default function ServerDetail() {
   const [loading, setLoading] = useState(true);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'failed'>('unknown');
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [emailModalAccount, setEmailModalAccount] = useState<Account | null>(null);
@@ -41,6 +69,8 @@ export default function ServerDetail() {
     os_version?: string;
     php_versions?: string;
   } | null>(null);
+  // Where the current account list came from: the server-side cache (initial load) or a live refresh.
+  const [accountsSource, setAccountsSource] = useState<{ kind: 'cached' | 'refreshed'; at: Date } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<string>('domain');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -136,6 +166,7 @@ export default function ServerDetail() {
     try {
       const data = await getServerAccounts(id);
       setAccounts(data);
+      setAccountsSource({ kind: 'cached', at: new Date() });
     } catch (error) {
       toast.error('Failed to load accounts');
     } finally {
@@ -149,6 +180,7 @@ export default function ServerDetail() {
     try {
       const data = await refreshServerAccounts(id);
       setAccounts(data);
+      setAccountsSource({ kind: 'refreshed', at: new Date() });
       toast.success('Accounts refreshed successfully');
     } catch (error) {
       toast.error('Failed to refresh accounts');
@@ -160,6 +192,7 @@ export default function ServerDetail() {
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!id) return;
+    setSaving(true);
     try {
       await updateServer(id, editFormData);
       toast.success('Server updated successfully');
@@ -167,6 +200,8 @@ export default function ServerDetail() {
       loadServer();
     } catch (error) {
       toast.error('Failed to update server');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -190,14 +225,14 @@ export default function ServerDetail() {
   };
 
   const filteredAndSortedAccounts = accounts?.accounts
-    .filter(acc => 
+    .filter(acc =>
       acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .sort((a, b) => {
       let aVal: string | number = '';
       let bVal: string | number = '';
-      
+
       switch (sortField) {
         case 'domain':
           aVal = a.domain || '';
@@ -228,522 +263,308 @@ export default function ServerDetail() {
           bVal = b.is_wordpress ? 1 : 0;
           break;
       }
-      
+
       if (typeof aVal === 'number' && typeof bVal === 'number') {
         return sortDirection === 'asc' ? aVal - bVal : bVal - aVal;
       }
-      return sortDirection === 'asc' 
+      return sortDirection === 'asc'
         ? String(aVal).localeCompare(String(bVal))
         : String(bVal).localeCompare(String(aVal));
     }) || [];
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="space-y-6" role="status" aria-label="Loading server">
+        <div className="space-y-3">
+          <Skeleton className="h-3 w-40" />
+          <Skeleton className="h-7 w-64" />
+          <Skeleton className="h-4 w-80" />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <Stat key={i} label={<Skeleton className="h-3 w-20" />} value="" loading />
+          ))}
+        </div>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <SkeletonCard lines={4} />
+          <SkeletonCard lines={4} />
+        </div>
+        <Card flush>
+          <SkeletonTable rows={6} columns={9} />
+        </Card>
       </div>
     );
   }
 
   if (!server) {
-    return <div>Server not found</div>;
+    return (
+      <Card>
+        <EmptyState
+          icon={ServerStackOutlineIcon}
+          title="Server not found"
+          description="This server may have been removed or the link is out of date."
+          action={<Button variant="primary" onClick={() => navigate('/servers')}>Back to servers</Button>}
+        />
+      </Card>
+    );
   }
+
+  const totalDatabases = accounts ? accounts.accounts.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0) : 0;
+  const wordpressCount = accounts ? accounts.accounts.filter((acc) => acc.is_wordpress).length : 0;
+  const sshKeyName = server.ssh_key_id ? sshKeys.find((k) => k.id === server.ssh_key_id)?.name : undefined;
+  const hasAccounts = !!accounts && accounts.accounts.length > 0;
+  const hasSystemInfo = !!serverInfo && !!(serverInfo.os_version || serverInfo.web_server || serverInfo.total_disk || serverInfo.php_versions);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <button
-            onClick={() => navigate('/servers')}
-            className="p-2 hover:bg-gray-100 rounded-lg"
-          >
-            <ArrowLeftIcon className="h-5 w-5" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">{server.name}</h1>
-            <p className="text-gray-500">{server.panel_type} • {server.host}:{server.port}</p>
-          </div>
-        </div>
-        <div className="flex items-center space-x-3">
-          {connectionStatus === 'success' && (
-            <span className="flex items-center text-green-600">
-              <CheckCircleIcon className="h-5 w-5 mr-1" />
-              Connected
-            </span>
-          )}
-          {connectionStatus === 'failed' && (
-            <span className="flex items-center text-red-600">
-              <XCircleIcon className="h-5 w-5 mr-1" />
-              Failed
-            </span>
-          )}
-          <button
-            onClick={() => setIsEditModalOpen(true)}
-            className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-          >
-            <PencilIcon className="h-5 w-5 mr-2" />
-            Edit
-          </button>
-          <button
-            onClick={handleTestConnection}
-            disabled={testing}
-            className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
-          >
-            {testing ? (
-              <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
-            ) : (
-              <CheckCircleIcon className="h-5 w-5 mr-2" />
-            )}
-            {testing ? 'Testing...' : 'Test Connection'}
-          </button>
-          <button
-            onClick={handleRefreshAccounts}
-            disabled={loadingAccounts}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-          >
-            {loadingAccounts ? (
-              <ArrowPathIcon className="h-5 w-5 mr-2 animate-spin" />
-            ) : (
-              <ArrowPathIcon className="h-5 w-5 mr-2" />
-            )}
-            {loadingAccounts ? 'Refreshing...' : 'Refresh Accounts'}
-          </button>
-        </div>
+      <PageHeader
+        breadcrumb={[{ label: 'Servers', to: '/servers' }, { label: server.name }]}
+        title={server.name}
+        description={
+          <span className="font-mono text-[13px]">
+            {server.username}@{server.host}:{server.port}
+          </span>
+        }
+        meta={
+          <>
+            <PanelBadge panelType={server.panel_type} />
+            <StatusBadge status={testing ? 'testing' : connectionStatus} />
+          </>
+        }
+        actions={
+          <>
+            <Button variant="secondary" leftIcon={<PencilIcon />} onClick={() => setIsEditModalOpen(true)}>
+              Edit
+            </Button>
+            <Button variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
+              Test connection
+            </Button>
+            <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
+              Refresh accounts
+            </Button>
+            <Button variant="primary" leftIcon={<ArrowsRightLeftIcon />} onClick={() => navigate('/migrations/new')}>
+              New migration
+            </Button>
+          </>
+        }
+      />
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat
+          label="Accounts"
+          value={accounts ? accounts.total : '—'}
+          icon={UsersOutlineIcon}
+          tone="blue"
+          loading={loadingAccounts && !accounts}
+          hint={accounts ? `${wordpressCount} WordPress` : 'Not loaded yet'}
+        />
+        <Stat
+          label="Databases"
+          value={accounts ? totalDatabases : '—'}
+          icon={CircleStackIcon}
+          tone="violet"
+          loading={loadingAccounts && !accounts}
+          hint={accounts ? 'across all accounts' : 'Not loaded yet'}
+        />
+        <Stat
+          label="Disk used"
+          value={serverInfo?.used_disk ? <span className="font-mono text-xl">{serverInfo.used_disk}</span> : '—'}
+          icon={ServerStackOutlineIcon}
+          tone={serverInfo?.used_disk ? 'brand' : 'neutral'}
+          hint={serverInfo?.total_disk ? `of ${serverInfo.total_disk}` : 'Test the connection to load'}
+        />
+        <Stat
+          label="Web server"
+          value={serverInfo?.web_server ? <span className="text-xl">{serverInfo.web_server}</span> : '—'}
+          icon={CpuChipIcon}
+          tone={serverInfo?.web_server ? 'orange' : 'neutral'}
+          hint={serverInfo?.os_version ? serverInfo.os_version : 'Test the connection to load'}
+        />
       </div>
 
-      {/* Server Info */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold mb-4">Server Information</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-          <div>
-            <p className="text-sm text-gray-500">Host</p>
-            <p className="font-medium">{server.host}</p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-500">Port</p>
-            <p className="font-medium">{server.port}</p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-500">Username</p>
-            <p className="font-medium">{server.username}</p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-500">Auth Method</p>
-            <p className="font-medium capitalize">{server.auth_method}</p>
-          </div>
-          {serverInfo?.web_server && (
-            <div>
-              <p className="text-sm text-gray-500">Web Server</p>
-              <p className="font-medium text-orange-600">{serverInfo.web_server}</p>
-            </div>
-          )}
-          {serverInfo?.total_disk && (
-            <div>
-              <p className="text-sm text-gray-500">Disk Usage</p>
-              <p className="font-medium">{serverInfo.used_disk} / {serverInfo.total_disk}</p>
-            </div>
-          )}
-          {accounts && (
-            <>
-              <div>
-                <p className="text-sm text-gray-500">Total Accounts</p>
-                <p className="font-medium text-blue-600">{accounts.total}</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500">Total Databases</p>
-                <p className="font-medium text-purple-600">
-                  {accounts.accounts.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0)}
-                </p>
-              </div>
-            </>
-          )}
-          {serverInfo?.os_version && (
-            <div className="col-span-2">
-              <p className="text-sm text-gray-500">OS</p>
-              <p className="font-medium text-sm">{serverInfo.os_version}</p>
-            </div>
-          )}
-        </div>
-      </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader
+            actions={
+              <Button size="sm" variant="ghost" leftIcon={<PencilIcon />} onClick={() => setIsEditModalOpen(true)}>
+                Edit
+              </Button>
+            }
+          >
+            <CardTitle>Connection</CardTitle>
+            <CardDescription>How the migration tool reaches this server.</CardDescription>
+          </CardHeader>
+          <KeyValue
+            layout="grid"
+            columns={3}
+            items={[
+              { label: 'Host', value: server.host, mono: true },
+              { label: 'Port', value: server.port, mono: true },
+              { label: 'Username', value: server.username, mono: true },
+              { label: 'Auth method', value: AUTH_LABELS[server.auth_method] ?? server.auth_method },
+              { label: 'Panel', value: <PanelBadge panelType={server.panel_type} size="sm" /> },
+              ...(server.auth_method === 'ssh_key' ? [{ label: 'SSH key', value: sshKeyName ?? server.ssh_key_id, mono: !sshKeyName }] : []),
+              ...(server.api_endpoint ? [{ label: 'API endpoint', value: server.api_endpoint, mono: true, span: true }] : []),
+              ...(server.enhance_org_id ? [{ label: 'Enhance org', value: server.enhance_org_id, mono: true, span: true }] : []),
+              { label: 'Added', value: <span title={formatDate(server.created_at)}>{formatRelativeTime(server.created_at)}</span> },
+            ]}
+          />
+        </Card>
 
-      {/* Accounts List */}
-      {loadingAccounts ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <div className="flex items-center justify-center h-32">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            <span className="ml-3 text-gray-500">Loading accounts...</span>
-          </div>
-        </div>
-      ) : accounts && accounts.accounts.length > 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-          <div className="p-6 border-b border-gray-200 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <h2 className="text-lg font-semibold">
-              Accounts ({filteredAndSortedAccounts.length}{searchTerm ? ` of ${accounts.total}` : ''})
-            </h2>
-            <input
-              type="text"
-              placeholder="Search by domain or username..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full md:w-64"
+        <Card>
+          <CardHeader
+            actions={
+              <Button size="sm" variant="ghost" leftIcon={<ArrowPathIcon />} onClick={handleTestConnection} loading={testing}>
+                {hasSystemInfo ? 'Reload' : 'Load'}
+              </Button>
+            }
+          >
+            <CardTitle>System</CardTitle>
+            <CardDescription>Reported by the server after a successful connection test.</CardDescription>
+          </CardHeader>
+          {hasSystemInfo ? (
+            <KeyValue
+              layout="grid"
+              columns={2}
+              items={[
+                { label: 'Operating system', value: serverInfo?.os_version, span: true },
+                { label: 'Web server', value: serverInfo?.web_server, mono: true },
+                {
+                  label: 'Disk',
+                  value: serverInfo?.total_disk ? `${serverInfo.used_disk ?? '?'} / ${serverInfo.total_disk}` : undefined,
+                  mono: true,
+                },
+                {
+                  label: 'PHP versions',
+                  value: serverInfo?.php_versions ? (
+                    <span className="flex flex-wrap gap-1">
+                      {serverInfo.php_versions
+                        .split(/[,\s]+/)
+                        .filter(Boolean)
+                        .map((v) => (
+                          <Badge key={v} tone="neutral" size="sm" mono>
+                            {v}
+                          </Badge>
+                        ))}
+                    </span>
+                  ) : undefined,
+                  span: true,
+                },
+              ]}
             />
-          </div>
-          {/* Table Header */}
-          <div className="hidden md:grid md:grid-cols-12 gap-2 px-4 py-3 bg-gray-50 border-b text-xs font-medium text-gray-500 uppercase">
-            <div className="col-span-3 cursor-pointer hover:text-gray-700" onClick={() => handleSort('domain')}>
-              Domain {sortField === 'domain' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('type')}>
-              Type {sortField === 'type' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('php')}>
-              PHP {sortField === 'php' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('disk')}>
-              Disk {sortField === 'disk' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('db_size')}>
-              DB Size {sortField === 'db_size' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-1 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('dbs')}>
-              DBs {sortField === 'dbs' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-2 text-center cursor-pointer hover:text-gray-700" onClick={() => handleSort('emails')}>
-              Emails {sortField === 'emails' && (sortDirection === 'asc' ? '↑' : '↓')}
-            </div>
-            <div className="col-span-2 text-center">Status</div>
-          </div>
-          <div className="divide-y divide-gray-200">
-            {filteredAndSortedAccounts.map((account) => (
-              <div
-                key={account.username}
-                className="grid grid-cols-1 md:grid-cols-12 gap-2 px-4 py-3 hover:bg-gray-50 items-center text-sm"
+          ) : (
+            <EmptyState
+              size="sm"
+              icon={CpuChipIcon}
+              title="No system info yet"
+              description="Run a connection test to read the OS, web server, disk and PHP versions."
+              action={
+                <Button size="sm" variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
+                  Test connection
+                </Button>
+              }
+            />
+          )}
+        </Card>
+      </div>
+
+      <Card flush>
+        <CardHeader
+          divided
+          actions={
+            hasAccounts ? (
+              <Input
+                size="sm"
+                type="search"
+                aria-label="Search accounts"
+                leftIcon={<MagnifyingGlassIcon />}
+                placeholder="Search domain or username…"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full sm:w-72"
+              />
+            ) : undefined
+          }
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>Accounts</CardTitle>
+            {accounts && (
+              <Badge tone="neutral" size="sm">
+                {searchTerm ? `${filteredAndSortedAccounts.length} of ${accounts.total}` : accounts.total}
+              </Badge>
+            )}
+            {accountsSource && !loadingAccounts && (
+              <Badge
+                tone={accountsSource.kind === 'refreshed' ? 'success' : 'neutral'}
+                size="sm"
+                dot
+                title={formatDate(accountsSource.at)}
               >
-                {/* Domain & User */}
-                <div className="col-span-3 flex items-center space-x-3">
-                  <div className="p-1.5 bg-blue-100 rounded-lg flex-shrink-0">
-                    <GlobeAltIcon className="h-5 w-5 text-blue-600" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="font-medium truncate">{account.domain}</p>
-                    <p className="text-xs text-gray-500 truncate">{account.username}</p>
-                  </div>
-                </div>
-
-                {/* WordPress Badge */}
-                <div className="col-span-1 text-center">
-                  {account.is_wordpress ? (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                      WP
-                    </span>
-                  ) : (
-                    <span className="text-gray-400 text-xs">-</span>
-                  )}
-                </div>
-
-                {/* PHP Version */}
-                <div className="col-span-1 text-center">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">
-                    {account.php_version || '?'}
-                  </span>
-                </div>
-
-                {/* Disk Usage */}
-                <div className="col-span-1 text-center">
-                  <span className="font-medium">{account.disk_used || '-'}</span>
-                </div>
-
-                {/* DB Size */}
-                <div className="col-span-1 text-center">
-                  <span className="text-gray-600">{account.db_size || '-'}</span>
-                </div>
-
-                {/* Databases Count */}
-                <div className="col-span-1 text-center">
-                  {account.databases && account.databases.length > 0 ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setDbModalAccount(account); }}
-                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 cursor-pointer"
-                    >
-                      <CircleStackIcon className="h-3 w-3 mr-1" />
-                      {account.databases.length}
-                    </button>
-                  ) : (
-                    <span className="text-gray-400">0</span>
-                  )}
-                </div>
-
-                {/* Email Accounts */}
-                <div className="col-span-2 text-center">
-                  {account.email_accounts && account.email_accounts.length > 0 ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEmailModalAccount(account); }}
-                      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 cursor-pointer"
-                    >
-                      <EnvelopeIcon className="h-3 w-3 mr-1" />
-                      {account.email_accounts.length} emails
-                    </button>
-                  ) : (
-                    <span className="text-gray-400 text-xs">No emails</span>
-                  )}
-                </div>
-
-                {/* Status Badges */}
-                <div className="col-span-2 flex items-center justify-center space-x-1">
-                  {account.ssl_enabled && (
-                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs">
-                      SSL
-                    </span>
-                  )}
-                  {account.suspended ? (
-                    <span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded text-xs">
-                      Suspended
-                    </span>
-                  ) : (
-                    <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded text-xs">
-                      Active
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
+                {accountsSource.kind === 'refreshed' ? 'Refreshed' : 'Cached'} {formatRelativeTime(accountsSource.at)}
+              </Badge>
+            )}
+            {loadingAccounts && (
+              <Badge tone="info" size="sm" dot pulse>
+                Loading
+              </Badge>
+            )}
           </div>
-        </div>
-      ) : loadingAccounts ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-500">Loading accounts...</p>
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 text-center">
-          <ServerStackIcon className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-          <p className="text-gray-500 mb-4">No cached accounts. Click "Refresh Accounts" to load from server</p>
-        </div>
-      )}
+          <CardDescription>Hosting accounts discovered on this server. Refresh to pull the latest list from the panel.</CardDescription>
+        </CardHeader>
 
-      {/* Edit Server Modal */}
-      <Dialog open={isEditModalOpen} onClose={() => setIsEditModalOpen(false)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="mx-auto max-w-lg w-full bg-white rounded-xl shadow-xl">
-            <div className="p-6">
-              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4">
-                Edit Server
-              </Dialog.Title>
+        {loadingAccounts ? (
+          <SkeletonTable rows={6} columns={9} />
+        ) : !hasAccounts ? (
+          <EmptyState
+            icon={UsersOutlineIcon}
+            title="No cached accounts"
+            description="Nothing has been fetched from this server yet. Refresh to load the account list from the panel."
+            action={
+              <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
+                Refresh accounts
+              </Button>
+            }
+          />
+        ) : filteredAndSortedAccounts.length === 0 ? (
+          <EmptyState
+            size="sm"
+            icon={GlobeAltIcon}
+            title="No matching accounts"
+            description={
+              <>
+                Nothing matches <span className="font-mono">“{searchTerm}”</span>.
+              </>
+            }
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setSearchTerm('')}>
+                Clear search
+              </Button>
+            }
+          />
+        ) : (
+          <AccountsTable
+            accounts={filteredAndSortedAccounts}
+            sortField={sortField}
+            sortDirection={sortDirection}
+            onSort={(field: AccountSortField) => handleSort(field)}
+            onOpenDatabases={setDbModalAccount}
+            onOpenEmails={setEmailModalAccount}
+          />
+        )}
+      </Card>
 
-              <form onSubmit={handleEditSubmit} className="space-y-4">
-                <div>
-                  <label className="label">Server Name</label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={editFormData.name}
-                    onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
-                    placeholder="My Server"
-                    required
-                  />
-                </div>
+      <EditServerModal
+        open={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        form={editFormData}
+        onChange={setEditFormData}
+        sshKeys={sshKeys}
+        onSubmit={handleEditSubmit}
+        saving={saving}
+      />
 
-                <div>
-                  <label className="label">Panel Type</label>
-                  <select
-                    className="input"
-                    value={editFormData.panel_type}
-                    onChange={(e) => setEditFormData({ ...editFormData, panel_type: e.target.value as Server['panel_type'] })}
-                  >
-                    <option value="directadmin">DirectAdmin</option>
-                    <option value="enhance">Enhance</option>
-                    <option value="cpanel">cPanel</option>
-                    <option value="cloudpanel">CloudPanel</option>
-                    <option value="ftp">FTP Only</option>
-                    <option value="wordpress">WordPress Only</option>
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="label">Host</label>
-                    <input
-                      type="text"
-                      className="input"
-                      value={editFormData.host}
-                      onChange={(e) => setEditFormData({ ...editFormData, host: e.target.value })}
-                      placeholder="server.example.com"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="label">Port</label>
-                    <input
-                      type="number"
-                      className="input"
-                      value={editFormData.port}
-                      onChange={(e) => setEditFormData({ ...editFormData, port: parseInt(e.target.value) })}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="label">Username</label>
-                  <input
-                    type="text"
-                    className="input"
-                    value={editFormData.username}
-                    onChange={(e) => setEditFormData({ ...editFormData, username: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="label">Authentication Method</label>
-                  <select
-                    className="input"
-                    value={editFormData.auth_method}
-                    onChange={(e) => setEditFormData({ ...editFormData, auth_method: e.target.value as Server['auth_method'] })}
-                  >
-                    <option value="password">Password</option>
-                    <option value="ssh_key">SSH Key</option>
-                    <option value="api_key">API Key</option>
-                  </select>
-                </div>
-
-                {editFormData.auth_method === 'password' && (
-                  <div>
-                    <label className="label">Password (leave empty to keep current)</label>
-                    <input
-                      type="password"
-                      className="input"
-                      value={editFormData.password}
-                      onChange={(e) => setEditFormData({ ...editFormData, password: e.target.value })}
-                      placeholder="••••••••"
-                    />
-                  </div>
-                )}
-
-                {editFormData.auth_method === 'ssh_key' && (
-                  <div>
-                    <label className="label">SSH Key</label>
-                    <select
-                      className="input"
-                      value={editFormData.ssh_key_id}
-                      onChange={(e) => setEditFormData({ ...editFormData, ssh_key_id: e.target.value })}
-                    >
-                      <option value="">Select SSH Key</option>
-                      {sshKeys.map((key) => (
-                        <option key={key.id} value={key.id}>{key.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {editFormData.auth_method === 'api_key' && (
-                  <>
-                    <div>
-                      <label className="label">API Endpoint</label>
-                      <input
-                        type="url"
-                        className="input"
-                        value={editFormData.api_endpoint}
-                        onChange={(e) => setEditFormData({ ...editFormData, api_endpoint: e.target.value })}
-                        placeholder="https://api.enhance.com"
-                      />
-                    </div>
-                    <div>
-                      <label className="label">API Key (leave empty to keep current)</label>
-                      <input
-                        type="password"
-                        className="input"
-                        value={editFormData.api_key}
-                        onChange={(e) => setEditFormData({ ...editFormData, api_key: e.target.value })}
-                        placeholder="••••••••"
-                      />
-                    </div>
-                  </>
-                )}
-
-                <div className="flex justify-end space-x-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setIsEditModalOpen(false)}
-                    className="btn btn-secondary"
-                  >
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    Save Changes
-                  </button>
-                </div>
-              </form>
-            </div>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
-
-      {/* Email List Modal */}
-      <Dialog open={emailModalAccount !== null} onClose={() => setEmailModalAccount(null)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
-            <div className="p-6">
-              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <EnvelopeIcon className="h-5 w-5 mr-2 text-blue-600" />
-                Email Accounts - {emailModalAccount?.domain}
-              </Dialog.Title>
-              <div className="max-h-80 overflow-y-auto">
-                {emailModalAccount?.email_accounts?.map((email, idx) => (
-                  <div key={idx} className="py-2 px-3 border-b border-gray-100 last:border-0 text-sm">
-                    {email}
-                  </div>
-                ))}
-              </div>
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => setEmailModalAccount(null)}
-                  className="btn btn-secondary"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
-
-      {/* Database List Modal */}
-      <Dialog open={dbModalAccount !== null} onClose={() => setDbModalAccount(null)} className="relative z-50">
-        <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
-        <div className="fixed inset-0 flex items-center justify-center p-4">
-          <Dialog.Panel className="mx-auto max-w-md w-full bg-white rounded-xl shadow-xl">
-            <div className="p-6">
-              <Dialog.Title className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                <CircleStackIcon className="h-5 w-5 mr-2 text-purple-600" />
-                Databases - {dbModalAccount?.domain}
-              </Dialog.Title>
-              <div className="max-h-80 overflow-y-auto">
-                {dbModalAccount?.databases?.map((db, idx) => (
-                  <div key={idx} className="py-2 px-3 border-b border-gray-100 last:border-0 text-sm flex justify-between">
-                    <span>{db}</span>
-                  </div>
-                ))}
-              </div>
-              {dbModalAccount?.db_size && (
-                <div className="mt-3 pt-3 border-t border-gray-200 text-sm text-gray-600">
-                  Total Size: <span className="font-medium">{dbModalAccount.db_size}</span>
-                </div>
-              )}
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => setDbModalAccount(null)}
-                  className="btn btn-secondary"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </Dialog.Panel>
-        </div>
-      </Dialog>
+      <EmailAccountsModal account={emailModalAccount} onClose={() => setEmailModalAccount(null)} />
+      <DatabasesModal account={dbModalAccount} onClose={() => setDbModalAccount(null)} />
     </div>
   );
 }
