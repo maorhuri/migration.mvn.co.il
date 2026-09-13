@@ -565,6 +565,16 @@ func randomPassword(n int) string {
 	return string(b)
 }
 
+// randomStrongPassword returns an alphanumeric password guaranteed to contain upper, lower,
+// digit and symbol characters (Enhance rejects passwords that are "not complex enough").
+func randomStrongPassword(n int) string {
+	base := randomPassword(n - 4)
+	const symbols = "!@#$%^&*-_=+"
+	idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(symbols))))
+	idx2, _ := rand.Int(rand.Reader, big.NewInt(int64(len(symbols))))
+	return "A" + base + "z9" + string(symbols[idx.Int64()]) + string(symbols[idx2.Int64()])
+}
+
 var dbNameSanitizer = regexp.MustCompile(`[^0-9a-z_]`)
 
 // ---------------------------------------------------------------------------
@@ -1092,7 +1102,7 @@ func (e *Enhance) importEmail(ctx context.Context, orgID string, em common.Email
 	if ws == nil {
 		return "", fmt.Errorf("no migrated website for domain %s", parts[1])
 	}
-	password := randomPassword(16)
+	password := randomStrongPassword(20)
 	req := map[string]interface{}{"username": parts[0], "mailboxPassword": password}
 	if em.Quota > 0 {
 		req["quota"] = em.Quota / (1024 * 1024)
