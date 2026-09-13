@@ -4,6 +4,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -606,10 +607,11 @@ func (h *Handler) deleteSSHKey(c *gin.Context) {
 // Migration handlers
 
 type StartMigrationRequest struct {
-	SourceServerID string `json:"source_server_id" binding:"required"`
-	TargetServerID string `json:"target_server_id" binding:"required"`
-	Username       string `json:"username" binding:"required"`
-	NewPassword    string `json:"new_password,omitempty"`
+	SourceServerID        string `json:"source_server_id" binding:"required"`
+	TargetServerID        string `json:"target_server_id" binding:"required"`
+	TargetClusterServerID string `json:"target_cluster_server_id,omitempty"` // Enhance: which cluster server hosts the website
+	Username              string `json:"username" binding:"required"`
+	NewPassword           string `json:"new_password,omitempty"`
 }
 
 type CheckCompatibilityRequest struct {
@@ -636,12 +638,17 @@ func (h *Handler) startMigration(c *gin.Context) {
 	}
 
 	result, err := h.engine.StartMigration(c.Request.Context(), &migration.MigrationRequest{
-		SourceServerID: req.SourceServerID,
-		TargetServerID: req.TargetServerID,
-		Username:       req.Username,
-		NewPassword:    req.NewPassword,
+		SourceServerID:        req.SourceServerID,
+		TargetServerID:        req.TargetServerID,
+		TargetClusterServerID: req.TargetClusterServerID,
+		Username:              req.Username,
+		NewPassword:           req.NewPassword,
 	})
 	if err != nil {
+		if errors.Is(err, migration.ErrClusterServerRequired) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

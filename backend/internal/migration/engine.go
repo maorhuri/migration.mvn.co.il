@@ -4,6 +4,7 @@ package migration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +34,9 @@ func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine
 		workDir: workDir,
 	}
 }
+
+// ErrClusterServerRequired is returned when an Enhance target is used without an explicit cluster server.
+var ErrClusterServerRequired = errors.New("target cluster server must be selected for Enhance targets: refusing to create websites with default placement")
 
 // MigrationRequest represents a migration request
 type MigrationRequest struct {
@@ -91,6 +95,19 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		e.failMigration(ctx, migration.ID, fmt.Sprintf("failed to get target server: %v", err))
 		return nil, fmt.Errorf("failed to get target server: %w", err)
 	}
+
+	// Safety: never let Enhance pick a default server on a production cluster.
+	if common.PanelType(targetServer.PanelType) == common.PanelTypeEnhance && req.TargetClusterServerID == "" {
+		e.failMigration(ctx, migration.ID, ErrClusterServerRequired.Error())
+		return nil, ErrClusterServerRequired
+	}
+
+	e.db.AddMigrationLog(ctx, migration.ID, "info", "Migration requested", map[string]interface{}{
+		"source":                   sourceServer.Name,
+		"target":                   targetServer.Name,
+		"target_cluster_server_id": req.TargetClusterServerID,
+		"username":                 req.Username,
+	})
 
 	// Create work directory for this migration
 	migrationDir := filepath.Join(e.workDir, migration.ID)
@@ -154,7 +171,10 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		"panel":  targetServer.PanelType,
 	})
 
-	if err := e.importToTarget(ctx, targetServer, exportData, req.NewPassword, req.TargetClusterServerID, progressChan); err != nil {
+	migrationLog := func(level, message string) {
+		e.db.AddMigrationLog(ctx, migrationID, level, message, nil)
+	}
+	if err := e.importToTarget(ctx, targetServer, exportData, req.NewPassword, req.TargetClusterServerID, progressChan, migrationLog); err != nil {
 		e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
 		return
 	}
@@ -235,7 +255,7 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 }
 
 // importToTarget imports data to the target server
-func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, data *common.ExportData, newPassword string, targetClusterServerID string, progress chan<- common.MigrationProgress) error {
+func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, data *common.ExportData, newPassword string, targetClusterServerID string, progress chan<- common.MigrationProgress, logFn enhance.LogFunc) error {
 	config := e.db.ToConnectionConfig(server)
 
 	// Get credentials
@@ -259,8 +279,9 @@ func (e *Engine) importToTarget(ctx context.Context, server *storage.Server, dat
 			return fmt.Errorf("Enhance connection test failed: %w", err)
 		}
 
-		// Set target cluster server ID for website creation
+		// Set target cluster server ID for website creation and route module logs into the migration log
 		en.SetTargetClusterServerID(targetClusterServerID)
+		en.SetLogger(logFn)
 
 		_, err := en.ImportAccount(ctx, data, newPassword, progress)
 		return err

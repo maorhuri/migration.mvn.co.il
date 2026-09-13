@@ -18,6 +18,9 @@ import (
 	"github.com/migration-tool/backend/internal/ssh"
 )
 
+// LogFunc receives log lines from the Enhance module (level: info|warn|error)
+type LogFunc func(level, message string)
+
 // Enhance implements the Panel interface for Enhance servers
 type Enhance struct {
 	config                *common.ConnectionConfig
@@ -26,6 +29,20 @@ type Enhance struct {
 	sshClient             *ssh.Client
 	connected             bool
 	targetClusterServerID string // Target server ID for website creation
+	logFn                 LogFunc
+}
+
+// SetLogger routes module log lines to the given function (in addition to stdout)
+func (e *Enhance) SetLogger(fn LogFunc) {
+	e.logFn = fn
+}
+
+func (e *Enhance) logf(level, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Printf("[enhance][%s] %s\n", level, msg)
+	if e.logFn != nil {
+		e.logFn(level, msg)
+	}
 }
 
 // New creates a new Enhance panel instance
@@ -437,11 +454,13 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	}
 	data.Account.Metadata["org_id"] = orgID
 
-	// 1. Create websites (domains)
+	// 1. Create websites (domains). A website that cannot be created or verified on the
+	// selected cluster server aborts the import: nothing below has a safe place to land.
 	sendProgress("Creating websites", currentStep, totalSteps)
 	for _, domain := range data.Domains {
 		if err := e.createWebsite(ctx, orgID, &domain); err != nil {
-			fmt.Printf("Warning: failed to create website %s: %v\n", domain.Name, err)
+			e.logf("error", "Failed to create website %s: %v", domain.Name, err)
+			return nil, fmt.Errorf("failed to create website %s: %w", domain.Name, err)
 		}
 	}
 	currentStep++
@@ -488,38 +507,71 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pa
 	return &data.Account, nil
 }
 
-// createWebsite creates a website in Enhance
+// createWebsite creates a website in Enhance on the selected cluster server and verifies
+// that Enhance actually placed it there. It never falls back to default placement.
 func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *common.Domain) error {
-	websiteReq := map[string]interface{}{
-		"domain": domain.Name,
-		"kind":   "website",
+	target := e.targetClusterServerID
+	if target == "" {
+		return fmt.Errorf("no target cluster server selected; refusing default placement")
 	}
 
-	// If target cluster server ID is specified, use it for website placement
-	if e.targetClusterServerID != "" {
-		websiteReq["appServerId"] = e.targetClusterServerID
-		websiteReq["dbServerId"] = e.targetClusterServerID
-		fmt.Printf("Creating website %s on cluster server: appServerId=%s, dbServerId=%s\n",
-			domain.Name, e.targetClusterServerID, e.targetClusterServerID)
-	} else {
-		fmt.Printf("WARNING: Creating website %s WITHOUT cluster server ID - will use default placement!\n", domain.Name)
+	// Re-run safety: if the website already exists, reuse it only when it sits on the selected server.
+	if existing, err := e.getWebsiteByDomain(ctx, orgID, domain.Name); err == nil && existing != nil {
+		if existing.AppServerID != target {
+			return fmt.Errorf("website %s already exists on a different server (appServerId=%s, selected=%s); move or delete it in Enhance first",
+				domain.Name, existing.AppServerID, target)
+		}
+		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s); reusing it",
+			domain.Name, existing.ID, existing.UnixUser)
+		return nil
+	}
+
+	websiteReq := map[string]interface{}{
+		"domain":      domain.Name,
+		"kind":        "website",
+		"appServerId": target,
+		"dbServerId":  target,
 	}
 
 	// Set PHP version from source domain if available
 	if domain.PHPVersion != "" {
-		phpVersion := e.mapPHPVersion(domain.PHPVersion)
-		if phpVersion != "" {
+		if phpVersion := e.mapPHPVersion(domain.PHPVersion); phpVersion != "" {
 			websiteReq["phpVersion"] = phpVersion
 		}
 	}
 
-	fmt.Printf("Website creation request: %+v\n", websiteReq)
+	e.logf("info", "Creating website %s on cluster server %s (request: %+v)", domain.Name, target, websiteReq)
 
 	endpoint := fmt.Sprintf("/orgs/%s/websites", orgID)
-	_, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
+	resp, err := e.apiRequest(ctx, "POST", endpoint, websiteReq)
 	if err != nil {
 		return err
 	}
+
+	// Verify where Enhance actually put it
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(resp, &created)
+
+	var website *EnhanceWebsite
+	if created.ID != "" {
+		website, err = e.GetWebsiteInfo(ctx, orgID, created.ID)
+	}
+	if website == nil || err != nil {
+		website, err = e.getWebsiteByDomain(ctx, orgID, domain.Name)
+	}
+	if err != nil || website == nil {
+		return fmt.Errorf("website %s was created (id=%q) but could not be read back to verify placement: %v", domain.Name, created.ID, err)
+	}
+
+	if website.AppServerID != target {
+		return fmt.Errorf("PLACEMENT MISMATCH: website %s (id=%s) landed on server %s instead of selected server %s; check it in Enhance before retrying",
+			domain.Name, website.ID, website.AppServerID, target)
+	}
+
+	e.logf("info", "Website %s created on server %s (id=%s, dbServerId=%s, unixUser=%s, homeDir=%s)",
+		domain.Name, website.AppServerID, website.ID, website.DbServerID, website.UnixUser, website.HomeDir)
 
 	return nil
 }
