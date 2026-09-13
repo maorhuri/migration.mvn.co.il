@@ -306,46 +306,33 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 	if server.PanelType != "enhance" {
 		cachedAccounts, err := h.db.GetServerAccounts(c.Request.Context(), id)
 		if err == nil && len(cachedAccounts) > 0 {
-			// Convert cached accounts to common.Account format
-			accounts := make([]common.Account, len(cachedAccounts))
+			// Same shape as the live response (AccountInfo) so the UI reads identical fields
+			accounts := make([]migration.AccountInfo, len(cachedAccounts))
 			for i, ca := range cachedAccounts {
-				accounts[i] = common.Account{
+				accounts[i] = migration.AccountInfo{
 					Username:   ca.Username,
 					Domain:     ca.Domain,
-					DiskUsage:  ca.DiskUsage.String,
+					Email:      ca.Email.String,
+					DiskUsed:   ca.DiskUsage.String,
 					DiskLimit:  ca.DiskLimit.String,
-					DBCount:    ca.DBCount,
 					DBSize:     ca.DBSize.String,
-					EmailCount: ca.EmailCount,
 					PHPVersion: ca.PHPVersion.String,
-					SiteType:   ca.SiteType.String,
 					Suspended:  ca.Suspended,
 				}
-				if ca.Email.Valid {
-					accounts[i].Email = ca.Email.String
-				}
-				// Extract databases and email_accounts from metadata
 				if len(ca.Metadata) > 0 {
-					var metadataMap map[string]interface{}
-					if err := json.Unmarshal(ca.Metadata, &metadataMap); err == nil {
-						if dbs, ok := metadataMap["databases"].([]interface{}); ok {
-							accounts[i].Databases = make([]string, len(dbs))
-							for j, db := range dbs {
-								if dbStr, ok := db.(string); ok {
-									accounts[i].Databases[j] = dbStr
-								}
-							}
+					var meta map[string]interface{}
+					if err := json.Unmarshal(ca.Metadata, &meta); err == nil {
+						accounts[i].Databases = stringList(meta["databases"])
+						accounts[i].EmailAccounts = stringList(meta["email_accounts"])
+						accounts[i].AddonDomains = stringList(meta["addon_domains"])
+						if v, ok := meta["is_wordpress"].(bool); ok {
+							accounts[i].IsWordPress = v
 						}
-						if emails, ok := metadataMap["email_accounts"].([]interface{}); ok {
-							accounts[i].EmailAccounts = make([]string, len(emails))
-							for j, email := range emails {
-								if emailStr, ok := email.(string); ok {
-									accounts[i].EmailAccounts[j] = emailStr
-								}
-							}
+						if v, ok := meta["ssl_enabled"].(bool); ok {
+							accounts[i].SSLEnabled = v
 						}
-						if isWp, ok := metadataMap["is_wordpress"].(bool); ok {
-							accounts[i].IsWordPress = isWp
+						if v, ok := meta["ssl_expiry"].(string); ok {
+							accounts[i].SSLExpiry = v
 						}
 					}
 				}
@@ -395,7 +382,10 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 				SiteType:      getSiteType(acc.IsWordPress),
 				Databases:     acc.Databases,
 				EmailAccounts: acc.EmailAccounts,
+				AddonDomains:  acc.AddonDomains,
 				IsWordPress:   acc.IsWordPress,
+				SSLEnabled:    acc.SSLEnabled,
+				SSLExpiry:     acc.SSLExpiry,
 			}
 		}
 		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
@@ -459,7 +449,10 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 				SiteType:      getSiteType(acc.IsWordPress),
 				Databases:     acc.Databases,
 				EmailAccounts: acc.EmailAccounts,
+				AddonDomains:  acc.AddonDomains,
 				IsWordPress:   acc.IsWordPress,
+				SSLEnabled:    acc.SSLEnabled,
+				SSLExpiry:     acc.SSLExpiry,
 			}
 		}
 		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
@@ -472,6 +465,21 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 		"total":     len(accounts),
 		"refreshed": true,
 	})
+}
+
+// stringList converts a decoded JSON array to []string
+func stringList(v interface{}) []string {
+	items, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if s, ok := it.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // getSiteType returns site type string based on flags

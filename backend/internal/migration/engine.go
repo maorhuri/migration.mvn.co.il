@@ -173,6 +173,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	// Phase 2: import
 	switch common.PanelType(targetServer.PanelType) {
 	case common.PanelTypeEnhance:
+		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Connecting to cluster node"}
 		en, err := e.connectEnhanceTarget(ctx, migrationID, targetServer, req.TargetClusterServerID, migrationLog)
 		if err != nil {
 			e.failMigration(ctx, migrationID, fmt.Sprintf("import failed: %v", err))
