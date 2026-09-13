@@ -321,6 +321,7 @@ type ImportResult struct {
 	Websites  map[string]*EnhanceWebsite `json:"websites"`
 	Databases []DBResult                 `json:"databases"`
 	Emails    []string                   `json:"emails"`
+	Cleanup   []string                   `json:"cleanup"`
 	Warnings  []string                   `json:"warnings"`
 }
 
@@ -596,7 +597,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		return nil, err
 	}
 
-	totalSteps := 8
+	totalSteps := 9
 	step := 0
 	sendProgress := func(name string) {
 		if progress != nil {
@@ -670,7 +671,19 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
-	// 5. Emails (warnings only)
+	// 5. WordPress cleanup: debug off, leftover backups/archives removed, migration backup removed (warnings only)
+	sendProgress("WordPress cleanup")
+	for _, ws := range e.websites {
+		summary, err := e.cleanupWordPress(ctx, ws)
+		if err != nil {
+			e.warnf("WordPress cleanup for %s incomplete: %v", ws.Domain.Domain, err)
+		}
+		if summary != "" {
+			result.Cleanup = append(result.Cleanup, summary)
+		}
+	}
+
+	// 6. Emails (warnings only)
 	sendProgress("Importing email accounts")
 	for _, em := range data.Emails {
 		if addr, err := e.importEmail(ctx, orgID, em); err != nil {
@@ -683,7 +696,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		e.warnf("%d mailbox(es) created with new random passwords (see log); mailbox contents were not migrated", len(result.Emails))
 	}
 
-	// 6. Cron jobs (warnings only)
+	// 7. Cron jobs (warnings only)
 	sendProgress("Importing cron jobs")
 	if len(data.CronJobs) > 0 {
 		main := e.websites[strings.ToLower(data.Account.Domain)]
@@ -695,7 +708,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
-	// 7. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
+	// 8. SSL (warnings only; Enhance issues Let's Encrypt once DNS points here)
 	sendProgress("Setting up SSL certificates")
 	for _, d := range data.Domains {
 		if d.SSL == nil {
@@ -707,7 +720,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 
-	// 8. Permissions (fatal)
+	// 9. Permissions (fatal)
 	sendProgress("Fixing file permissions")
 	for _, ws := range e.websites {
 		if err := e.fixPermissions(ctx, ws); err != nil {
@@ -1090,6 +1103,97 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		return fmt.Errorf("%s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// cleanupWordPress turns debug off, removes leftover backup archives and the wp-config backup,
+// and returns a human readable summary of what existed and what was removed.
+func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (string, error) {
+	wpConfig := ws.DocRoot + "/wp-config.php"
+	if _, err := e.nodeRun(ctx, "test -f "+shq(wpConfig)); err != nil {
+		return "", nil
+	}
+	var report []string
+
+	// 1. Debug flags
+	before, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "define\( *['\"](WP_DEBUG|WP_DEBUG_LOG|WP_DEBUG_DISPLAY|SCRIPT_DEBUG)['\"] *, *[^)]*\)" %s`, shq(wpConfig)))
+	for _, flag := range []string{"WP_DEBUG", "WP_DEBUG_LOG", "WP_DEBUG_DISPLAY", "SCRIPT_DEBUG"} {
+		cmd := fmt.Sprintf(`sed -i -E "s|define\( *['\"]%s['\"] *, *[^)]*\)|define('%s', false)|" %s`, flag, flag, shq(wpConfig))
+		if out, err := e.nodeRun(ctx, cmd); err != nil {
+			return strings.Join(report, "; "), fmt.Errorf("could not update %s: %v %s", flag, err, out)
+		}
+	}
+	after, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "define\( *['\"](WP_DEBUG|WP_DEBUG_LOG|WP_DEBUG_DISPLAY|SCRIPT_DEBUG)['\"] *, *[^)]*\)" %s`, shq(wpConfig)))
+	debugWasOn := strings.Contains(strings.ToLower(before), "true")
+	if debugWasOn {
+		report = append(report, fmt.Sprintf("debug flags were ON (%s) → now off", strings.ReplaceAll(strings.TrimSpace(before), "\n", " ")))
+	} else if strings.TrimSpace(after) != "" {
+		report = append(report, "debug flags already off")
+	}
+	e.logf("info", "%s: debug flags before: %q; after: %q", ws.Domain.Domain, strings.ReplaceAll(strings.TrimSpace(before), "\n", " "), strings.ReplaceAll(strings.TrimSpace(after), "\n", " "))
+
+	// 2. Leftover files: debug logs, All-in-One .wpress exports, archives and dumps outside uploads,
+	//    plus known backup-plugin folders even when they live under uploads.
+	find := fmt.Sprintf(`cd %s && find . -type f \( -name 'debug.log' -o -iname '*.wpress' -o -path '*/ai1wm-backups/*' -o -path '*/updraft/*' -o -path '*/backups-dup-lite/*' -o -path '*/backups-dup-pro/*' -o -path '*/backupbuddy_backups/*' -o -path '*/backwpup-*' -o -path '*/wp-staging/*' -o \( \( -iname '*.zip' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.sql' -o -iname '*.sql.gz' -o -iname '*.tar' \) -not -path './wp-content/uploads/*' \) \) -printf '%%s\t%%p\n' 2>/dev/null | sort -k2`, shq(ws.DocRoot))
+	listing, err := e.nodeRun(ctx, find)
+	if err != nil && listing == "" {
+		return strings.Join(report, "; "), fmt.Errorf("listing leftover files failed: %v", err)
+	}
+	var paths []string
+	var totalBytes int64
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(listing), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			continue
+		}
+		size, _ := strconv.ParseInt(parts[0], 10, 64)
+		totalBytes += size
+		paths = append(paths, parts[1])
+		lines = append(lines, fmt.Sprintf("%s (%.1f MB)", strings.TrimPrefix(parts[1], "./"), float64(size)/1024/1024))
+	}
+	if len(paths) > 0 {
+		var quoted []string
+		for _, p := range paths {
+			quoted = append(quoted, shq(p))
+		}
+		// delete in batches to keep the command line short
+		for i := 0; i < len(quoted); i += 200 {
+			end := i + 200
+			if end > len(quoted) {
+				end = len(quoted)
+			}
+			if out, err := e.nodeRun(ctx, fmt.Sprintf("cd %s && rm -f %s", shq(ws.DocRoot), strings.Join(quoted[i:end], " "))); err != nil {
+				return strings.Join(report, "; "), fmt.Errorf("deleting leftover files failed: %v %s", err, out)
+			}
+		}
+		shown := lines
+		if len(shown) > 40 {
+			shown = append(shown[:40], fmt.Sprintf("... and %d more", len(lines)-40))
+		}
+		report = append(report, fmt.Sprintf("deleted %d leftover file(s), %.1f MB: %s", len(paths), float64(totalBytes)/1024/1024, strings.Join(shown, ", ")))
+		e.logf("info", "%s: deleted %d leftover file(s) (%.1f MB): %s", ws.Domain.Domain, len(paths), float64(totalBytes)/1024/1024, strings.Join(shown, ", "))
+	} else {
+		report = append(report, "no leftover debug logs, .wpress or archive files found")
+		e.logf("info", "%s: no leftover debug logs, .wpress or archive files found", ws.Domain.Domain)
+	}
+
+	// Archives inside uploads are kept (they may be downloadable products); report them.
+	kept, _ := e.nodeRun(ctx, fmt.Sprintf(`cd %s && find ./wp-content/uploads -type f \( -iname '*.zip' -o -iname '*.tar.gz' -o -iname '*.tgz' -o -iname '*.sql' -o -iname '*.sql.gz' \) -printf '%%s\n' 2>/dev/null | awk '{n++; s+=$1} END {printf "%%d %%d", n, s}'`, shq(ws.DocRoot)))
+	if f := strings.Fields(kept); len(f) == 2 && f[0] != "0" {
+		keptBytes, _ := strconv.ParseInt(f[1], 10, 64)
+		msg := fmt.Sprintf("kept %s archive(s) inside wp-content/uploads (%.1f MB) because they may be site content; review manually", f[0], float64(keptBytes)/1024/1024)
+		report = append(report, msg)
+		e.warnf("%s: %s", ws.Domain.Domain, msg)
+	}
+
+	// 3. Our own wp-config backup is a migration artifact: remove it now that the site is wired up.
+	if _, err := e.nodeRun(ctx, "rm -f "+shq(wpConfig+".pre-migration")); err == nil {
+		report = append(report, "removed wp-config.php.pre-migration")
+	}
+
+	summary := fmt.Sprintf("%s: %s", ws.Domain.Domain, strings.Join(report, "; "))
+	e.logf("info", "WordPress cleanup summary for %s", summary)
+	return summary, nil
 }
 
 // importEmail creates a mailbox with a new random password
