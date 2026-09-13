@@ -3,7 +3,6 @@ package api
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -81,7 +80,7 @@ func (h *Handler) generateSSHKey(c *gin.Context) {
 	key := &storage.SSHKey{
 		Name:        req.Name,
 		PublicKey:   pubLine,
-		Fingerprint: sql.NullString{String: ssh.FingerprintSHA256(sshPub), Valid: true},
+		Fingerprint: storage.NewNullString(ssh.FingerprintSHA256(sshPub)),
 	}
 	if err := h.db.CreateSSHKey(c.Request.Context(), key, privPEM, ""); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -15,6 +15,39 @@ import (
 	"github.com/migration-tool/backend/pkg/crypto"
 )
 
+// NullString is sql.NullString that marshals to a plain JSON string ("" when NULL)
+// and accepts a plain string (or null) when unmarshalling.
+type NullString struct {
+	sql.NullString
+}
+
+// MarshalJSON implements json.Marshaler
+func (n NullString) MarshalJSON() ([]byte, error) {
+	if !n.Valid {
+		return []byte(`""`), nil
+	}
+	return json.Marshal(n.String)
+}
+
+// UnmarshalJSON implements json.Unmarshaler
+func (n *NullString) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		n.String, n.Valid = "", false
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	n.String, n.Valid = v, v != ""
+	return nil
+}
+
+// NewNullString builds a NullString that is NULL when empty
+func NewNullString(v string) NullString {
+	return NullString{sql.NullString{String: v, Valid: v != ""}}
+}
+
 // Database handles all database operations
 type Database struct {
 	db        *sqlx.DB
@@ -178,8 +211,8 @@ type Server struct {
 	Port              int             `db:"port" json:"port"`
 	Username          string          `db:"username" json:"username"`
 	AuthMethod        string          `db:"auth_method" json:"auth_method"`
-	SSHKeyID          sql.NullString  `db:"ssh_key_id" json:"ssh_key_id,omitempty"`
-	APIEndpoint       sql.NullString  `db:"api_endpoint" json:"api_endpoint,omitempty"`
+	SSHKeyID          NullString      `db:"ssh_key_id" json:"ssh_key_id"`
+	APIEndpoint       NullString      `db:"api_endpoint" json:"api_endpoint"`
 	APIKeyEncrypted   sql.NullString  `db:"api_key_encrypted" json:"-"`
 	PasswordEncrypted sql.NullString  `db:"password_encrypted" json:"-"`
 	Metadata          json.RawMessage `db:"metadata" json:"metadata,omitempty"`
@@ -194,7 +227,7 @@ type SSHKey struct {
 	PublicKey           string         `db:"public_key" json:"public_key"`
 	PrivateKeyEncrypted string         `db:"private_key_encrypted" json:"-"`
 	PassphraseEncrypted sql.NullString `db:"passphrase_encrypted" json:"-"`
-	Fingerprint         sql.NullString `db:"fingerprint" json:"fingerprint,omitempty"`
+	Fingerprint         NullString     `db:"fingerprint" json:"fingerprint"`
 	IsDefault           bool           `db:"is_default" json:"is_default"`
 	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
 }
@@ -259,8 +292,8 @@ type Migration struct {
 	TotalBytes       int64          `db:"total_bytes" json:"total_bytes"`
 	ErrorMessage     sql.NullString `db:"error_message" json:"error_message,omitempty"`
 	ExportData       NullableJSON   `db:"export_data" json:"export_data,omitempty"`
-	TargetIP         sql.NullString `db:"target_ip" json:"target_ip,omitempty"`
-	TargetNode       sql.NullString `db:"target_node" json:"target_node,omitempty"`
+	TargetIP         NullString     `db:"target_ip" json:"target_ip"`
+	TargetNode       NullString     `db:"target_node" json:"target_node"`
 	Warnings         int            `db:"warnings" json:"warnings"`
 	StartedAt        sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt      sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`

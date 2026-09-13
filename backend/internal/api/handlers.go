@@ -2,7 +2,6 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -170,11 +169,11 @@ func (h *Handler) createServer(c *gin.Context) {
 		Metadata:   metadataJSON,
 	}
 
-	if req.SSHKeyID != "" {
-		server.SSHKeyID = sql.NullString{String: req.SSHKeyID, Valid: true}
-	}
-	if req.APIEndpoint != "" {
-		server.APIEndpoint = sql.NullString{String: req.APIEndpoint, Valid: true}
+	server.SSHKeyID = storage.NewNullString(req.SSHKeyID)
+	server.APIEndpoint = storage.NewNullString(req.APIEndpoint)
+	if req.AuthMethod == "ssh_key" && req.SSHKeyID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "select an SSH key when the authentication method is SSH key"})
+		return
 	}
 
 	if err := h.db.CreateServer(c.Request.Context(), server, req.Password, req.APIKey); err != nil {
@@ -220,12 +219,28 @@ func (h *Handler) updateServer(c *gin.Context) {
 	}
 	server.Username = req.Username
 	server.AuthMethod = req.AuthMethod
-
-	if req.SSHKeyID != "" {
-		server.SSHKeyID = sql.NullString{String: req.SSHKeyID, Valid: true}
+	server.SSHKeyID = storage.NewNullString(req.SSHKeyID)
+	if req.AuthMethod == "ssh_key" && req.SSHKeyID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "select an SSH key when the authentication method is SSH key"})
+		return
 	}
-	if req.APIEndpoint != "" {
-		server.APIEndpoint = sql.NullString{String: req.APIEndpoint, Valid: true}
+	if req.APIEndpoint != "" || req.PanelType != "enhance" {
+		server.APIEndpoint = storage.NewNullString(req.APIEndpoint)
+	}
+
+	// Merge Enhance settings into metadata without dropping other keys
+	if req.EnhanceOrgID != "" {
+		meta := map[string]interface{}{}
+		if len(server.Metadata) > 0 {
+			_ = json.Unmarshal(server.Metadata, &meta)
+		}
+		meta["enhance_org_id"] = req.EnhanceOrgID
+		if b, err := json.Marshal(meta); err == nil {
+			server.Metadata = b
+		}
+	}
+	if len(server.Metadata) == 0 {
+		server.Metadata = json.RawMessage("{}")
 	}
 
 	if err := h.db.UpdateServer(c.Request.Context(), server, req.Password, req.APIKey); err != nil {
@@ -603,7 +618,7 @@ func (h *Handler) createSSHKey(c *gin.Context) {
 	key := &storage.SSHKey{
 		Name:        req.Name,
 		PublicKey:   publicKey,
-		Fingerprint: sql.NullString{String: fingerprint, Valid: true},
+		Fingerprint: storage.NewNullString(fingerprint),
 	}
 	if err := h.db.CreateSSHKey(c.Request.Context(), key, req.PrivateKey, req.Passphrase); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
