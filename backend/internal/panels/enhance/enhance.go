@@ -112,16 +112,18 @@ func (e *Enhance) ConnectNode(ctx context.Context, nodeConfig *common.Connection
 		client.Disconnect()
 		return fmt.Errorf("SFTP to node %s failed: %w", nodeConfig.Host, err)
 	}
-	e.node = client
-	e.nodeHost = nodeConfig.Host
 	out, err := client.RunCommand(ctx, "hostname; id -u")
 	if err != nil {
+		client.Disconnect()
 		return fmt.Errorf("node %s: cannot run commands: %w", nodeConfig.Host, err)
 	}
 	lines := strings.Fields(out)
 	if len(lines) == 2 && lines[1] != "0" {
+		client.Disconnect()
 		return fmt.Errorf("node %s: SSH user %s is not root (uid %s); root is required", nodeConfig.Host, nodeConfig.Username, lines[1])
 	}
+	e.node = client
+	e.nodeHost = nodeConfig.Host
 	e.logf("info", "Connected to cluster node %s (hostname %s) as root", nodeConfig.Host, strings.Join(lines[:1], ""))
 	return nil
 }

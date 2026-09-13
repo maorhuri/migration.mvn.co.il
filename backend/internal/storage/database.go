@@ -148,6 +148,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_ip VARCHAR(64)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_node VARCHAR(255)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS warnings INTEGER DEFAULT 0`,
+		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
 		`CREATE INDEX IF NOT EXISTS idx_servers_panel_type ON servers(panel_type)`,
@@ -194,6 +195,7 @@ type SSHKey struct {
 	PrivateKeyEncrypted string         `db:"private_key_encrypted" json:"-"`
 	PassphraseEncrypted sql.NullString `db:"passphrase_encrypted" json:"-"`
 	Fingerprint         sql.NullString `db:"fingerprint" json:"fingerprint,omitempty"`
+	IsDefault           bool           `db:"is_default" json:"is_default"`
 	CreatedAt           time.Time      `db:"created_at" json:"created_at"`
 }
 
@@ -511,6 +513,37 @@ func (d *Database) GetSSHKeyPassphrase(ctx context.Context, id string) (string, 
 		return "", nil
 	}
 	return d.encryptor.DecryptString(encrypted.String)
+}
+
+// SetDefaultSSHKey marks one key as the default for cluster nodes (only one can be default)
+func (d *Database) SetDefaultSSHKey(ctx context.Context, id string, isDefault bool) error {
+	tx, err := d.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if isDefault {
+		if _, err := tx.ExecContext(ctx, "UPDATE ssh_keys SET is_default = FALSE"); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, "UPDATE ssh_keys SET is_default = $2 WHERE id = $1", id, isDefault)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
+}
+
+// GetDefaultSSHKey returns the key marked as default, or sql.ErrNoRows
+func (d *Database) GetDefaultSSHKey(ctx context.Context) (*SSHKey, error) {
+	var key SSHKey
+	if err := d.db.GetContext(ctx, &key, "SELECT * FROM ssh_keys WHERE is_default = TRUE ORDER BY created_at LIMIT 1"); err != nil {
+		return nil, err
+	}
+	return &key, nil
 }
 
 // DeleteSSHKey deletes an SSH key

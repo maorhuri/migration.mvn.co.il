@@ -246,42 +246,84 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 	e.db.SetMigrationTarget(ctx, migrationID, nodeIP, node.FriendlyName)
 	logFn("info", fmt.Sprintf("Target node: %s (hostname %s, ip %s, roles %s)", node.FriendlyName, node.Hostname, nodeIP, strings.Join(node.EnabledRoles(), ",")))
 
-	// SSH credentials: a server record whose host matches the node wins, otherwise the Enhance entry's own credentials.
-	nodeCfg := &common.ConnectionConfig{Host: nodeIP, Port: 22, Username: "root", AuthMethod: config.AuthMethod}
-	var password string
-	var privateKey []byte
-	credSource := server.Name
+	// SSH credential candidates, tried in order:
+	//   1. a server record whose host/name matches the node
+	//   2. the SSH key marked as default (root@node:22)
+	//   3. the Enhance entry's own credentials
+	type attempt struct {
+		label    string
+		cfg      *common.ConnectionConfig
+		password string
+		key      []byte
+	}
+	baseCfg := func() *common.ConnectionConfig {
+		return &common.ConnectionConfig{Host: nodeIP, Port: 22, Username: "root"}
+	}
+	var attempts []attempt
+
 	if rec, err := e.db.FindServerByHost(ctx, nodeIP, node.FriendlyName, node.Hostname); err == nil && rec != nil && rec.ID != server.ID {
-		credSource = rec.Name
-		nodeCfg.Port = rec.Port
-		nodeCfg.Username = rec.Username
-		nodeCfg.AuthMethod = common.AuthMethod(rec.AuthMethod)
-		password, _ = e.db.GetServerPassword(ctx, rec.ID)
-		if rec.SSHKeyID.Valid {
-			keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, rec.SSHKeyID.String)
-			privateKey = []byte(keyData)
+		cfg := baseCfg()
+		if rec.Port > 0 {
+			cfg.Port = rec.Port
 		}
-	} else {
+		if rec.Username != "" {
+			cfg.Username = rec.Username
+		}
+		cfg.AuthMethod = common.AuthMethod(rec.AuthMethod)
+		pw, _ := e.db.GetServerPassword(ctx, rec.ID)
+		var key []byte
+		if rec.SSHKeyID.Valid {
+			kd, _ := e.db.GetSSHKeyPrivateKey(ctx, rec.SSHKeyID.String)
+			key = []byte(kd)
+		}
+		attempts = append(attempts, attempt{fmt.Sprintf("server entry %q", rec.Name), cfg, pw, key})
+	}
+
+	if dk, err := e.db.GetDefaultSSHKey(ctx); err == nil && dk != nil {
+		if kd, err := e.db.GetSSHKeyPrivateKey(ctx, dk.ID); err == nil && kd != "" {
+			cfg := baseCfg()
+			cfg.AuthMethod = common.AuthMethodSSHKey
+			pass, _ := e.db.GetSSHKeyPassphrase(ctx, dk.ID)
+			attempts = append(attempts, attempt{fmt.Sprintf("default SSH key %q", dk.Name), cfg, pass, []byte(kd)})
+		}
+	}
+
+	{
+		cfg := baseCfg()
 		if server.Port > 0 {
-			nodeCfg.Port = server.Port
+			cfg.Port = server.Port
 		}
 		if server.Username != "" {
-			nodeCfg.Username = server.Username
+			cfg.Username = server.Username
 		}
-		password, _ = e.db.GetServerPassword(ctx, server.ID)
+		cfg.AuthMethod = config.AuthMethod
+		pw, _ := e.db.GetServerPassword(ctx, server.ID)
+		var key []byte
 		if server.SSHKeyID.Valid {
-			keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-			privateKey = []byte(keyData)
+			kd, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+			key = []byte(kd)
+		}
+		if cfg.AuthMethod == common.AuthMethodPassword || cfg.AuthMethod == common.AuthMethodSSHKey {
+			attempts = append(attempts, attempt{fmt.Sprintf("credentials of %q", server.Name), cfg, pw, key})
 		}
 	}
-	if nodeCfg.AuthMethod != common.AuthMethodPassword && nodeCfg.AuthMethod != common.AuthMethodSSHKey {
-		return nil, fmt.Errorf("no SSH credentials for node %s: add a server entry with host %s (or %s) and SSH access", node.FriendlyName, nodeIP, node.FriendlyName)
+
+	if len(attempts) == 0 {
+		return nil, fmt.Errorf("no SSH credentials available for node %s (%s): generate an SSH key in the SSH Keys page, mark it as default and run its install command on the node", node.FriendlyName, nodeIP)
 	}
-	logFn("info", fmt.Sprintf("Connecting to node %s via SSH as %s using credentials of %q", nodeIP, nodeCfg.Username, credSource))
-	if err := en.ConnectNode(ctx, nodeCfg, password, privateKey); err != nil {
-		return nil, fmt.Errorf("%v. Add a server entry in this tool whose host is %s with working root SSH credentials, then retry", err, nodeIP)
+
+	var failures []string
+	for _, a := range attempts {
+		logFn("info", fmt.Sprintf("Connecting to node %s:%d as %s using %s", nodeIP, a.cfg.Port, a.cfg.Username, a.label))
+		if err := en.ConnectNode(ctx, a.cfg, a.password, a.key); err != nil {
+			logFn("warn", fmt.Sprintf("%s: %v", a.label, err))
+			failures = append(failures, fmt.Sprintf("%s: %v", a.label, err))
+			continue
+		}
+		return en, nil
 	}
-	return en, nil
+	return nil, fmt.Errorf("could not open root SSH to node %s (%s). Tried %s. Fix: in SSH Keys generate a key, mark it as default and run its install command on the node as root; or add a server entry for host %s with working root credentials",
+		node.FriendlyName, nodeIP, strings.Join(failures, "; "), nodeIP)
 }
 
 // exportFromSource exports data from the source server

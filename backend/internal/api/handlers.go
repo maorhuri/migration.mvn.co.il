@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/migration-tool/backend/internal/migration"
@@ -60,8 +61,11 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 		{
 			keys.GET("", h.listSSHKeys)
 			keys.POST("", h.createSSHKey)
+			keys.POST("/generate", h.generateSSHKey)
 			keys.GET("/:id", h.getSSHKey)
 			keys.DELETE("/:id", h.deleteSSHKey)
+			keys.PUT("/:id/default", h.setDefaultSSHKey)
+			keys.DELETE("/:id/default", h.setDefaultSSHKey)
 		}
 
 		// Migrations
@@ -554,7 +558,7 @@ func (h *Handler) listClusterServers(c *gin.Context) {
 
 type CreateSSHKeyRequest struct {
 	Name       string `json:"name" binding:"required"`
-	PublicKey  string `json:"public_key" binding:"required"`
+	PublicKey  string `json:"public_key,omitempty"` // optional: derived from the private key when empty
 	PrivateKey string `json:"private_key" binding:"required"`
 	Passphrase string `json:"passphrase,omitempty"`
 }
@@ -565,8 +569,11 @@ func (h *Handler) listSSHKeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"items": keys})
+	views := make([]sshKeyView, 0, len(keys))
+	for i := range keys {
+		views = append(views, keyView(&keys[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"items": views})
 }
 
 func (h *Handler) createSSHKey(c *gin.Context) {
@@ -576,17 +583,33 @@ func (h *Handler) createSSHKey(c *gin.Context) {
 		return
 	}
 
-	key := &storage.SSHKey{
-		Name:      req.Name,
-		PublicKey: req.PublicKey,
+	derivedPub, fingerprint, err := inspectPrivateKey(req.PrivateKey, req.Passphrase)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "private key could not be parsed (OpenSSH or PEM format expected): " + err.Error()})
+		return
+	}
+	publicKey := strings.TrimSpace(req.PublicKey)
+	if publicKey == "" {
+		publicKey = derivedPub
+	} else {
+		given := strings.Fields(publicKey)
+		derived := strings.Fields(derivedPub)
+		if len(given) < 2 || len(derived) < 2 || given[0] != derived[0] || given[1] != derived[1] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "public key does not match the private key"})
+			return
+		}
 	}
 
+	key := &storage.SSHKey{
+		Name:        req.Name,
+		PublicKey:   publicKey,
+		Fingerprint: sql.NullString{String: fingerprint, Valid: true},
+	}
 	if err := h.db.CreateSSHKey(c.Request.Context(), key, req.PrivateKey, req.Passphrase); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	c.JSON(http.StatusCreated, key)
+	c.JSON(http.StatusCreated, keyView(key))
 }
 
 func (h *Handler) getSSHKey(c *gin.Context) {
@@ -598,7 +621,7 @@ func (h *Handler) getSSHKey(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, key)
+	c.JSON(http.StatusOK, keyView(key))
 }
 
 func (h *Handler) deleteSSHKey(c *gin.Context) {
