@@ -91,6 +91,16 @@ export function formatDuration(
   return `${s}s`;
 }
 
+/**
+ * The API serialises an unset timestamp as Go's zero time (0001-01-01T00:00:00Z).
+ * Returns the input when it is a real date, otherwise `undefined`.
+ */
+export function realDate(input: string | null | undefined): string | undefined {
+  if (!input) return undefined;
+  const d = new Date(input);
+  return Number.isNaN(d.getTime()) || d.getFullYear() < 2000 ? undefined : input;
+}
+
 /** First 8 chars of an id (uuid-friendly) for compact display. */
 export function shortId(id: string | null | undefined, length = 8): string {
   if (!id) return '';

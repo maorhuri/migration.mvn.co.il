@@ -62,7 +62,12 @@ export interface TRProps extends HTMLAttributes<HTMLTableRowElement> {
   hoverable?: boolean;
   /** Selected/active styling. */
   selected?: boolean;
-  /** Clickable row: pointer + role/tabindex (pass `onClick`). */
+  /**
+   * Clickable row: pointer, tabindex and Enter/Space activation (pass `onClick`).
+   * The row keeps its native `row` semantics — no `role="button"` — because rows
+   * usually contain their own links and icon buttons, which a button role would hide
+   * from assistive technology.
+   */
   clickable?: boolean;
 }
 
@@ -71,7 +76,6 @@ export const TR = forwardRef<HTMLTableRowElement, TRProps>(function TR({ hoverab
     <tr
       ref={ref}
       tabIndex={clickable ? 0 : undefined}
-      role={clickable ? 'button' : undefined}
       onKeyDown={
         clickable && rest.onClick
           ? (e) => {
@@ -138,7 +142,7 @@ export const TH = forwardRef<HTMLTableCellElement, THProps>(function TH(
           )}
         >
           {children}
-          <SortIcon className={cn('h-3.5 w-3.5 shrink-0', sorted ? 'text-indigo-500' : 'text-slate-400 opacity-0 group-hover/th:opacity-100')} aria-hidden="true" />
+          <SortIcon className={cn('h-3.5 w-3.5 shrink-0', sorted ? 'text-indigo-500 dark:text-indigo-400' : 'text-slate-400 opacity-0 group-hover/th:opacity-100 dark:text-slate-500')} aria-hidden="true" />
         </button>
       ) : (
         children

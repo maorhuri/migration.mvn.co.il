@@ -1,9 +1,9 @@
 import { CheckIcon } from '@heroicons/react/16/solid';
 import { MagnifyingGlassIcon } from '@heroicons/react/20/solid';
 import { MagnifyingGlassIcon as MagnifyingGlassOutlineIcon, ServerStackIcon } from '@heroicons/react/24/outline';
-import { Button, EmptyState, Input, PanelBadge, SkeletonCard, Tabs, panelTone, type BadgeTone } from '@/components/ui';
-import { cn } from '@/lib/cn';
-import type { Server } from '@/types';
+import { Button, EmptyState, Input, PanelBadge, SkeletonCard, Tabs, panelTone, type BadgeTone } from '../ui';
+import { cn } from '../../lib/cn';
+import type { Server } from '../../types';
 import { PANEL_FILTER_OPTIONS } from './types';
 
 const iconToneClasses: Record<BadgeTone, string> = {

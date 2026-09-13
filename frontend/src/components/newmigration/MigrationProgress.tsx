@@ -1,8 +1,8 @@
 import { ArrowLeftIcon, CheckIcon, ExclamationTriangleIcon, XMarkIcon } from '@heroicons/react/16/solid';
-import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, LogViewer, ProgressBar, Spinner, StatusBadge } from '@/components/ui';
-import { cn } from '@/lib/cn';
-import { formatDuration } from '@/lib/format';
-import type { Account, MigrationLog } from '@/types';
+import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, LogViewer, ProgressBar, Spinner, StatusBadge } from '../ui';
+import { cn } from '../../lib/cn';
+import { formatDuration } from '../../lib/format';
+import type { Account, MigrationLog } from '../../types';
 import type { MigrationStepStatus } from './types';
 
 interface StepRowProps {

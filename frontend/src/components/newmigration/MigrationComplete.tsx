@@ -1,8 +1,8 @@
 import { CheckCircleIcon, ExclamationTriangleIcon, ListBulletIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import { CheckCircleIcon as CheckCircleSolid } from '@heroicons/react/20/solid';
-import { Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, Stat } from '@/components/ui';
-import { cn } from '@/lib/cn';
-import type { Account, MigrationLog } from '@/types';
+import { Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, Stat } from '../ui';
+import { cn } from '../../lib/cn';
+import type { Account, MigrationLog } from '../../types';
 
 export interface MigrationCompleteProps {
   warningCount: number;

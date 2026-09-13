@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import { MagnifyingGlassIcon as MagnifyingGlassOutlineIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, type ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts } from '../api/client';
 import type { Server, Account, MigrationLog } from '../types';
 import {
   Badge,
@@ -19,16 +19,16 @@ import {
   SkeletonTable,
   Stepper,
   type Step,
-} from '@/components/ui';
-import { cn } from '@/lib/cn';
-import { ServerPicker } from '@/components/newmigration/ServerPicker';
-import { ClusterNodePicker } from '@/components/newmigration/ClusterNodePicker';
-import { AccountsTable } from '@/components/newmigration/AccountsTable';
-import { DatabasesModal, EmailAccountsModal } from '@/components/newmigration/AccountListModals';
-import { ReviewStep } from '@/components/newmigration/ReviewStep';
-import { MigrationProgress } from '@/components/newmigration/MigrationProgress';
-import { MigrationComplete } from '@/components/newmigration/MigrationComplete';
-import type { MigrationStep, MigrationStepStatus } from '@/components/newmigration/types';
+} from '../components/ui';
+import { cn } from '../lib/cn';
+import { ServerPicker } from '../components/newmigration/ServerPicker';
+import { ClusterNodePicker } from '../components/newmigration/ClusterNodePicker';
+import { AccountsTable } from '../components/newmigration/AccountsTable';
+import { DatabasesModal, EmailAccountsModal } from '../components/newmigration/AccountListModals';
+import { ReviewStep } from '../components/newmigration/ReviewStep';
+import { MigrationProgress } from '../components/newmigration/MigrationProgress';
+import { MigrationComplete } from '../components/newmigration/MigrationComplete';
+import type { MigrationStep, MigrationStepStatus } from '../components/newmigration/types';
 
 const WIZARD_STEPS: Step[] = [
   { id: 'select_source', label: 'Source' },

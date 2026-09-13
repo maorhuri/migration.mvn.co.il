@@ -3,7 +3,7 @@ import { CheckIcon, ClipboardDocumentIcon } from '@heroicons/react/16/solid';
 import { CheckCircleIcon, ClockIcon, ExclamationTriangleIcon, NoSymbolIcon, XCircleIcon } from '@heroicons/react/24/outline';
 import { Badge, Card, IconButton, KeyValue, ProgressBar, Spinner, StatusBadge, Tooltip, copyToClipboard } from '../ui';
 import { cn } from '../../lib/cn';
-import { formatBytes, formatDate, formatDuration, percent } from '../../lib/format';
+import { formatBytes, formatDate, formatDuration, percent, realDate } from '../../lib/format';
 import type { Migration } from '../../types';
 
 interface MigrationHeroProps {
@@ -45,13 +45,6 @@ function StatusTile({ status }: { status: Migration['status'] }) {
         </div>
       );
   }
-}
-
-/** The API serialises an unset `started_at` as Go's zero time (0001-01-01); treat anything before 2000 as unset. */
-function realDate(input: string | null | undefined): string | undefined {
-  if (!input) return undefined;
-  const d = new Date(input);
-  return Number.isNaN(d.getTime()) || d.getFullYear() < 2000 ? undefined : input;
 }
 
 function headline(m: Migration): string {

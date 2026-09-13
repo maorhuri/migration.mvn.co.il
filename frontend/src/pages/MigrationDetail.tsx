@@ -98,29 +98,37 @@ export default function MigrationDetail() {
 
   if (!migration) {
     return (
-      <Card flush>
-        <EmptyState
-          icon={loadError ? ExclamationTriangleIcon : ArrowsRightLeftIcon}
-          title={loadError ? "Couldn't load this migration" : 'Migration not found'}
-          description={
-            loadError
-              ? 'The API did not respond or returned an error. Try again or go back to the list.'
-              : 'It may have been deleted, or the link is wrong.'
-          }
-          action={
-            loadError ? (
-              <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
-                Try again
-              </Button>
-            ) : (
-              <Button variant="primary" onClick={() => navigate('/migrations')}>
-                Back to migrations
-              </Button>
-            )
-          }
-          secondaryAction={loadError ? <Button variant="secondary" onClick={() => navigate('/migrations')}>Back to migrations</Button> : undefined}
+      <div className="space-y-6">
+        <PageHeader
+          backTo="/migrations"
+          eyebrow="Migration"
+          title={loadError ? 'Migration unavailable' : 'Migration not found'}
+          description={id ? <span className="font-mono text-[13px]">{id}</span> : undefined}
         />
-      </Card>
+        <Card flush>
+          <EmptyState
+            icon={loadError ? ExclamationTriangleIcon : ArrowsRightLeftIcon}
+            title={loadError ? "Couldn't load this migration" : 'Migration not found'}
+            description={
+              loadError
+                ? 'The API did not respond or returned an error. Try again or go back to the list.'
+                : 'It may have been deleted, or the link is wrong.'
+            }
+            action={
+              loadError ? (
+                <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
+                  Try again
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={() => navigate('/migrations')}>
+                  Back to migrations
+                </Button>
+              )
+            }
+            secondaryAction={loadError ? <Button variant="secondary" onClick={() => navigate('/migrations')}>Back to migrations</Button> : undefined}
+          />
+        </Card>
+      </div>
     );
   }
 

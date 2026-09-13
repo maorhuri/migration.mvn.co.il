@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CircleStackIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
-import { Button, EmptyState, Modal } from '@/components/ui';
-import type { Account } from '@/types';
+import { Button, EmptyState, Modal } from '../ui';
+import type { Account } from '../../types';
 
 interface AccountListModalProps {
   account: Account | null;

@@ -20,9 +20,9 @@ import {
   panelTone,
   type BadgeTone,
   type CardProps,
-} from '@/components/ui';
-import type { ClusterServer } from '@/api/client';
-import type { Account, Server } from '@/types';
+} from '../ui';
+import type { ClusterServer } from '../../api/client';
+import type { Account, Server } from '../../types';
 import type { MigrationStepStatus } from './types';
 
 function accentFor(tone: BadgeTone): CardProps['accent'] {

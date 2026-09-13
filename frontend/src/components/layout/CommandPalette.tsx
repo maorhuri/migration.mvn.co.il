@@ -120,7 +120,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                     aria-label="Search"
                   />
                   <div className="absolute right-3 top-3.5 flex items-center gap-1">
-                    {loading ? <Spinner size="sm" className="text-slate-400" /> : <Kbd>esc</Kbd>}
+                    {loading ? <Spinner size="sm" className="text-slate-400 dark:text-slate-500" /> : <Kbd>esc</Kbd>}
                   </div>
                 </div>
 

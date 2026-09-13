@@ -298,14 +298,21 @@ export default function ServerDetail() {
 
   if (!server) {
     return (
-      <Card>
-        <EmptyState
-          icon={ServerStackOutlineIcon}
+      <div className="space-y-6">
+        <PageHeader
+          breadcrumb={[{ label: 'Servers', to: '/servers' }, { label: 'Not found' }]}
           title="Server not found"
-          description="This server may have been removed or the link is out of date."
-          action={<Button variant="primary" onClick={() => navigate('/servers')}>Back to servers</Button>}
+          description={id ? <span className="font-mono text-[13px]">{id}</span> : undefined}
         />
-      </Card>
+        <Card flush>
+          <EmptyState
+            icon={ServerStackOutlineIcon}
+            title="Server not found"
+            description="This server may have been removed or the link is out of date."
+            action={<Button variant="primary" onClick={() => navigate('/servers')}>Back to servers</Button>}
+          />
+        </Card>
+      </div>
     );
   }
 
@@ -333,9 +340,6 @@ export default function ServerDetail() {
         }
         actions={
           <>
-            <Button variant="secondary" leftIcon={<PencilIcon />} onClick={() => setIsEditModalOpen(true)}>
-              Edit
-            </Button>
             <Button variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
               Test connection
             </Button>

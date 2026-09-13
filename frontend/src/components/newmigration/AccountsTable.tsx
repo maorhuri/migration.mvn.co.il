@@ -1,8 +1,8 @@
 import { useEffect, useRef, type MouseEvent } from 'react';
 import { CircleStackIcon, EnvelopeIcon } from '@heroicons/react/16/solid';
-import { Badge, StatusBadge, Table, TBody, TD, TDPrimary, TH, THead, TR, type SortDirection } from '@/components/ui';
-import { cn } from '@/lib/cn';
-import type { Account } from '@/types';
+import { Badge, StatusBadge, Table, TBody, TD, TDPrimary, TH, THead, TR, type SortDirection } from '../ui';
+import { cn } from '../../lib/cn';
+import type { Account } from '../../types';
 
 export const checkboxClasses =
   'h-4 w-4 cursor-pointer rounded border-slate-300 accent-indigo-600 dark:border-slate-600 dark:accent-indigo-500 ' +

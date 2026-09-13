@@ -1,9 +1,9 @@
 import { CheckIcon } from '@heroicons/react/16/solid';
 import { InformationCircleIcon, MagnifyingGlassIcon } from '@heroicons/react/20/solid';
 import { CpuChipIcon } from '@heroicons/react/24/outline';
-import { Badge, Button, EmptyState, Input, SkeletonCard } from '@/components/ui';
-import { cn } from '@/lib/cn';
-import type { ClusterServer } from '@/api/client';
+import { Badge, Button, EmptyState, Input, SkeletonCard } from '../ui';
+import { cn } from '../../lib/cn';
+import type { ClusterServer } from '../../api/client';
 
 function nodeRoles(node: ClusterServer): string[] {
   if (node.roles && node.roles.length > 0) return node.roles;

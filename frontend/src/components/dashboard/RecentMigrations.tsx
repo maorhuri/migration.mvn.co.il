@@ -18,7 +18,7 @@ import {
   TD,
   TDPrimary,
 } from '../ui';
-import { formatDate, formatRelativeTime } from '../../lib/format';
+import { formatDate, formatRelativeTime, realDate } from '../../lib/format';
 import type { Migration, Server } from '../../types';
 
 export interface RecentMigrationsProps {
@@ -86,7 +86,7 @@ export function RecentMigrations({ migrations, servers, loading, error, onRetry 
               const source = serverName(m.source_server_id);
               const target = serverName(m.target_server_id);
               const targetValue = m.target_node || m.target_ip;
-              const started = m.started_at || m.created_at;
+              const started = realDate(m.started_at) ?? m.created_at;
               return (
                 <TR key={m.id} clickable onClick={() => navigate(`/migrations/${m.id}`)}>
                   <TDPrimary mono className="text-[13px]">{m.account_username}</TDPrimary>
