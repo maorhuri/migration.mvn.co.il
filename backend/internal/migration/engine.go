@@ -336,6 +336,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	} else {
 		migrationLog("info", "Migration completed successfully")
 	}
+	e.refreshAccountsCacheAsync(sourceServer.ID)
 }
 
 // connectEnhanceTarget connects to the Enhance API and to the cluster node that will host the website.
@@ -503,6 +504,7 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	if err := e.db.SetMigrationSourceSuspended(ctx, migrationID, suspend); err != nil {
 		return nil, fmt.Errorf("account %sed but the migration record could not be updated: %w", action, err)
 	}
+	e.refreshAccountsCacheAsync(m.SourceServerID)
 	switch {
 	case !changed:
 		// state already matched; SetAccountSuspended logged it
@@ -759,6 +761,69 @@ func (e *Engine) SubmitScanDecision(ctx context.Context, migrationID, decision s
 	}
 	e.db.AddMigrationLog(ctx, migrationID, "info", "Operator decision on malware findings: "+decision, nil)
 	return e.GetMigrationStatus(ctx, migrationID)
+}
+
+// RefreshAccountsCache re-reads the account list of a source server and stores it, so the
+// New Migration page shows suspended/changed accounts without a manual Refresh.
+func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int, error) {
+	server, err := e.db.GetServer(ctx, serverID)
+	if err != nil {
+		return 0, err
+	}
+	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
+		return 0, nil
+	}
+	password, _ := e.db.GetDecryptedPassword(ctx, serverID)
+	accounts, err := e.GetServerAccounts(ctx, server, password)
+	if err != nil {
+		return 0, err
+	}
+	if len(accounts) == 0 {
+		return 0, nil
+	}
+	list := make([]common.Account, len(accounts))
+	for i, acc := range accounts {
+		siteType := ""
+		if acc.IsWordPress {
+			siteType = "wordpress"
+		}
+		list[i] = common.Account{
+			Username:      acc.Username,
+			Domain:        acc.Domain,
+			Email:         acc.Email,
+			DiskUsage:     acc.DiskUsed,
+			DiskLimit:     acc.DiskLimit,
+			Suspended:     acc.Suspended,
+			PHPVersion:    acc.PHPVersion,
+			DBSize:        acc.DBSize,
+			DBCount:       len(acc.Databases),
+			EmailCount:    len(acc.EmailAccounts),
+			SiteType:      siteType,
+			Databases:     acc.Databases,
+			EmailAccounts: acc.EmailAccounts,
+			AddonDomains:  acc.AddonDomains,
+			IsWordPress:   acc.IsWordPress,
+			SSLEnabled:    acc.SSLEnabled,
+			SSLExpiry:     acc.SSLExpiry,
+		}
+	}
+	if err := e.db.SaveServerAccounts(ctx, serverID, list); err != nil {
+		return 0, err
+	}
+	return len(list), nil
+}
+
+// refreshAccountsCacheAsync refreshes the cache in the background (after a migration or a suspend).
+func (e *Engine) refreshAccountsCacheAsync(serverID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		if n, err := e.RefreshAccountsCache(ctx, serverID); err != nil {
+			e.logger.Warn("accounts cache refresh failed", map[string]interface{}{"server_id": serverID, "error": err.Error()})
+		} else if n > 0 {
+			e.logger.Info("accounts cache refreshed", map[string]interface{}{"server_id": serverID, "accounts": n})
+		}
+	}()
 }
 
 // cancelMigrationRecord marks a migration as cancelled by the user.
