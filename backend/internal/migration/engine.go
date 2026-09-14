@@ -357,6 +357,9 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 		return nil, fmt.Errorf("Enhance API test failed: %w", err)
 	}
 	en.SetTargetClusterServerID(clusterServerID)
+	if err := en.ResolveOrgForServer(ctx, clusterServerID); err != nil {
+		logFn("warn", fmt.Sprintf("Could not check which customer org this node belongs to (%v); using the configured org", err))
+	}
 
 	node, err := en.GetServer(ctx, clusterServerID)
 	if err != nil {

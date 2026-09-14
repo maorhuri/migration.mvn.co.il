@@ -46,6 +46,12 @@ type Enhance struct {
 	warnings []string
 	tmpPaths []string // files we created on the node and must remove
 	websites map[string]*EnhanceWebsite
+
+	// orgOverride, when set, is used by orgID() instead of the configured enhance_org_id: the
+	// customer org whose subscription already owns the chosen cluster node (see
+	// ResolveOrgForServer), so a website lands under its existing customer instead of the
+	// top-level org the API key is configured against.
+	orgOverride string
 }
 
 // New creates a new Enhance panel instance
@@ -292,6 +298,8 @@ type EnhanceWebsite struct {
 	Aliases       []WebsiteDomain `json:"aliases"`
 	Kind          string          `json:"kind"`
 	Status        string          `json:"status"`
+	OrgID         string          `json:"orgId"`
+	Org           string          `json:"org"` // org display name, for logging
 	AppServerID   string          `json:"appServerId"`
 	DbServerID    string          `json:"dbServerId"`
 	EmailServerID string          `json:"emailServerId"`
@@ -399,6 +407,9 @@ func (e *Enhance) ListAccounts(ctx context.Context) ([]common.Account, error) {
 }
 
 func (e *Enhance) orgID() (string, error) {
+	if e.orgOverride != "" {
+		return e.orgOverride, nil
+	}
 	if e.config != nil && e.config.Metadata != nil && e.config.Metadata["enhance_org_id"] != "" {
 		return e.config.Metadata["enhance_org_id"], nil
 	}
@@ -458,6 +469,62 @@ func (e *Enhance) ListWebsiteDomains(ctx context.Context, appServerID string) ([
 		}
 	}
 	return domains, nil
+}
+
+// ResolveOrgForServer looks at the websites already on appServerID and, if they consistently
+// belong to one customer org (Maor's setup: one customer/org is dedicated to a node via its
+// subscription's server assignment), sets that as the effective org for the rest of this
+// session -- orgID() (and therefore every website/database/email/cron call that follows)
+// then uses it instead of the top-level enhance_org_id, so a new website lands under the
+// same customer as everything else already on that node. If the node has no websites yet, or
+// they belong to more than one org, the configured org is left as-is (unset override) and
+// logFn explains why, since guessing wrong here would put a website under the wrong customer.
+func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) error {
+	e.orgOverride = ""
+	if appServerID == "" {
+		return nil
+	}
+	topOrg, err := e.orgID()
+	if err != nil {
+		return err
+	}
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000&recursion=infinite", topOrg), nil)
+	if err != nil {
+		return fmt.Errorf("listing websites to resolve the node's customer org: %w", err)
+	}
+	var listing struct {
+		Items []EnhanceWebsite `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return err
+	}
+	counts := map[string]int{}
+	names := map[string]string{}
+	for _, ws := range listing.Items {
+		if ws.AppServerID != appServerID || ws.OrgID == "" || ws.OrgID == topOrg {
+			continue
+		}
+		counts[ws.OrgID]++
+		if ws.Org != "" {
+			names[ws.OrgID] = ws.Org
+		}
+	}
+	if len(counts) == 0 {
+		e.logf("info", "No existing customer org found for this node; new websites will use the configured org")
+		return nil
+	}
+	best, bestN := "", 0
+	for id, n := range counts {
+		if n > bestN {
+			best, bestN = id, n
+		}
+	}
+	if len(counts) > 1 {
+		e.warnf("This node hosts websites under %d different customer orgs; using the most common one (%s, %d website(s)) rather than guessing wrong", len(counts), names[best], bestN)
+	}
+	e.orgOverride = best
+	e.logf("info", "Using existing customer org %q (%s) for this node: %d website(s) already there", names[best], best, bestN)
+	return nil
 }
 
 // getWebsiteByDomain finds a website of the org by primary domain and returns its full details
