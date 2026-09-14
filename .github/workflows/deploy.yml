@@ -40,7 +40,9 @@ jobs:
             cd docker
 
             echo "== docker compose build =="
-            docker compose --env-file ../.env build --quiet
+            # GIT_SHA is baked into the binary and served on /api/v1/health -- the fast manual
+            # check (curl + compare to `git rev-parse HEAD`) depends on this actually being set.
+            docker compose --env-file ../.env build --quiet --build-arg GIT_SHA="$(git rev-parse HEAD)"
 
             echo "== waiting for in-flight migrations (restart would kill them) =="
             for i in $(seq 1 360); do
