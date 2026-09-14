@@ -735,6 +735,11 @@ func (d *Database) FindServerByHost(ctx context.Context, candidates ...string) (
 // AddMigrationLog adds a log entry for a migration
 func (d *Database) AddMigrationLog(ctx context.Context, migrationID, level, message string, metadata map[string]interface{}) error {
 	id := uuid.New().String()
+	// A log line is for reading in the console; command output that runs to megabytes would
+	// freeze the browser (it happened with rsync's file list), so keep head and tail only.
+	if len(message) > 12000 {
+		message = message[:4000] + fmt.Sprintf("\n... [%d characters omitted] ...\n", len(message)-8000) + message[len(message)-4000:]
+	}
 
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
