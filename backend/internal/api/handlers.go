@@ -80,6 +80,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.POST("/:id/source/unsuspend", h.unsuspendSource)
 			migrations.POST("/:id/scan/decision", h.scanDecision)
 			migrations.POST("/:id/repair/wordpress", h.repairWordPress)
+			migrations.POST("/:id/rerun", h.rerunMigration)
 			migrations.DELETE("/:id", h.deleteMigration)
 			migrations.POST("/check-compatibility", h.checkCompatibility)
 		}

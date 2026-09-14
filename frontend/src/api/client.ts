@@ -143,6 +143,12 @@ export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
 };
 
+/** Start a new migration with the same source, target node and options as a failed/cancelled one. */
+export const rerunMigration = async (id: string): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/rerun`);
+  return data;
+};
+
 /** Re-run WordPress registration, PHP version and ownership for a completed migration. */
 export const repairMigrationWordPress = async (id: string): Promise<{ migration: Migration; summary: string[] }> => {
   const { data } = await api.post(`/migrations/${id}/repair/wordpress`);

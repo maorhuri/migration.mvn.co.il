@@ -89,6 +89,9 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 	if req.ScanMalware {
 		e.db.SetMigrationScanRequested(ctx, migrationID, true)
 	}
+	if req.TargetClusterServerID != "" {
+		e.db.SetMigrationClusterServer(ctx, migrationID, req.TargetClusterServerID)
+	}
 
 	result := &MigrationResult{
 		ID:              migrationID,
@@ -761,6 +764,52 @@ func (e *Engine) SubmitScanDecision(ctx context.Context, migrationID, decision s
 	}
 	e.db.AddMigrationLog(ctx, migrationID, "info", "Operator decision on malware findings: "+decision, nil)
 	return e.GetMigrationStatus(ctx, migrationID)
+}
+
+// RerunMigration starts a new migration with the same source, target, node and options as a
+// failed or cancelled one.
+func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*MigrationResult, error) {
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "failed" && m.Status != "cancelled" {
+		return nil, fmt.Errorf("only failed or cancelled migrations can be run again (status: %s)", m.Status)
+	}
+	req := &MigrationRequest{
+		SourceServerID:        m.SourceServerID,
+		TargetServerID:        m.TargetServerID,
+		TargetClusterServerID: m.TargetClusterServerID.String,
+		Username:              m.AccountUsername,
+		ScanMalware:           m.ScanRequested,
+	}
+	if req.TargetClusterServerID == "" {
+		// Older rows did not record the node: reuse the node of the website if it already exists.
+		if target, err := e.db.GetServer(ctx, m.TargetServerID); err == nil && common.PanelType(target.PanelType) == common.PanelTypeEnhance {
+			domain := ""
+			if accounts, err := e.db.GetServerAccounts(ctx, m.SourceServerID); err == nil {
+				for _, a := range accounts {
+					if a.Username == m.AccountUsername {
+						domain = a.Domain
+					}
+				}
+			}
+			if domain != "" {
+				apiKey, _ := e.db.GetServerAPIKey(ctx, target.ID)
+				probe := enhance.New()
+				if err := probe.ConnectAPI(ctx, e.db.ToConnectionConfig(target), apiKey); err == nil {
+					if site, err := probe.FindWebsite(ctx, domain); err == nil && site.AppServerID != "" {
+						req.TargetClusterServerID = site.AppServerID
+					}
+				}
+			}
+		}
+		if req.TargetClusterServerID == "" {
+			return nil, fmt.Errorf("this migration did not record its cluster node; start it again from New migration and pick the node")
+		}
+	}
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Run again requested; a new migration was started", nil)
+	return e.StartMigration(ctx, req)
 }
 
 // RepairWordPress re-runs the WordPress registration, PHP version and ownership steps for a

@@ -185,6 +185,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_requested BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_report JSONB`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_decision VARCHAR(16)`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_cluster_server_id VARCHAR(64)`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -284,28 +285,29 @@ func (nj *NullableJSON) Scan(value interface{}) error {
 
 // Migration represents a migration record
 type Migration struct {
-	ID                string         `db:"id" json:"id"`
-	SourceServerID    string         `db:"source_server_id" json:"source_server_id"`
-	TargetServerID    string         `db:"target_server_id" json:"target_server_id"`
-	AccountUsername   string         `db:"account_username" json:"account_username"`
-	Status            string         `db:"status" json:"status"`
-	CurrentStep       sql.NullString `db:"current_step" json:"current_step,omitempty"`
-	TotalSteps        int            `db:"total_steps" json:"total_steps"`
-	CompletedSteps    int            `db:"completed_steps" json:"completed_steps"`
-	BytesTransferred  int64          `db:"bytes_transferred" json:"bytes_transferred"`
-	TotalBytes        int64          `db:"total_bytes" json:"total_bytes"`
-	ErrorMessage      sql.NullString `db:"error_message" json:"error_message,omitempty"`
-	ExportData        NullableJSON   `db:"export_data" json:"export_data,omitempty"`
-	TargetIP          NullString     `db:"target_ip" json:"target_ip"`
-	TargetNode        NullString     `db:"target_node" json:"target_node"`
-	Warnings          int            `db:"warnings" json:"warnings"`
-	SourceSuspendedAt sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
-	ScanRequested     bool           `db:"scan_requested" json:"scan_requested"`
-	ScanReport        NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
-	ScanDecision      NullString     `db:"scan_decision" json:"scan_decision"`
-	StartedAt         sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
-	CompletedAt       sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
-	CreatedAt         time.Time      `db:"created_at" json:"created_at"`
+	ID                    string         `db:"id" json:"id"`
+	SourceServerID        string         `db:"source_server_id" json:"source_server_id"`
+	TargetServerID        string         `db:"target_server_id" json:"target_server_id"`
+	AccountUsername       string         `db:"account_username" json:"account_username"`
+	Status                string         `db:"status" json:"status"`
+	CurrentStep           sql.NullString `db:"current_step" json:"current_step,omitempty"`
+	TotalSteps            int            `db:"total_steps" json:"total_steps"`
+	CompletedSteps        int            `db:"completed_steps" json:"completed_steps"`
+	BytesTransferred      int64          `db:"bytes_transferred" json:"bytes_transferred"`
+	TotalBytes            int64          `db:"total_bytes" json:"total_bytes"`
+	ErrorMessage          sql.NullString `db:"error_message" json:"error_message,omitempty"`
+	ExportData            NullableJSON   `db:"export_data" json:"export_data,omitempty"`
+	TargetIP              NullString     `db:"target_ip" json:"target_ip"`
+	TargetNode            NullString     `db:"target_node" json:"target_node"`
+	Warnings              int            `db:"warnings" json:"warnings"`
+	SourceSuspendedAt     sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
+	ScanRequested         bool           `db:"scan_requested" json:"scan_requested"`
+	ScanReport            NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
+	ScanDecision          NullString     `db:"scan_decision" json:"scan_decision"`
+	TargetClusterServerID NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
+	StartedAt             sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt           sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
+	CreatedAt             time.Time      `db:"created_at" json:"created_at"`
 }
 
 // MigrationLog represents a log entry for a migration
@@ -680,6 +682,12 @@ func (d *Database) SetMigrationSourceSuspended(ctx context.Context, id string, s
 // SetMigrationExportData stores the export metadata JSON
 func (d *Database) SetMigrationExportData(ctx context.Context, id string, exportJSON []byte) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET export_data = $2 WHERE id = $1", id, exportJSON)
+	return err
+}
+
+// SetMigrationClusterServer records the Enhance cluster server chosen for the import (for re-runs).
+func (d *Database) SetMigrationClusterServer(ctx context.Context, id, clusterServerID string) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET target_cluster_server_id = $2 WHERE id = $1", id, clusterServerID)
 	return err
 }
 

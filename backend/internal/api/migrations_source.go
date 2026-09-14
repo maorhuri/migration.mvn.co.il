@@ -64,3 +64,13 @@ func (h *Handler) repairWordPress(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"migration": result, "summary": summary})
 }
+
+// rerunMigration starts a new migration with the settings of a failed or cancelled one.
+func (h *Handler) rerunMigration(c *gin.Context) {
+	result, err := h.engine.RerunMigration(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}

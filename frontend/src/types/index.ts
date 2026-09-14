@@ -67,6 +67,8 @@ export interface Migration {
   scan_report?: ScanReport;
   /** Operator decision on the findings: clean | skip | abort. */
   scan_decision?: string;
+  /** Enhance cluster server the import targeted (recorded for re-runs). */
+  target_cluster_server_id?: string;
   total_steps: number;
   completed_steps: number;
   bytes_transferred: number;

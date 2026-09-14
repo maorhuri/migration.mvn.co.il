@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { cancelMigration, getMigration, getMigrationLogs, getServer, repairMigrationWordPress, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogs, getServer, repairMigrationWordPress, rerunMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -47,6 +47,8 @@ export default function MigrationDetail() {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [repairOpen, setRepairOpen] = useState(false);
+  const [rerunOpen, setRerunOpen] = useState(false);
+  const [rerunning, setRerunning] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
@@ -159,6 +161,20 @@ export default function MigrationDetail() {
     }
   };
 
+  const handleRerun = async () => {
+    setRerunning(true);
+    try {
+      const created = await rerunMigration(migration.id);
+      toast.success(`New migration started for ${migration.account_username}`);
+      setRerunOpen(false);
+      navigate(`/migrations/${created.id}`);
+    } catch (error) {
+      toast.error(apiError(error, 'Could not start the migration again'));
+    } finally {
+      setRerunning(false);
+    }
+  };
+
   const handleRepair = async () => {
     setRepairing(true);
     try {
@@ -247,6 +263,11 @@ export default function MigrationDetail() {
             {isCompleted && (
               <Button variant="outline" leftIcon={<WrenchScrewdriverIcon />} onClick={() => setRepairOpen(true)} loading={repairing}>
                 Repair WordPress
+              </Button>
+            )}
+            {(migration.status === 'failed' || migration.status === 'cancelled') && (
+              <Button variant="primary" leftIcon={<PlayIcon />} onClick={() => setRerunOpen(true)} loading={rerunning}>
+                Run again
               </Button>
             )}
           </>
@@ -351,6 +372,22 @@ export default function MigrationDetail() {
         }
         confirmLabel="Repair"
         onConfirm={handleRepair}
+      />
+
+      <ConfirmDialog
+        open={rerunOpen}
+        onClose={() => setRerunOpen(false)}
+        tone="brand"
+        title="Run this migration again?"
+        message={
+          <>
+            A new migration starts for <span className="font-mono">{migration.account_username}</span> with the same source, target node and options
+            {migration.scan_requested ? ' (including the malware scan)' : ''}. A website that already exists on the node is reused. This failed run stays in the
+            history.
+          </>
+        }
+        confirmLabel="Run again"
+        onConfirm={handleRerun}
       />
 
       <section className="space-y-3" aria-labelledby="migration-log-heading">
