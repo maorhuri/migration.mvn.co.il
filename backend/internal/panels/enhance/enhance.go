@@ -1218,9 +1218,10 @@ func firstLine(s string) string {
 
 var wpConfigIncludeRe = regexp.MustCompile(`(?m)^[ \t]*(require_once|require|include_once|include)[ \t]*\(?[ \t]*['"]([^'"/\\][^'"]*)['"][ \t]*\)?[ \t]*;[^\n]*$`)
 
-// makeWPConfigParseable rewrites relative require/include statements in wp-config.php so WP-CLI's
-// config parser (and therefore Enhance's discovery) can read it: files that only define constants
-// (wp-salt.php and friends) are inlined, anything else gets an absolute path.
+// makeWPConfigParseable rewrites relative require/include statements in wp-config.php
+// (require('wp-salt.php')) to absolute paths so WP-CLI's config parser, and therefore Enhance's
+// discovery, can read it. The included files stay separate; __DIR__ is not an option because
+// WP-CLI evaluates the file outside its directory.
 func (e *Enhance) makeWPConfigParseable(ctx context.Context, ws *EnhanceWebsite) {
 	cfg := ws.DocRoot + "/wp-config.php"
 	raw, err := e.nodeRun(ctx, "base64 -w0 "+shq(cfg))
@@ -1251,17 +1252,9 @@ func (e *Enhance) makeWPConfigParseable(ctx context.Context, ws *EnhanceWebsite)
 		if err != nil {
 			return line
 		}
-		decoded, _ := base64.StdEncoding.DecodeString(body)
-		if onlyDefines(string(decoded)) {
-			inner := strings.TrimSpace(string(decoded))
-			inner = strings.TrimPrefix(inner, "<?php")
-			inner = strings.TrimSuffix(strings.TrimSpace(inner), "?>")
-			changed = true
-			notes = append(notes, rel+" inlined")
-			return "// " + rel + " inlined by the migration tool (relative includes break WP-CLI/Enhance discovery)\n" + strings.TrimSpace(inner)
-		}
+		_ = body
 		changed = true
-		notes = append(notes, rel+" -> absolute path")
+		notes = append(notes, rel+" -> "+abs)
 		return fmt.Sprintf("%s '%s'; // path made absolute by the migration tool", keyword, abs)
 	})
 	if !changed {
@@ -1274,36 +1267,6 @@ func (e *Enhance) makeWPConfigParseable(ctx context.Context, ws *EnhanceWebsite)
 		return
 	}
 	e.logf("info", "%s: wp-config.php includes rewritten (%s); original kept as wp-config.php.pre-include-fix", ws.Domain.Domain, strings.Join(notes, ", "))
-}
-
-// onlyDefines reports whether a PHP file contains nothing but define() statements and comments.
-func onlyDefines(src string) bool {
-	src = strings.TrimSpace(src)
-	src = strings.TrimPrefix(src, "<?php")
-	src = strings.TrimSuffix(strings.TrimSpace(src), "?>")
-	inBlock := false
-	for _, l := range strings.Split(src, "\n") {
-		l = strings.TrimSpace(l)
-		if inBlock {
-			if strings.Contains(l, "*/") {
-				inBlock = false
-			}
-			continue
-		}
-		if l == "" || strings.HasPrefix(l, "//") || strings.HasPrefix(l, "#") {
-			continue
-		}
-		if strings.HasPrefix(l, "/*") {
-			if !strings.Contains(l, "*/") {
-				inBlock = true
-			}
-			continue
-		}
-		if !strings.HasPrefix(l, "define") {
-			return false
-		}
-	}
-	return true
 }
 
 // isRootInstallPath reports whether a discovered WordPress path is the web root.
