@@ -624,7 +624,12 @@ func (da *DirectAdmin) ExportEmails(ctx context.Context, username string, output
 
 		// Download maildir (mailbox contents are not imported yet; kept for future use)
 		if err := da.sshClient.DownloadDirectory(ctx, mailDir, localMailDir, nil); err != nil {
-			da.logf("warn", "Mailbox contents of %s not downloaded: %v", email.Email, err)
+			msg := err.Error()
+			if strings.Contains(msg, "does not exist") || strings.Contains(msg, "no such file") {
+				da.logf("info", "Mailbox %s has no stored mail on the source (nothing to copy)", email.Email)
+			} else {
+				da.logf("warn", "Mailbox contents of %s not downloaded: %v", email.Email, err)
+			}
 		}
 	}
 

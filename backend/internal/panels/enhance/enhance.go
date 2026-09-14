@@ -732,7 +732,7 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 	}
 	if len(data.Emails) > 0 {
-		e.warnf("%d mailbox(es) created with new random passwords (see log); mailbox contents were not migrated", len(result.Emails))
+		e.logf("info", "%d mailbox(es) created with new random passwords (see the lines above); mailbox contents are not migrated by design", len(result.Emails))
 	}
 
 	// 7. Cron jobs (warnings only)
