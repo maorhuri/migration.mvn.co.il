@@ -449,20 +449,11 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 
 // exportFromSource exports data from the source server
 func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, username, workDir string, progress chan<- common.MigrationProgress, logFn func(level, message string)) (*common.ExportData, error) {
-	config := e.db.ToConnectionConfig(server)
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
-		da := directadmin.New()
-		da.SetLogger(logFn)
-		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
-			return nil, fmt.Errorf("failed to connect to DirectAdmin: %w", err)
+		da, err := e.connectDirectAdmin(ctx, server, "", logFn)
+		if err != nil {
+			return nil, err
 		}
 		defer da.Disconnect()
 		if err := da.TestConnection(ctx); err != nil {
@@ -497,18 +488,10 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	}
 	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
 
-	config := e.db.ToConnectionConfig(server)
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-	da := directadmin.New()
-	da.SetLogger(logFn)
-	if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
+	da, err := e.connectDirectAdmin(ctx, server, "", logFn)
+	if err != nil {
 		logFn("error", fmt.Sprintf("Source account %s: %s failed: cannot connect to %s: %v", m.AccountUsername, action, server.Name, err))
-		return nil, fmt.Errorf("failed to connect to DirectAdmin %s: %w", server.Name, err)
+		return nil, err
 	}
 	defer da.Disconnect()
 
@@ -531,20 +514,82 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	return e.GetMigrationStatus(ctx, migrationID)
 }
 
-// cleanupSourceServer removes temporary files from the source server
-func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server) error {
+// connectDirectAdmin connects to a DirectAdmin server with its configured credentials and, when
+// those are refused, falls back to the other stored credential (key -> password, password -> key),
+// logging what happened and how to install the tool's key on that server.
+func (e *Engine) connectDirectAdmin(ctx context.Context, server *storage.Server, password string, logFn func(level, message string)) (*directadmin.DirectAdmin, error) {
+	if logFn == nil {
+		logFn = func(string, string) {}
+	}
 	config := e.db.ToConnectionConfig(server)
-	password, _ := e.db.GetServerPassword(ctx, server.ID)
+	if password == "" {
+		password, _ = e.db.GetServerPassword(ctx, server.ID)
+	}
 	var privateKey []byte
+	keyName, publicKey := "", ""
 	if server.SSHKeyID.Valid {
 		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
 		privateKey = []byte(keyData)
+		if k, err := e.db.GetSSHKey(ctx, server.SSHKeyID.String); err == nil {
+			keyName, publicKey = k.Name, strings.TrimSpace(k.PublicKey)
+		}
 	}
+	hint := ""
+	if publicKey != "" {
+		hint = fmt.Sprintf(" To let the key %q in, run on %s: mkdir -p ~/.ssh && echo '%s' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", keyName, server.Host, publicKey)
+	}
+
+	try := func(method common.AuthMethod, pw string, key []byte) (*directadmin.DirectAdmin, error) {
+		cfg := *config
+		cfg.AuthMethod = method
+		da := directadmin.New()
+		da.SetLogger(logFn)
+		if err := da.ConnectWithCredentials(ctx, &cfg, pw, key); err != nil {
+			return nil, err
+		}
+		return da, nil
+	}
+
+	da, err := try(config.AuthMethod, password, privateKey)
+	if err == nil {
+		return da, nil
+	}
+	switch {
+	case config.AuthMethod == common.AuthMethodSSHKey && password != "":
+		if da2, err2 := try(common.AuthMethodPassword, password, nil); err2 == nil {
+			logFn("warn", fmt.Sprintf("SSH key %q was refused by %s (%v); connected with the stored password instead.%s", keyName, server.Host, shortErr(err), hint))
+			return da2, nil
+		}
+	case config.AuthMethod == common.AuthMethodPassword && len(privateKey) > 0:
+		if da2, err2 := try(common.AuthMethodSSHKey, "", privateKey); err2 == nil {
+			logFn("warn", fmt.Sprintf("Password was refused by %s (%v); connected with SSH key %q instead. Update the server record.", server.Host, shortErr(err), keyName))
+			return da2, nil
+		}
+	}
+	if config.AuthMethod == common.AuthMethodSSHKey {
+		return nil, fmt.Errorf("SSH key %q not accepted by %s:%d and no working password stored: %w.%s", keyName, server.Host, server.Port, err, hint)
+	}
+	return nil, fmt.Errorf("failed to connect to DirectAdmin %s:%d: %w", server.Host, server.Port, err)
+}
+
+func shortErr(err error) string {
+	msg := err.Error()
+	if i := strings.Index(msg, "ssh: handshake failed: "); i >= 0 {
+		msg = msg[i+len("ssh: handshake failed: "):]
+	}
+	if len(msg) > 120 {
+		msg = msg[:120] + "..."
+	}
+	return msg
+}
+
+// cleanupSourceServer removes temporary files from the source server
+func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server) error {
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
-		da := directadmin.New()
-		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
-			return fmt.Errorf("failed to connect to DirectAdmin: %w", err)
+		da, err := e.connectDirectAdmin(ctx, server, "", nil)
+		if err != nil {
+			return err
 		}
 		defer da.Disconnect()
 		return da.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
@@ -931,18 +976,11 @@ func (e *Engine) GetEnhanceClusterServers(ctx context.Context, server *storage.S
 
 // GetServerAccounts gets all accounts from a server
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
-	config := e.db.ToConnectionConfig(server)
-	var privateKey []byte
-	if server.SSHKeyID.Valid {
-		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
-		privateKey = []byte(keyData)
-	}
-
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
-		da := directadmin.New()
-		if err := da.ConnectWithCredentials(ctx, config, password, privateKey); err != nil {
-			return nil, fmt.Errorf("failed to connect to DirectAdmin: %w", err)
+		da, err := e.connectDirectAdmin(ctx, server, password, nil)
+		if err != nil {
+			return nil, err
 		}
 		defer da.Disconnect()
 		accounts, err := da.ListAccounts(ctx)
@@ -973,7 +1011,7 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 	case common.PanelTypeEnhance:
 		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
 		en := enhance.New()
-		if err := en.ConnectAPI(ctx, config, apiKey); err != nil {
+		if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
 			return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
 		}
 		accounts, err := en.ListAccounts(ctx)
