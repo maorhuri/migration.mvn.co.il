@@ -23,9 +23,11 @@ import {
 import { cn } from '../lib/cn';
 import { useT } from '../lib/i18n';
 import { formatBytes, parseSizeToBytes } from '../lib/format';
+import { isAgentlessPanel } from '../lib/agentless';
 import { ServerPicker } from '../components/newmigration/ServerPicker';
 import { ClusterNodePicker } from '../components/newmigration/ClusterNodePicker';
 import { AccountsTable } from '../components/newmigration/AccountsTable';
+import { SiteFactsCard } from '../components/newmigration/SiteFactsCard';
 import { DatabasesModal, EmailAccountsModal } from '../components/newmigration/AccountListModals';
 import { ReviewStep } from '../components/newmigration/ReviewStep';
 import { MigrationProgress } from '../components/newmigration/MigrationProgress';
@@ -63,8 +65,12 @@ const INITIAL_MIGRATION_STEPS: MigrationStepStatus[] = [
   { id: 'cleanup', name: 'Cleanup', status: 'pending', details: 'Removing temporary files...' },
 ];
 
-/** Step list for a run: the malware scan step only when the option is on. */
-const buildSteps = (scan: boolean): MigrationStepStatus[] => INITIAL_MIGRATION_STEPS.filter((st) => scan || st.id !== 'scan_malware');
+/** Steps an FTP / WordPress source never runs (no mailboxes or cron without root on the source). */
+const AGENTLESS_SKIPPED_STEPS = new Set(['export_emails', 'export_cron']);
+
+/** Step list for a run: the malware scan step only when the option is on; no mail / cron export for agentless sources. */
+const buildSteps = (scan: boolean, agentless = false): MigrationStepStatus[] =>
+  INITIAL_MIGRATION_STEPS.filter((st) => (scan || st.id !== 'scan_malware') && !(agentless && AGENTLESS_SKIPPED_STEPS.has(st.id)));
 
 export default function NewMigration() {
   const t = useT();
@@ -123,6 +129,8 @@ export default function NewMigration() {
     target_cluster_server_id: '',
     scan_malware: false,
   });
+  // FTP / WordPress source: one site, no mail / cron / DNS, and the old site is disabled by hand after DNS.
+  const isAgentlessSource = isAgentlessPanel(servers.find((s: Server) => s.id === formData.source_server_id)?.panel_type);
 
   useEffect(() => {
     const fetchServers = async () => {
@@ -159,6 +167,11 @@ export default function NewMigration() {
       setAccounts([]);
     }
   }, [formData.source_server_id]);
+
+  // An agentless source holds exactly one site: it is the selection.
+  useEffect(() => {
+    if (isAgentlessSource && accounts.length === 1) setSelectedAccounts([accounts[0]]);
+  }, [isAgentlessSource, accounts]);
 
   // Load cluster servers when target server is selected
   useEffect(() => {
@@ -264,7 +277,7 @@ export default function NewMigration() {
     }
 
     // The step list of this run: the poll loop indexes into it, so the displayed list must be the same one.
-    const steps = buildSteps(formData.scan_malware);
+    const steps = buildSteps(formData.scan_malware, isAgentlessSource);
     setCurrentStep('migrating');
     setStarting(true);
     setMigrationSteps(steps.map((st) => ({ ...st })));
@@ -514,8 +527,8 @@ export default function NewMigration() {
     const matchesSearch = s.name.toLowerCase().includes(targetSearchTerm.toLowerCase()) ||
                           s.host.toLowerCase().includes(targetSearchTerm.toLowerCase());
     const matchesType = targetFilterType === 'all' || s.panel_type === targetFilterType;
-    // Exclude source server from target list
-    const notSource = s.id !== formData.source_server_id;
+    // Exclude source server from target list; FTP / WordPress records are sources only.
+    const notSource = s.id !== formData.source_server_id && !isAgentlessPanel(s.panel_type);
     return matchesSearch && matchesType && notSource;
   });
 
@@ -736,17 +749,19 @@ export default function NewMigration() {
               divided
               actions={
                 <>
-                  <div className="w-56">
-                    <Input
-                      size="sm"
-                      leftIcon={<MagnifyingGlassIcon />}
-                      placeholder={t('newmigration.accounts.search')}
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      aria-label={t('newmigration.accounts.searchAria')}
-                      disabled={loadingAccounts}
-                    />
-                  </div>
+                  {!isAgentlessSource && (
+                    <div className="w-56">
+                      <Input
+                        size="sm"
+                        leftIcon={<MagnifyingGlassIcon />}
+                        placeholder={t('newmigration.accounts.search')}
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        aria-label={t('newmigration.accounts.searchAria')}
+                        disabled={loadingAccounts}
+                      />
+                    </div>
+                  )}
                   <Button size="sm" variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts} disabled={loadingAccounts} title={t('newmigration.accounts.refreshTitle')}>
                     {t('newmigration.accounts.refresh')}
                   </Button>
@@ -756,9 +771,11 @@ export default function NewMigration() {
                 </>
               }
             >
-              <CardTitle>{t('newmigration.accounts.title')}</CardTitle>
+              <CardTitle>{isAgentlessSource ? t('newmigration.site.title') : t('newmigration.accounts.title')}</CardTitle>
               <CardDescription>
-                {sourceServer ? (
+                {isAgentlessSource ? (
+                  t('newmigration.site.description')
+                ) : sourceServer ? (
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     <span>{t('newmigration.accounts.from', { name: sourceServer.name })}</span>
                     <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">
@@ -773,12 +790,12 @@ export default function NewMigration() {
             </CardHeader>
 
             {loadingAccounts ? (
-              <SkeletonTable rows={8} columns={7} />
+              <SkeletonTable rows={isAgentlessSource ? 2 : 8} columns={7} />
             ) : accounts.length === 0 ? (
               <EmptyState
                 illustration="accounts"
                 title={t('newmigration.accounts.empty.title')}
-                description={t('newmigration.accounts.empty.description')}
+                description={isAgentlessSource ? t('newmigration.accounts.empty.description.agentless') : t('newmigration.accounts.empty.description')}
                 action={
                   <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts}>
                     {t('newmigration.accounts.empty.action')}
@@ -790,6 +807,10 @@ export default function NewMigration() {
                   </Button>
                 }
               />
+            ) : isAgentlessSource ? (
+              <div className="px-6 py-5">
+                <SiteFactsCard account={accounts[0]} server={sourceServer} />
+              </div>
             ) : filteredAccounts.length === 0 ? (
               <EmptyState
                 illustration="search"
@@ -823,8 +844,8 @@ export default function NewMigration() {
                     ? t('newmigration.tray.shownOf', { count: filteredAccounts.length, total: accounts.length })
                     : t('newmigration.tray.shown', { count: filteredAccounts.length })}
                 </span>
-                {suspendedToggle}
-                {selectedAccounts.length === 0 && (
+                {!isAgentlessSource && suspendedToggle}
+                {selectedAccounts.length === 0 && !isAgentlessSource && (
                   <div className="ms-auto flex items-center gap-2">
                     <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
                       {t('common.selectAll')}
@@ -856,9 +877,11 @@ export default function NewMigration() {
                 {t('units.mailboxes', { count: selectionSummary.mailboxes })}
               </span>
               <span className="mx-1 hidden h-4 w-px bg-slate-200 sm:block dark:bg-white/[0.1]" aria-hidden="true" />
-              <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
-                {allFilteredSelected ? t('common.deselectAll') : t('common.selectAll')}
-              </Button>
+              {!isAgentlessSource && (
+                <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
+                  {allFilteredSelected ? t('common.deselectAll') : t('common.selectAll')}
+                </Button>
+              )}
               <Button variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_target')} disabled={selectedAccounts.length === 0} className="rounded-full">
                 {t('common.continue')}
               </Button>
@@ -943,7 +966,7 @@ export default function NewMigration() {
             targetServer={targetServer}
             targetNode={targetClusterNode}
             accounts={selectedAccounts}
-            plan={buildSteps(formData.scan_malware)}
+            plan={buildSteps(formData.scan_malware, isAgentlessSource)}
             scanMalware={formData.scan_malware}
             onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
             starting={starting}
@@ -998,6 +1021,7 @@ export default function NewMigration() {
             hostsEntry={hostsEntry}
             logs={liveLogs}
             migrationIds={completedMigrationIds}
+            agentlessSource={isAgentlessSource}
             elapsedMs={elapsedMs}
             onStartNew={handleResetWizard}
             onViewAll={() => navigate('/migrations')}

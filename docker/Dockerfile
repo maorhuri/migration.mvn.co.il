@@ -39,8 +39,8 @@ FROM alpine:3.19
 
 WORKDIR /app
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata openssh-client rsync
+# Install runtime dependencies (lftp, GNU tar, gzip and mysqldump serve the agentless FTP/WordPress sources)
+RUN apk add --no-cache ca-certificates tzdata openssh-client rsync lftp tar gzip mariadb-client
 
 # Copy binaries from build stages
 COPY --from=backend-builder /app/server /app/server

@@ -51,6 +51,8 @@ export const migrations: PageDict = {
     'migrations.row.suspendTip': 'רק אחרי החלפת ה-IP, כשהאתר כבר נטען מהשרת החדש',
     'migrations.row.unsuspend': 'בטל השעיה',
     'migrations.row.unsuspendTip': 'הפעלה מחדש של החשבון בשרת המקור',
+    'migrations.row.manualDisable': 'כיבוי המקור ידני',
+    'migrations.row.manualDisableTip': 'מקור FTP או WordPress: אחרי העברת ה-DNS כבה את האתר הישן ידנית אצל הספק הקודם',
     'migrations.row.delete': 'מחק מיגרציה',
     'migrations.row.open': 'פתח את המיגרציה של {name}',
 
@@ -196,6 +198,8 @@ export const migrations: PageDict = {
     'migrations.row.suspendTip': 'Only after the IP switch, once the site loads from the new server',
     'migrations.row.unsuspend': 'Unsuspend',
     'migrations.row.unsuspendTip': 'Re-enable the account on the source server',
+    'migrations.row.manualDisable': 'Disable source by hand',
+    'migrations.row.manualDisableTip': 'FTP or WordPress source: after the DNS switch, disable the old site manually at the previous host',
     'migrations.row.delete': 'Delete migration',
     'migrations.row.open': 'Open the migration of {name}',
 

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Server, SSHKey, Migration, MigrationLog, Account, CompatibilityResult } from '../types';
+import type { Server, SSHKey, Migration, MigrationLog, Account, CompatibilityResult, ServerTestResponse } from '../types';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -19,12 +19,18 @@ export const getServer = async (id: string): Promise<Server> => {
   return data;
 };
 
-export const createServer = async (server: Partial<Server> & { password?: string; api_key?: string }): Promise<Server> => {
+/**
+ * Create / update body. Secrets travel only on the way in; `metadata` carries the per-kind
+ * settings (agentless sources: `site_url`, `ftps`, `docroot`).
+ */
+export type ServerPayload = Partial<Server> & { password?: string; api_key?: string; metadata?: Record<string, unknown> };
+
+export const createServer = async (server: ServerPayload): Promise<Server> => {
   const { data } = await api.post('/servers', server);
   return data;
 };
 
-export const updateServer = async (id: string, server: Partial<Server> & { password?: string; api_key?: string }): Promise<Server> => {
+export const updateServer = async (id: string, server: ServerPayload): Promise<Server> => {
   const { data } = await api.put(`/servers/${id}`, server);
   return data;
 };
@@ -33,7 +39,8 @@ export const deleteServer = async (id: string): Promise<void> => {
   await api.delete(`/servers/${id}`);
 };
 
-export const testServerConnection = async (id: string): Promise<{ success: boolean; message: string }> => {
+/** Connection test. For ftp / wordpress sources the backend also runs the helper probe and returns its `info`. */
+export const testServerConnection = async (id: string): Promise<ServerTestResponse> => {
   const { data } = await api.post(`/servers/${id}/test`);
   return data;
 };

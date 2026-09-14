@@ -4,6 +4,7 @@ import { PauseCircleIcon, PlayCircleIcon, StopIcon, TrashIcon } from '@heroicons
 import { Badge, Button, IconButton, Mono, PanelMonogram, ProgressBar, StatusBadge, TD, TDPrimary, TR, Tooltip } from '../ui';
 import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n';
+import { isAgentlessPanel } from '../../lib/agentless';
 import { matchStepId } from '../../lib/migrationSteps';
 import { formatDate, formatDuration, formatRelativeTime, percent, realDate, runWindow, shortId } from '../../lib/format';
 import type { Migration, Server } from '../../types';
@@ -32,6 +33,9 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
   const canDelete = m.status !== 'running';
   const isCompleted = m.status === 'completed';
   const sourceSuspended = !!m.source_suspended_at;
+  // FTP / WordPress source: there is nothing to suspend from here; the old site is disabled by hand after DNS.
+  const agentlessSource = isAgentlessPanel(source?.panel_type);
+  const canSuspend = isCompleted && !agentlessSource;
   const warnings = m.warnings ?? 0;
   // The API sends Go's zero time for unset timestamps; treat those as missing.
   const startedAt = realDate(m.started_at);
@@ -131,6 +135,13 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
             </Badge>
           </div>
         )}
+        {isCompleted && agentlessSource && (
+          <div className="mt-1.5">
+            <Badge tone="neutral" size="sm" title={t('migrations.row.manualDisableTip')}>
+              {t('migrations.row.manualDisable')}
+            </Badge>
+          </div>
+        )}
         {m.status === 'failed' && m.error && (
           <div className="mt-1 text-2xs text-rose-600 dark:text-rose-400" title={m.error}>
             <bdi dir="ltr" className="inline-block max-w-[220px] truncate align-bottom">
@@ -178,14 +189,14 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
               {t('migrations.row.cancel')}
             </Button>
           )}
-          {isCompleted && !sourceSuspended && (
+          {canSuspend && !sourceSuspended && (
             <Tooltip content={t('migrations.row.suspendTip')} align="end">
               <Button variant="outline" size="sm" leftIcon={<PauseCircleIcon />} onClick={onSuspendSource}>
                 {t('migrations.row.suspend')}
               </Button>
             </Tooltip>
           )}
-          {isCompleted && sourceSuspended && (
+          {canSuspend && sourceSuspended && (
             <Tooltip content={t('migrations.row.unsuspendTip')} align="end">
               <Button variant="ghost" size="sm" leftIcon={<PlayCircleIcon />} onClick={onUnsuspendSource}>
                 {t('migrations.row.unsuspend')}

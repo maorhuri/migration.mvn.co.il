@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/migration-tool/backend/internal/panels/agentless"
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
@@ -464,6 +465,9 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 			return nil, fmt.Errorf("DirectAdmin connection test failed: %w", err)
 		}
 		return da.ExportAccount(ctx, username, workDir, progress)
+	case common.PanelTypeFTP, common.PanelTypeWordPress:
+		password, _ := e.db.GetServerPassword(ctx, server.ID)
+		return agentless.Export(ctx, server, password, workDir, progress, logFn)
 	default:
 		return nil, fmt.Errorf("unsupported source panel type: %s", server.PanelType)
 	}
@@ -482,6 +486,9 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	server, err := e.db.GetServer(ctx, m.SourceServerID)
 	if err != nil {
 		return nil, fmt.Errorf("source server not found: %w", err)
+	}
+	if agentless.IsAgentless(server.PanelType) {
+		return nil, fmt.Errorf("%s source %s has no panel to suspend; disable the old site manually (for example rename index.php or point the old vhost to a holding page) after the DNS switch", server.PanelType, server.Name)
 	}
 	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
 		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
@@ -949,7 +956,7 @@ func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int
 	if err != nil {
 		return 0, err
 	}
-	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
+	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin && !agentless.IsAgentless(server.PanelType) {
 		return 0, nil
 	}
 	password, _ := e.db.GetDecryptedPassword(ctx, serverID)
@@ -1047,6 +1054,8 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 
 	supportedPaths := map[common.PanelType][]common.PanelType{
 		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance},
+		common.PanelTypeFTP:         {common.PanelTypeEnhance},
+		common.PanelTypeWordPress:   {common.PanelTypeEnhance},
 	}
 	supported := false
 	for _, target := range supportedPaths[sourceType] {
@@ -1062,6 +1071,14 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 	}
 	result.Mappings["source_panel"] = string(sourceType)
 	result.Mappings["target_panel"] = string(targetType)
+	if agentless.IsAgentless(string(sourceType)) {
+		result.Warnings = append(result.Warnings,
+			"Emails, cron jobs and DNS records are not available from an FTP/WordPress-only source; recreate them manually",
+			"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
+			"The old site cannot be suspended by the tool after the switch; disable it manually",
+		)
+		return result, nil
+	}
 	result.Warnings = append(result.Warnings,
 		"Mailbox contents are not migrated; mailboxes are recreated with new passwords",
 		"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
@@ -1274,6 +1291,9 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 			})
 		}
 		return result, nil
+
+	case common.PanelTypeFTP, common.PanelTypeWordPress:
+		return e.agentlessAccounts(ctx, server, password)
 
 	default:
 		return nil, fmt.Errorf("unsupported panel type: %s", server.PanelType)

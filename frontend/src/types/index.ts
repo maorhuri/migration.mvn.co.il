@@ -10,8 +10,46 @@ export interface Server {
   api_endpoint?: string;
   // Enhance specific
   enhance_org_id?: string;
+  /**
+   * Free-form settings per panel type. Agentless sources keep their site here:
+   * ftp -> { site_url, ftps, docroot }, wordpress -> { site_url }.
+   */
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * Facts the agentless helper (mvn-agent.php) reports for an FTP / WordPress source.
+ * Returned as `info` by POST /servers/:id/test. Every field is optional: an older helper or a
+ * non-WordPress docroot leaves parts of it out.
+ */
+export interface AgentlessInfo {
+  ok?: boolean;
+  php_version?: string;
+  /** Shell commands (mysqldump, tar) can run; otherwise the export is pure PHP. */
+  exec?: boolean;
+  wordpress?: boolean;
+  wp_version?: string;
+  table_prefix?: string;
+  multisite?: boolean;
+  site_url?: string;
+  db?: { name?: string; user?: string; host?: string; size?: number | string };
+  docroot?: string;
+  tmp_dir?: string;
+  disk_free?: number;
+  max_execution_time?: number | string;
+  memory_limit?: string;
+  /** Docroot walk with a 15 s budget: `partial` when the budget was hit. */
+  files?: { count?: number; bytes?: number; partial?: boolean };
+  plugins?: { active?: string[]; litespeed_cache?: boolean; wp_rocket?: boolean; object_cache?: boolean };
+}
+
+/** Result of POST /servers/:id/test. `info` is only present for agentless sources. */
+export interface ServerTestResponse {
+  success: boolean;
+  message: string;
+  info?: AgentlessInfo;
 }
 
 export interface ServerInfo {

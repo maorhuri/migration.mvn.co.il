@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, PlayIcon } from '@heroicons/react/16/solid';
+import { ArrowLeftIcon, InformationCircleIcon, PlayIcon } from '@heroicons/react/16/solid';
 import {
   Button,
   Card,
@@ -22,6 +22,7 @@ import {
   panelTone,
 } from '../ui';
 import { useT } from '../../lib/i18n';
+import { isAgentlessPanel } from '../../lib/agentless';
 import type { ClusterServer } from '../../api/client';
 import type { Account, Server } from '../../types';
 import type { MigrationStepStatus } from './types';
@@ -118,6 +119,9 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
   const targetName = targetNode?.friendly_name || targetNode?.hostname || targetServer?.name || t('newmigration.review.targetFallback');
+  // FTP / WordPress sources: only files and the database move; the rest is spelled out in a notice.
+  const agentless = isAgentlessPanel(sourceServer?.panel_type);
+  const notMigrated = ['mail', 'cron', 'ftpUsers', 'dns'] as const;
 
   return (
     <div className="space-y-6">
@@ -156,10 +160,35 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
         </Table>
       </Card>
 
+      {agentless && (
+        <Card edge="warning">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <InformationCircleIcon className="h-5 w-5 shrink-0 text-amber-500" aria-hidden="true" />
+              {t('newmigration.review.agentless.title')}
+            </CardTitle>
+            <CardDescription>{t('newmigration.review.agentless.description')}</CardDescription>
+          </CardHeader>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {notMigrated.map((k) => (
+              <li key={k} className="flex items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 dark:border-white/[0.08] dark:text-slate-300">
+                <span aria-hidden="true" className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                {t(`newmigration.review.agentless.${k}`)}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('newmigration.review.agentless.disable')}</p>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>{t('newmigration.review.plan.title')}</CardTitle>
-          <CardDescription>{t('newmigration.review.plan.description', { steps: t('units.steps', { count: plan.length }) })}</CardDescription>
+          <CardDescription>
+            {agentless
+              ? t('newmigration.review.plan.description.agentless', { steps: t('units.steps', { count: plan.length }) })
+              : t('newmigration.review.plan.description', { steps: t('units.steps', { count: plan.length }) })}
+          </CardDescription>
         </CardHeader>
         <div className="grid gap-6 sm:grid-cols-2">
           <PlanColumn title={t('steps.phase.export', { name: sourceServer?.name ?? t('newmigration.review.sourceFallback') })} steps={exportSteps} offset={0} />
@@ -170,7 +199,7 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
       <Card>
         <CardHeader>
           <CardTitle>{t('newmigration.review.options.title')}</CardTitle>
-          <CardDescription>{t('newmigration.review.options.description')}</CardDescription>
+          <CardDescription>{agentless ? t('newmigration.review.options.description.agentless') : t('newmigration.review.options.description')}</CardDescription>
         </CardHeader>
         <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-white/[0.08] dark:hover:bg-white/[0.03]">
           <Checkbox className="mt-0.5" checked={scanMalware} onChange={(e) => onScanMalwareChange(e.target.checked)} />

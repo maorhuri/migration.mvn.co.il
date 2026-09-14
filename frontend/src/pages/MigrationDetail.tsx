@@ -7,6 +7,7 @@ import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { isAgentlessPanel } from '../lib/agentless';
 import { deriveTimeline, parseInventory } from '../lib/migrationSteps';
 import { MigrationHero } from '../components/migrationdetail/MigrationHero';
 import { NextStepsCard } from '../components/migrationdetail/NextStepsCard';
@@ -219,6 +220,9 @@ export default function MigrationDetail() {
   const awaitingReview = migration.status === 'awaiting_review';
   const isCompleted = migration.status === 'completed';
   const sourceSuspended = !!migration.source_suspended_at;
+  // FTP / WordPress source: nothing to suspend from here; the old site is disabled by hand after DNS.
+  const agentlessSource = isAgentlessPanel(sourceServer?.panel_type);
+  const canSuspend = isCompleted && !agentlessSource;
   const apiError = (error: unknown, fallback: string) =>
     (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
   const submitDecision = async (action: 'clean' | 'skip' | 'abort') => {
@@ -315,7 +319,7 @@ export default function MigrationDetail() {
           meta={
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={migration.status} />
-              {isCompleted && (
+              {canSuspend && (
                 <Badge tone={sourceSuspended ? 'neutral' : 'info'} dot>
                   {sourceSuspended ? t('status.sourceSuspended') : t('status.sourceActive')}
                 </Badge>
@@ -332,12 +336,12 @@ export default function MigrationDetail() {
                   {t('migrationdetail.actions.cancel')}
                 </Button>
               )}
-              {isCompleted && !sourceSuspended && (
+              {canSuspend && !sourceSuspended && (
                 <Button variant="primary" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)}>
                   {t('migrationdetail.actions.suspend')}
                 </Button>
               )}
-              {isCompleted && sourceSuspended && (
+              {canSuspend && sourceSuspended && (
                 <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
                   {t('migrationdetail.actions.unsuspend')}
                 </Button>
@@ -376,6 +380,7 @@ export default function MigrationDetail() {
               domains={domains}
               onSuspend={() => setSuspendOpen(true)}
               onUnsuspend={() => setUnsuspendOpen(true)}
+              manualSourceDisable={agentlessSource}
               className={RISE}
               style={stagger(2)}
             />

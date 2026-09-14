@@ -12,11 +12,13 @@ export const PANEL_TONES: Record<string, BadgeTone> = {
   directadmin: 'blue',
   cpanel: 'orange',
   cloudpanel: 'info',
-  ftp: 'neutral',
-  wordpress: 'brand',
+  ftp: 'lime',
+  wordpress: 'cyan',
 };
 
 export const PANEL_TYPES = ['directadmin', 'enhance', 'cpanel', 'cloudpanel', 'ftp', 'wordpress'] as const;
+/** Control panels reached with root (the "Server" kind of the add-target form). */
+export const SERVER_PANEL_TYPES = ['directadmin', 'enhance', 'cpanel'] as const;
 
 export function panelTone(panelType: string | null | undefined): BadgeTone {
   return PANEL_TONES[panelType ?? ''] ?? 'neutral';
@@ -33,7 +35,7 @@ export function usePanelLabel(): (panelType: string | null | undefined) => strin
 
 /**
  * Panel identity badge: Enhance = violet, DirectAdmin = blue, cPanel = orange,
- * CloudPanel = sky, FTP = neutral, WordPress = brand.
+ * CloudPanel = sky, FTP = lime, WordPress = cyan.
  */
 export function PanelBadge({ panelType, compact, ...rest }: PanelBadgeProps) {
   const label = usePanelLabel();

@@ -1,7 +1,7 @@
 import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 
-export type BadgeTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange';
+export type BadgeTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange' | 'cyan' | 'lime';
 export type BadgeSize = 'sm' | 'md' | 'lg';
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
@@ -30,6 +30,8 @@ export const badgeToneClasses: Record<BadgeTone, string> = {
   violet: 'bg-violet-50 text-violet-700 ring-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/30',
   blue: 'bg-blue-50 text-blue-700 ring-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-500/30',
   orange: 'bg-orange-50 text-orange-700 ring-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:ring-orange-500/30',
+  cyan: 'bg-cyan-50 text-cyan-700 ring-cyan-200 dark:bg-cyan-500/15 dark:text-cyan-300 dark:ring-cyan-500/30',
+  lime: 'bg-lime-50 text-lime-700 ring-lime-200 dark:bg-lime-500/15 dark:text-lime-300 dark:ring-lime-500/30',
 };
 
 export const badgeDotClasses: Record<BadgeTone, string> = {
@@ -42,6 +44,8 @@ export const badgeDotClasses: Record<BadgeTone, string> = {
   violet: 'bg-violet-500',
   blue: 'bg-blue-500',
   orange: 'bg-orange-500',
+  cyan: 'bg-cyan-500',
+  lime: 'bg-lime-500',
 };
 
 const glowClasses: Record<BadgeTone, string> = {
@@ -54,6 +58,8 @@ const glowClasses: Record<BadgeTone, string> = {
   violet: '[--glow:rgb(139_92_246_/_0.18)]',
   blue: '[--glow:rgb(59_130_246_/_0.18)]',
   orange: '[--glow:rgb(249_115_22_/_0.18)]',
+  cyan: '[--glow:rgb(6_182_212_/_0.18)]',
+  lime: '[--glow:rgb(132_204_22_/_0.18)]',
 };
 
 const sizeClasses: Record<BadgeSize, string> = {

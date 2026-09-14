@@ -125,8 +125,8 @@ export const common: PageDict = {
     'panel.enhance': 'Enhance',
     'panel.cpanel': 'cPanel',
     'panel.cloudpanel': 'CloudPanel',
-    'panel.ftp': 'FTP בלבד',
-    'panel.wordpress': 'WordPress בלבד',
+    'panel.ftp': 'FTP',
+    'panel.wordpress': 'WordPress',
     'panel.unknown': 'לא ידוע',
 
     'auth.password': 'סיסמה',
@@ -356,8 +356,8 @@ export const common: PageDict = {
     'panel.enhance': 'Enhance',
     'panel.cpanel': 'cPanel',
     'panel.cloudpanel': 'CloudPanel',
-    'panel.ftp': 'FTP only',
-    'panel.wordpress': 'WordPress only',
+    'panel.ftp': 'FTP',
+    'panel.wordpress': 'WordPress',
     'panel.unknown': 'Unknown',
 
     'auth.password': 'Password',

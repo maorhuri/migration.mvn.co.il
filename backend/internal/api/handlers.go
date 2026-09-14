@@ -2,14 +2,17 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/migration-tool/backend/internal/migration"
+	"github.com/migration-tool/backend/internal/panels/agentless"
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/storage"
 	"github.com/migration-tool/backend/pkg/logger"
@@ -113,17 +116,19 @@ func (h *Handler) healthCheck(c *gin.Context) {
 // Server handlers
 
 type CreateServerRequest struct {
-	Name        string            `json:"name" binding:"required"`
-	PanelType   string            `json:"panel_type" binding:"required"`
-	Host        string            `json:"host" binding:"required"`
-	Port        int               `json:"port"`
-	Username    string            `json:"username" binding:"required"`
-	AuthMethod  string            `json:"auth_method" binding:"required"`
-	SSHKeyID    string            `json:"ssh_key_id,omitempty"`
-	APIEndpoint string            `json:"api_endpoint,omitempty"`
-	APIKey      string            `json:"api_key,omitempty"`
-	Password    string            `json:"password,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Name        string `json:"name" binding:"required"`
+	PanelType   string `json:"panel_type" binding:"required"`
+	Host        string `json:"host" binding:"required"`
+	Port        int    `json:"port"`
+	Username    string `json:"username" binding:"required"`
+	AuthMethod  string `json:"auth_method" binding:"required"`
+	SSHKeyID    string `json:"ssh_key_id,omitempty"`
+	APIEndpoint string `json:"api_endpoint,omitempty"`
+	APIKey      string `json:"api_key,omitempty"`
+	Password    string `json:"password,omitempty"`
+	// Metadata: enhance_org_id for Enhance; site_url, ftps, docroot (and optional db_host,
+	// db_user, db_pass, db_name for the FTP fallback) for ftp/wordpress sources.
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 	// Enhance specific
 	EnhanceOrgID string `json:"enhance_org_id,omitempty"`
 }
@@ -155,16 +160,13 @@ func (h *Handler) createServer(c *gin.Context) {
 		return
 	}
 
+	if err := validateServerRequest(&req, true); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if req.Port == 0 {
-		req.Port = 22
+		req.Port = defaultPort(req.PanelType)
 	}
-
-	// Build metadata with Enhance-specific fields
-	metadata := make(map[string]interface{})
-	if req.EnhanceOrgID != "" {
-		metadata["enhance_org_id"] = req.EnhanceOrgID
-	}
-	metadataJSON, _ := json.Marshal(metadata)
 
 	server := &storage.Server{
 		Name:       req.Name,
@@ -173,15 +175,11 @@ func (h *Handler) createServer(c *gin.Context) {
 		Port:       req.Port,
 		Username:   req.Username,
 		AuthMethod: req.AuthMethod,
-		Metadata:   metadataJSON,
+		Metadata:   mergeServerMetadata(nil, &req, "", false),
 	}
 
 	server.SSHKeyID = storage.NewNullString(req.SSHKeyID)
 	server.APIEndpoint = storage.NewNullString(req.APIEndpoint)
-	if req.AuthMethod == "ssh_key" && req.SSHKeyID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "select an SSH key when the authentication method is SSH key"})
-		return
-	}
 
 	if err := h.db.CreateServer(c.Request.Context(), server, req.Password, req.APIKey); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -217,7 +215,12 @@ func (h *Handler) updateServer(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
 		return
 	}
+	if err := validateServerRequest(&req, false); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
+	previousHost, typeChanged := server.Host, server.PanelType != req.PanelType
 	server.Name = req.Name
 	server.PanelType = req.PanelType
 	server.Host = req.Host
@@ -227,28 +230,12 @@ func (h *Handler) updateServer(c *gin.Context) {
 	server.Username = req.Username
 	server.AuthMethod = req.AuthMethod
 	server.SSHKeyID = storage.NewNullString(req.SSHKeyID)
-	if req.AuthMethod == "ssh_key" && req.SSHKeyID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "select an SSH key when the authentication method is SSH key"})
-		return
-	}
 	if req.APIEndpoint != "" || req.PanelType != "enhance" {
 		server.APIEndpoint = storage.NewNullString(req.APIEndpoint)
 	}
 
-	// Merge Enhance settings into metadata without dropping other keys
-	if req.EnhanceOrgID != "" {
-		meta := map[string]interface{}{}
-		if len(server.Metadata) > 0 {
-			_ = json.Unmarshal(server.Metadata, &meta)
-		}
-		meta["enhance_org_id"] = req.EnhanceOrgID
-		if b, err := json.Marshal(meta); err == nil {
-			server.Metadata = b
-		}
-	}
-	if len(server.Metadata) == 0 {
-		server.Metadata = json.RawMessage("{}")
-	}
+	// Merge the request's metadata over the stored one without dropping other keys
+	server.Metadata = mergeServerMetadata(server.Metadata, &req, previousHost, typeChanged)
 
 	if err := h.db.UpdateServer(c.Request.Context(), server, req.Password, req.APIKey); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -275,6 +262,12 @@ func (h *Handler) testServerConnection(c *gin.Context) {
 	server, err := h.db.GetServer(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	// FTP / WordPress sources: upload the helper, read its info, remove it
+	if agentless.IsAgentless(server.PanelType) {
+		h.testAgentlessConnection(c, server)
 		return
 	}
 
@@ -447,6 +440,17 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 		"server_id":  id,
 		"panel_type": server.PanelType,
 	})
+
+	// Agentless sources: a refresh re-probes the site (the list itself reuses the last probe)
+	if agentless.IsAgentless(server.PanelType) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
+		defer cancel()
+		if _, err := h.engine.ProbeAgentless(ctx, server, password); err != nil {
+			h.logger.Error("Agentless probe failed", err, map[string]interface{}{"server_id": id})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	if err != nil {

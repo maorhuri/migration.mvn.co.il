@@ -11,11 +11,13 @@ import {
   getSSHKeys,
   refreshServerAccounts,
 } from '../api/client';
-import type { Server, SSHKey } from '../types';
-import { Button, Card, ConfirmDialog, EmptyState, Input, Mono, PageHeader, Select } from '../components/ui';
+import type { Server, ServerTestResponse, SSHKey } from '../types';
+import { Button, Card, ConfirmDialog, EmptyState, Input, Modal, Mono, PageHeader, PanelMonogram, Select } from '../components/ui';
 import { useT } from '../lib/i18n';
+import { isAgentlessPanel, serverSiteUrl } from '../lib/agentless';
 import { ServerCard, ServerCardSkeleton, type ServerTestResult } from '../components/servers/ServerCard';
-import { EMPTY_SERVER_FORM, ServerFormModal, usePanelTypeOptions, type ServerFormData } from '../components/servers/ServerFormModal';
+import { ProbeResultCard } from '../components/servers/ProbeResultCard';
+import { EMPTY_SERVER_FORM, ServerFormModal, buildServerPayload, serverToForm, usePanelTypeOptions, type ServerFormData } from '../components/servers/ServerFormModal';
 
 // Two roomy cards per row; three only on wide screens (2xl) where each card still holds a full name, a test chip and both actions.
 const GRID = 'grid gap-4 md:grid-cols-2 2xl:grid-cols-3';
@@ -37,6 +39,9 @@ export default function Servers() {
   const [serverToDelete, setServerToDelete] = useState<Server | null>(null);
   // Result of the last "Test connection" per server in this session (presence chip on the card).
   const [lastTests, setLastTests] = useState<Record<string, ServerTestResult>>({});
+  // Probe dialog for agentless sources: what the helper reported on the last test.
+  const [probe, setProbe] = useState<{ server: Server; response: ServerTestResponse } | null>(null);
+  const [probeOpen, setProbeOpen] = useState(false);
 
   // Toolbar filters (client-side only)
   const [query, setQuery] = useState('');
@@ -75,19 +80,7 @@ export default function Servers() {
 
   const openEdit = (server: Server) => {
     setEditingServer(server);
-    setFormData({
-      name: server.name,
-      panel_type: server.panel_type,
-      host: server.host,
-      port: server.port,
-      username: server.username,
-      auth_method: server.auth_method,
-      password: '',
-      ssh_key_id: server.ssh_key_id ?? '',
-      api_endpoint: server.api_endpoint ?? '',
-      api_key: '',
-      enhance_org_id: server.enhance_org_id ?? '',
-    });
+    setFormData(serverToForm(server));
     setIsModalOpen(true);
   };
 
@@ -100,9 +93,10 @@ export default function Servers() {
     e.preventDefault();
     setSaving(true);
     try {
+      const payload = buildServerPayload(formData);
       if (editingServer) {
         // Secrets are never returned by the API — blank means "keep current".
-        const { password, api_key, ...rest } = formData;
+        const { password, api_key, ...rest } = payload;
         await updateServer(editingServer.id, {
           ...rest,
           ...(password ? { password } : {}),
@@ -110,8 +104,8 @@ export default function Servers() {
         });
         toast.success(t('servers.toast.updated'));
       } else {
-        await createServer(formData);
-        toast.success(t('servers.toast.added'));
+        await createServer(payload);
+        toast.success(isAgentlessPanel(payload.panel_type) ? t('servers.toast.addedProbe') : t('servers.toast.added'));
       }
       setIsModalOpen(false);
       setEditingServer(null);
@@ -142,16 +136,25 @@ export default function Servers() {
     }
   };
 
-  const handleTest = async (id: string) => {
+  const showProbe = (server: Server, response: ServerTestResponse) => {
+    setProbe({ server, response });
+    setProbeOpen(true);
+  };
+
+  const handleTest = async (server: Server) => {
+    const id = server.id;
+    const agentless = isAgentlessPanel(server.panel_type);
     setTestingServer(id);
     try {
       const result = await testServerConnection(id);
       if (result.success) {
         toast.success(t('servers.toast.testOk'));
-      } else {
+      } else if (!agentless) {
         toast.error(t('servers.toast.testFailed', { message: result.message }));
       }
-      setLastTests((prev) => ({ ...prev, [id]: { ok: result.success, at: new Date() } }));
+      setLastTests((prev) => ({ ...prev, [id]: { ok: result.success, at: new Date(), response: agentless ? result : undefined } }));
+      // Agentless sources: the probe facts (or the classified error) open in a dialog.
+      if (agentless) showProbe(server, result);
     } catch (error) {
       toast.error(t('servers.toast.testError'));
       setLastTests((prev) => ({ ...prev, [id]: { ok: false, at: new Date() } }));
@@ -169,9 +172,9 @@ export default function Servers() {
     setRefreshingServer(id);
     try {
       await refreshServerAccounts(id);
-      toast.success(t('servers.toast.refreshed'));
+      toast.success(isAgentlessPanel(panelType) ? t('servers.toast.reprobed') : t('servers.toast.refreshed'));
     } catch (error) {
-      toast.error(t('servers.toast.refreshFailed'));
+      toast.error(isAgentlessPanel(panelType) ? t('servers.toast.reprobeFailed') : t('servers.toast.refreshFailed'));
     } finally {
       setRefreshingServer(null);
     }
@@ -182,7 +185,7 @@ export default function Servers() {
     return servers.filter((s) => {
       if (panelFilter && s.panel_type !== panelFilter) return false;
       if (!q) return true;
-      return [s.name, s.host, s.username, `${s.host}:${s.port}`].some((v) => v.toLowerCase().includes(q));
+      return [s.name, s.host, s.username, `${s.host}:${s.port}`, serverSiteUrl(s)].some((v) => v.toLowerCase().includes(q));
     });
   }, [servers, query, panelFilter]);
 
@@ -286,11 +289,15 @@ export default function Servers() {
             testing={testingServer === server.id}
             refreshing={refreshingServer === server.id}
             lastTest={lastTests[server.id]}
-            onTest={() => handleTest(server.id)}
+            onTest={() => handleTest(server)}
             onRefresh={() => handleRefresh(server.id, server.panel_type)}
             onView={() => navigate(`/servers/${server.id}`)}
             onEdit={() => openEdit(server)}
             onDelete={() => openDeleteModal(server)}
+            onShowProbe={() => {
+              const last = lastTests[server.id];
+              if (last?.response) showProbe(server, last.response);
+            }}
           />
         ))}
       </div>
@@ -360,6 +367,26 @@ export default function Servers() {
         sshKeys={sshKeys}
         saving={saving}
       />
+
+      <Modal
+        open={probeOpen}
+        onClose={() => setProbeOpen(false)}
+        size="lg"
+        title={
+          <span className="inline-flex items-center gap-2">
+            <PanelMonogram panelType={probe?.server.panel_type} size="sm" />
+            {t('servers.probe.title')}
+          </span>
+        }
+        description={probe ? t.rich('servers.probe.description', { name: <bdi className="font-medium text-slate-700 dark:text-slate-300">{probe.server.name}</bdi> }) : undefined}
+        footer={
+          <Button variant="secondary" onClick={() => setProbeOpen(false)}>
+            {t('common.close')}
+          </Button>
+        }
+      >
+        {probe && <ProbeResultCard result={probe.response} />}
+      </Modal>
 
       <ConfirmDialog
         open={deleteModalOpen}

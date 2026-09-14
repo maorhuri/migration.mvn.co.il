@@ -21,15 +21,17 @@ export interface MigrationCompleteProps {
   migrationIds: string[];
   /** Wall-clock length of the whole run (all accounts). */
   elapsedMs?: number;
+  /** FTP / WordPress source: the tool cannot suspend it, so step 4 is "disable the old site by hand". */
+  agentlessSource?: boolean;
   onStartNew: () => void;
   onViewAll: () => void;
 }
 
-type NextKey = 'hosts' | 'verify' | 'dns';
+type NextKey = 'hosts' | 'verify' | 'dns' | 'disable';
 type NextState = Record<NextKey, boolean>;
-const NEXT_DEFAULT: NextState = { hosts: false, verify: false, dns: false };
-/** Step numbers the migration detail page stores under `mt-next:<id>` (1 hosts, 2 verify, 3 DNS). */
-const NEXT_KEYS: NextKey[] = ['hosts', 'verify', 'dns'];
+const NEXT_DEFAULT: NextState = { hosts: false, verify: false, dns: false, disable: false };
+/** Step numbers the migration detail page stores under `mt-next:<id>` (1 hosts, 2 verify, 3 DNS, 4 disable the old site by hand). */
+const NEXT_KEYS: NextKey[] = ['hosts', 'verify', 'dns', 'disable'];
 const storageKey = (id: string) => `mt-next:${id}`;
 
 /** Ticks of the first migration of the run, in the detail page's format, so both screens agree. */
@@ -39,7 +41,7 @@ function readNext(ids: string[]): NextState {
     const raw = localStorage.getItem(storageKey(ids[0]));
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return NEXT_DEFAULT;
-    return { hosts: parsed.includes(1), verify: parsed.includes(2), dns: parsed.includes(3) };
+    return { hosts: parsed.includes(1), verify: parsed.includes(2), dns: parsed.includes(3), disable: parsed.includes(4) };
   } catch {
     return NEXT_DEFAULT;
   }
@@ -83,7 +85,7 @@ function DrawnMark({ warning }: { warning: boolean }) {
 }
 
 /** Summary shown once every selected account has migrated, followed by the cutover checklist. */
-export function MigrationComplete({ warningCount, warningLogs, targetNode, accounts, hostsEntry, logs, migrationIds, elapsedMs, onStartNew, onViewAll }: MigrationCompleteProps) {
+export function MigrationComplete({ warningCount, warningLogs, targetNode, accounts, hostsEntry, logs, migrationIds, elapsedMs, agentlessSource, onStartNew, onViewAll }: MigrationCompleteProps) {
   const t = useT();
   const hasWarnings = warningCount > 0;
   const inventory = useMemo(() => parseInventory(logs), [logs]);
@@ -101,7 +103,7 @@ export function MigrationComplete({ warningCount, warningLogs, targetNode, accou
       writeNext(migrationIds, value);
       return value;
     });
-  const doneCount = (['hosts', 'verify', 'dns'] as NextKey[]).filter((k) => next[k]).length;
+  const doneCount = (['hosts', 'verify', 'dns', ...(agentlessSource ? (['disable'] as NextKey[]) : [])] as NextKey[]).filter((k) => next[k]).length;
 
   const hasDuration = elapsedMs !== undefined && elapsedMs > 0;
   const single = accounts.length === 1 && !!accounts[0].domain;
@@ -147,7 +149,7 @@ export function MigrationComplete({ warningCount, warningLogs, targetNode, accou
       <Card>
         <CardHeader>
           <CardTitle>{t('newmigration.complete.next.title')}</CardTitle>
-          <CardDescription>{t('newmigration.complete.next.description')}</CardDescription>
+          <CardDescription>{agentlessSource ? t('newmigration.complete.next.description.agentless') : t('newmigration.complete.next.description')}</CardDescription>
         </CardHeader>
         <Checklist progress={{ done: doneCount, total: 4 }}>
           <ChecklistItem
@@ -211,6 +213,16 @@ export function MigrationComplete({ warningCount, warningLogs, targetNode, accou
             toggleLabel={t('newmigration.complete.dns.markDone')}
           />
 
+          {agentlessSource ? (
+            <ChecklistItem
+              index={4}
+              title={t('newmigration.complete.disable.title')}
+              description={t('newmigration.complete.disable.description')}
+              done={next.disable}
+              onToggle={() => toggle('disable')}
+              toggleLabel={t('newmigration.complete.disable.markDone')}
+            />
+          ) : (
           <ChecklistItem
             index={4}
             title={t('newmigration.complete.suspend.title')}
@@ -231,6 +243,7 @@ export function MigrationComplete({ warningCount, warningLogs, targetNode, accou
               ) : undefined
             }
           />
+          )}
         </Checklist>
       </Card>
 

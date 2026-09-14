@@ -434,6 +434,15 @@ func (d *Database) UpdateServer(ctx context.Context, server *Server, password, a
 	return err
 }
 
+// SetServerMetadata replaces the metadata JSON of a server (probe results, agentless settings)
+func (d *Database) SetServerMetadata(ctx context.Context, id string, metadata json.RawMessage) error {
+	if len(metadata) == 0 {
+		metadata = json.RawMessage("{}")
+	}
+	_, err := d.db.ExecContext(ctx, "UPDATE servers SET metadata = $2, updated_at = NOW() WHERE id = $1", id, metadata)
+	return err
+}
+
 // DeleteServer deletes a server
 func (d *Database) DeleteServer(ctx context.Context, id string) error {
 	_, err := d.db.ExecContext(ctx, "DELETE FROM servers WHERE id = $1", id)

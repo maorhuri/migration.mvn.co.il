@@ -18,4 +18,6 @@ export const PANEL_FILTER_OPTIONS = [
   { id: 'enhance', labelKey: 'panel.enhance' },
   { id: 'cpanel', labelKey: 'panel.cpanel' },
   { id: 'cloudpanel', labelKey: 'panel.cloudpanel' },
+  { id: 'ftp', labelKey: 'panel.ftp' },
+  { id: 'wordpress', labelKey: 'panel.wordpress' },
 ] as const;

@@ -15,12 +15,13 @@ export interface NextStepsCardProps {
   /** Opens the existing suspend / unsuspend confirm dialogs. */
   onSuspend: () => void;
   onUnsuspend: () => void;
+  /** FTP / WordPress source: the tool cannot suspend it, so step 4 is a manual "disable the old site" tick. */
+  manualSourceDisable?: boolean;
   className?: string;
   style?: CSSProperties;
 }
 
 const WINDOWS_HOSTS = 'C:\\Windows\\System32\\drivers\\etc\\hosts';
-const MANUAL_STEPS = [1, 2, 3] as const;
 const TOTAL = 4;
 
 const storageKey = (id: string) => `mt-next:${id}`;
@@ -62,7 +63,7 @@ function DomainList({ domains }: { domains: string[] }) {
  * switch DNS, suspend the source. Steps 1-3 are ticked by hand and remembered per migration in
  * localStorage; step 4 is derived from `source_suspended_at` and opens the existing dialogs.
  */
-export function NextStepsCard({ migration, sourceName, hostsEntry, domains, onSuspend, onUnsuspend, className, style }: NextStepsCardProps) {
+export function NextStepsCard({ migration, sourceName, hostsEntry, domains, onSuspend, onUnsuspend, manualSourceDisable, className, style }: NextStepsCardProps) {
   const t = useT();
   const [manual, setManual] = useState<number[]>(() => readDone(migration.id));
   useEffect(() => {
@@ -78,7 +79,9 @@ export function NextStepsCard({ migration, sourceName, hostsEntry, domains, onSu
 
   const suspended = !!migration.source_suspended_at;
   const isDone = (step: number) => manual.includes(step);
-  const done = MANUAL_STEPS.filter(isDone).length + (suspended ? 1 : 0);
+  // Steps 1-3 are always manual ticks; step 4 is too for agentless sources, otherwise it follows the suspend state.
+  const manualSteps = manualSourceDisable ? [1, 2, 3, 4] : [1, 2, 3];
+  const done = manualSteps.filter(isDone).length + (manualSourceDisable ? 0 : suspended ? 1 : 0);
   const allDone = done === TOTAL;
 
   const dnsDomains = domains.length > 0 ? domains : migration.export_data?.account?.domain ? [migration.export_data.account.domain] : [];
@@ -163,6 +166,16 @@ export function NextStepsCard({ migration, sourceName, hostsEntry, domains, onSu
           }
         />
 
+        {manualSourceDisable ? (
+          <ChecklistItem
+            index={4}
+            title={t('migrationdetail.next.disable.title')}
+            done={isDone(4)}
+            onToggle={() => toggle(4)}
+            toggleLabel={t('migrationdetail.next.markDone', { step: t('migrationdetail.next.disable.title') })}
+            description={t('migrationdetail.next.disable.description')}
+          />
+        ) : (
         <ChecklistItem
           index={4}
           title={t('migrationdetail.next.suspend.title')}
@@ -188,6 +201,7 @@ export function NextStepsCard({ migration, sourceName, hostsEntry, domains, onSu
             )
           }
         />
+        )}
       </Checklist>
     </Card>
   );

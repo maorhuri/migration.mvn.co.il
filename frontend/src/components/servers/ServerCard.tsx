@@ -1,15 +1,18 @@
 import type { CSSProperties, ReactNode } from 'react';
-import { ArrowPathIcon, ArrowRightIcon, PencilSquareIcon, SignalIcon, TrashIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, ArrowRightIcon, ArrowTopRightOnSquareIcon, PencilSquareIcon, SignalIcon, TrashIcon } from '@heroicons/react/20/solid';
 import { Badge, Button, Card, IconButton, Mono, PanelBadge, PanelMonogram, Skeleton, StatusBadge, Tooltip, panelTone, surfaceClasses } from '../ui';
 import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n';
 import { formatDate, formatRelativeTime } from '../../lib/format';
-import type { Server } from '../../types';
+import { isAgentlessPanel, serverDocroot, serverFtps, serverSiteUrl } from '../../lib/agentless';
+import type { Server, ServerTestResponse } from '../../types';
 
 /** Result of the last "Test connection" click in this session (no API change: the page keeps it in state). */
 export interface ServerTestResult {
   ok: boolean;
   at: Date;
+  /** Full response for agentless sources (the probe facts are shown in a dialog). */
+  response?: ServerTestResponse;
 }
 
 export interface ServerCardProps {
@@ -23,6 +26,8 @@ export interface ServerCardProps {
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** Opens the probe result of the last test again (agentless sources only). */
+  onShowProbe?: () => void;
   className?: string;
   style?: CSSProperties;
 }
@@ -38,13 +43,34 @@ function Row({ label, title, children }: { label: string; title?: string; childr
   );
 }
 
+/** The site URL as an external link, LTR mono. */
+function SiteLink({ url, name }: { url: string; name: string }) {
+  const t = useT();
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={t('servers.card.openSite', { name })}
+      className="inline-flex max-w-full items-center gap-1 rounded-sm text-slate-900 transition-colors hover:text-brand-700 dark:text-slate-100 dark:hover:text-brand-300"
+    >
+      <Mono>{url.replace(/^https?:\/\//, '')}</Mono>
+      <ArrowTopRightOnSquareIcon className="flip-rtl h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+    </a>
+  );
+}
+
 /**
  * One server, one answer: can I reach this box and what is on it.
  * Panel identity on the top edge and the monogram; actions reveal on hover and stay keyboard-reachable.
+ * Agentless sources (FTP / WordPress) lead with the site URL instead of an SSH host.
  */
-export function ServerCard({ server, testing, refreshing, lastTest, onTest, onRefresh, onView, onEdit, onDelete, className, style }: ServerCardProps) {
+export function ServerCard({ server, testing, refreshing, lastTest, onTest, onRefresh, onView, onEdit, onDelete, onShowProbe, className, style }: ServerCardProps) {
   const t = useT();
   const isTarget = server.panel_type === 'enhance';
+  const agentless = isAgentlessPanel(server.panel_type);
+  const siteUrl = serverSiteUrl(server);
+  const docroot = serverDocroot(server);
 
   return (
     <Card
@@ -72,9 +98,9 @@ export function ServerCard({ server, testing, refreshing, lastTest, onTest, onRe
 
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 motion-reduce:opacity-100 [@media(hover:none)]:opacity-100">
           {server.panel_type !== 'enhance' && (
-            <Tooltip content={t('servers.card.refresh')} side="bottom" align="end">
+            <Tooltip content={agentless ? t('servers.card.refreshSite') : t('servers.card.refresh')} side="bottom" align="end">
               <IconButton
-                aria-label={t('servers.card.refreshAria', { name: server.name })}
+                aria-label={agentless ? t('servers.card.refreshSiteAria', { name: server.name }) : t('servers.card.refreshAria', { name: server.name })}
                 icon={<ArrowPathIcon />}
                 size="sm"
                 tone="success"
@@ -93,20 +119,53 @@ export function ServerCard({ server, testing, refreshing, lastTest, onTest, onRe
       </div>
 
       <dl className="mt-4 divide-y divide-slate-100 border-t border-slate-100 dark:divide-white/[0.06] dark:border-white/[0.06]">
-        <Row label={t('servers.card.host')} title={`${server.host}:${server.port}`}>
-          <Mono className="text-slate-900 dark:text-slate-100">
-            {server.host}
-            <span className="text-slate-400 dark:text-slate-500">:{server.port}</span>
-          </Mono>
-        </Row>
-        <Row label={t('servers.card.user')}>
-          <Mono>{server.username}</Mono>
-        </Row>
-        <Row label={t('servers.card.auth')}>
-          <Badge tone="neutral" size="sm">
-            {t(`auth.${server.auth_method}`)}
-          </Badge>
-        </Row>
+        {agentless ? (
+          <>
+            <Row label={t('servers.card.site')} title={siteUrl}>
+              {siteUrl ? <SiteLink url={siteUrl} name={server.name} /> : <span className="text-slate-400 dark:text-slate-500">—</span>}
+            </Row>
+            {server.panel_type === 'ftp' && (
+              <Row label={t('servers.card.ftpHost')} title={`${server.host}:${server.port}`}>
+                <span className="inline-flex max-w-full items-center gap-1.5">
+                  {serverFtps(server) && (
+                    <Badge tone="success" size="sm">
+                      {t('servers.card.ftps')}
+                    </Badge>
+                  )}
+                  <Mono className="text-slate-900 dark:text-slate-100">
+                    {server.host}
+                    <span className="text-slate-400 dark:text-slate-500">:{server.port}</span>
+                  </Mono>
+                </span>
+              </Row>
+            )}
+            <Row label={server.panel_type === 'wordpress' ? t('servers.card.adminUser') : t('servers.card.user')}>
+              <Mono>{server.username}</Mono>
+            </Row>
+            {server.panel_type === 'ftp' && (
+              <Row label={t('servers.card.path')} title={docroot || undefined}>
+                {docroot ? <Mono>{docroot}</Mono> : <span className="text-slate-500 dark:text-slate-400">{t('servers.card.autoDetect')}</span>}
+              </Row>
+            )}
+          </>
+        ) : (
+          <>
+            <Row label={t('servers.card.host')} title={`${server.host}:${server.port}`}>
+              <Mono className="text-slate-900 dark:text-slate-100">
+                {server.host}
+                <span className="text-slate-400 dark:text-slate-500">:{server.port}</span>
+              </Mono>
+            </Row>
+            <Row label={t('servers.card.user')}>
+              <Mono>{server.username}</Mono>
+            </Row>
+            <Row label={t('servers.card.auth')}>
+              <Badge tone="neutral" size="sm">
+                {t(`auth.${server.auth_method}`)}
+              </Badge>
+            </Row>
+          </>
+        )}
         <Row label={t('servers.card.added')}>
           <span title={formatDate(server.created_at)}>{formatRelativeTime(server.created_at)}</span>
         </Row>
@@ -120,13 +179,29 @@ export function ServerCard({ server, testing, refreshing, lastTest, onTest, onRe
           {testing ? (
             <StatusBadge status="testing" size="sm" />
           ) : lastTest ? (
-            <StatusBadge
-              key={lastTest.at.getTime()}
-              status={lastTest.ok ? 'connected' : 'disconnected'}
-              size="sm"
-              title={t('servers.card.testedAt', { time: formatDate(lastTest.at.toISOString()) })}
-              className="motion-safe:animate-scale-in"
-            />
+            agentless && lastTest.response && onShowProbe ? (
+              <button
+                type="button"
+                onClick={onShowProbe}
+                title={t('servers.card.showProbe')}
+                className="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:focus-visible:ring-brand-300"
+              >
+                <StatusBadge
+                  key={lastTest.at.getTime()}
+                  status={lastTest.ok ? 'connected' : 'disconnected'}
+                  size="sm"
+                  className="cursor-pointer motion-safe:animate-scale-in"
+                />
+              </button>
+            ) : (
+              <StatusBadge
+                key={lastTest.at.getTime()}
+                status={lastTest.ok ? 'connected' : 'disconnected'}
+                size="sm"
+                title={t('servers.card.testedAt', { time: formatDate(lastTest.at.toISOString()) })}
+                className="motion-safe:animate-scale-in"
+              />
+            )
           ) : null}
         </span>
         <Button variant="ghost" size="sm" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={onView} className="ms-auto">

@@ -63,13 +63,20 @@ export function Figure({ label, value, hint, tone = 'neutral', mono, live, size 
   );
 }
 
-/** A quiet strip of Figures (2 / 3 / 6 columns) with hairline dividers. */
-export function FigureStrip({ children, className }: { children: ReactNode; className?: string }) {
+const stripColumns = {
+  3: 'sm:grid-cols-3',
+  4: 'sm:grid-cols-4',
+  6: 'sm:grid-cols-3 xl:grid-cols-6',
+};
+
+/** A quiet strip of Figures (2 columns, then `columns` from sm/xl: 3, 4 or 6) with hairline dividers. */
+export function FigureStrip({ children, columns = 6, className }: { children: ReactNode; columns?: 3 | 4 | 6; className?: string }) {
   return (
     <StripContext.Provider value={true}>
       <dl
         className={cn(
-          'grid grid-cols-2 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-slate-50/60 sm:grid-cols-3 sm:divide-x sm:divide-y-0 rtl:sm:divide-x-reverse xl:grid-cols-6',
+          'grid grid-cols-2 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-slate-50/60 sm:divide-x sm:divide-y-0 rtl:sm:divide-x-reverse',
+          stripColumns[columns],
           'dark:divide-white/[0.06] dark:border-white/[0.06] dark:bg-white/[0.02]',
           className,
         )}

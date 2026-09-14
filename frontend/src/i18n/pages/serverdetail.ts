@@ -8,10 +8,13 @@ import type { PageDict } from '../types';
 export const serverdetail: PageDict = {
   he: {
     'serverdetail.eyebrow': 'שרת',
+    'serverdetail.eyebrow.ftp': 'מקור FTP',
+    'serverdetail.eyebrow.wordpress': 'אתר WordPress',
 
     // Header actions
     'serverdetail.actions.test': 'בדוק חיבור',
     'serverdetail.actions.refresh': 'רענן חשבונות',
+    'serverdetail.actions.refreshSite': 'בדוק את האתר מחדש',
     'serverdetail.actions.newMigration': 'מיגרציה חדשה',
     'serverdetail.actions.reload': 'טען מחדש',
 
@@ -26,10 +29,23 @@ export const serverdetail: PageDict = {
     'serverdetail.stats.diskOf': 'מתוך {total}',
     'serverdetail.stats.webServer': 'שרת web',
     'serverdetail.stats.testToLoad': 'ייטען אחרי בדיקת חיבור',
+    'serverdetail.stats.wordpressVersion': 'WordPress',
+    'serverdetail.stats.wpDetected': 'זוהה',
+    'serverdetail.stats.wpNotDetected': 'לא זוהה',
+    'serverdetail.stats.php': 'PHP',
+    'serverdetail.stats.phpHint': 'הגרסה שהאתר רץ עליה',
+    'serverdetail.stats.database': 'מסד נתונים',
 
     // Connection card
     'serverdetail.connection.title': 'חיבור',
     'serverdetail.connection.description': 'איך MVNMigrate מתחבר לשרת הזה.',
+    'serverdetail.connection.description.agentless': 'איך MVNMigrate מגיע לאתר הזה.',
+    'serverdetail.connection.siteUrl': 'כתובת האתר',
+    'serverdetail.connection.ftpHost': 'FTP host',
+    'serverdetail.connection.ftps': 'FTPS',
+    'serverdetail.connection.docroot': 'נתיב בשרת ה-FTP',
+    'serverdetail.connection.autoDetect': 'זיהוי אוטומטי',
+    'serverdetail.connection.adminUser': 'משתמש wp-admin',
     'serverdetail.connection.host': 'Host',
     'serverdetail.connection.port': 'פורט',
     'serverdetail.connection.username': 'שם משתמש',
@@ -54,6 +70,23 @@ export const serverdetail: PageDict = {
     'serverdetail.system.empty.b1': 'מערכת הפעלה ושרת web',
     'serverdetail.system.empty.b2': 'נפח כולל ונפח בשימוש',
     'serverdetail.system.empty.b3': 'גרסאות PHP שמותקנות',
+
+    // Site probe card (FTP / WordPress sources)
+    'serverdetail.probe.title': 'בדיקת האתר',
+    'serverdetail.probe.description': 'מה קובץ העזר דיווח בבדיקת החיבור האחרונה.',
+    'serverdetail.probe.empty.title': 'עדיין אין תוצאת בדיקה',
+    'serverdetail.probe.empty.lead': 'בדיקת חיבור אחת מעלה קובץ עזר זמני ומחזירה:',
+    'serverdetail.probe.empty.b1': 'גרסאות WordPress ו-PHP',
+    'serverdetail.probe.empty.b2': 'מספר הקבצים, הגודל ומסד הנתונים',
+    'serverdetail.probe.empty.b3': 'הרצת פקודות ותוספי מטמון שדורשים טיפול',
+
+    // Site card (FTP / WordPress sources)
+    'serverdetail.site.title': 'האתר',
+    'serverdetail.site.empty.title': 'האתר עדיין לא נסרק',
+    'serverdetail.site.empty.lead': 'בדיקה מחדש מעלה את קובץ העזר ומחזירה:',
+    'serverdetail.site.empty.b1': 'הדומיין וגרסת ה-PHP',
+    'serverdetail.site.empty.b2': 'נפח הקבצים וגודל מסד הנתונים',
+    'serverdetail.site.empty.b3': 'זיהוי WordPress',
 
     // Accounts card
     'serverdetail.accounts.title': 'חשבונות',
@@ -103,24 +136,6 @@ export const serverdetail: PageDict = {
     'serverdetail.modal.databases.empty': 'אין מסדי נתונים בחשבון הזה',
     'serverdetail.modal.totalSize': 'גודל כולל',
 
-    // Edit modal
-    'serverdetail.edit.title': 'עריכת שרת',
-    'serverdetail.edit.description': 'פרטי החיבור לפאנל או לשרת.',
-    'serverdetail.edit.name': 'שם השרת',
-    'serverdetail.edit.namePlaceholder': 'שם לזיהוי בממשק',
-    'serverdetail.edit.panel': 'סוג פאנל',
-    'serverdetail.edit.host': 'Host',
-    'serverdetail.edit.port': 'פורט',
-    'serverdetail.edit.username': 'שם משתמש',
-    'serverdetail.edit.auth': 'שיטת אימות',
-    'serverdetail.edit.password': 'סיסמה',
-    'serverdetail.edit.passwordHint': 'השאר ריק כדי לשמור על הסיסמה הנוכחית',
-    'serverdetail.edit.sshKey': 'מפתח SSH',
-    'serverdetail.edit.selectKey': 'בחר מפתח SSH',
-    'serverdetail.edit.apiEndpoint': 'כתובת API',
-    'serverdetail.edit.apiKey': 'מפתח API',
-    'serverdetail.edit.apiKeyHint': 'השאר ריק כדי לשמור על המפתח הנוכחי',
-    'serverdetail.edit.save': 'שמור שינויים',
 
     // Toasts
     'serverdetail.toast.loadFailed': 'טעינת השרת נכשלה',
@@ -130,6 +145,8 @@ export const serverdetail: PageDict = {
     'serverdetail.toast.accountsLoadFailed': 'טעינת החשבונות נכשלה',
     'serverdetail.toast.accountsRefreshed': 'החשבונות רועננו',
     'serverdetail.toast.accountsRefreshFailed': 'רענון החשבונות נכשל',
+    'serverdetail.toast.siteRefreshed': 'האתר נבדק מחדש',
+    'serverdetail.toast.siteRefreshFailed': 'הבדיקה מחדש נכשלה',
     'serverdetail.toast.saved': 'השרת עודכן',
     'serverdetail.toast.saveFailed': 'עדכון השרת נכשל',
 
@@ -140,10 +157,13 @@ export const serverdetail: PageDict = {
   },
   en: {
     'serverdetail.eyebrow': 'Server',
+    'serverdetail.eyebrow.ftp': 'FTP source',
+    'serverdetail.eyebrow.wordpress': 'WordPress site',
 
     // Header actions
     'serverdetail.actions.test': 'Test connection',
     'serverdetail.actions.refresh': 'Refresh accounts',
+    'serverdetail.actions.refreshSite': 'Re-probe site',
     'serverdetail.actions.newMigration': 'New migration',
     'serverdetail.actions.reload': 'Reload',
 
@@ -158,10 +178,23 @@ export const serverdetail: PageDict = {
     'serverdetail.stats.diskOf': 'of {total}',
     'serverdetail.stats.webServer': 'Web server',
     'serverdetail.stats.testToLoad': 'Test the connection to load',
+    'serverdetail.stats.wordpressVersion': 'WordPress',
+    'serverdetail.stats.wpDetected': 'Detected',
+    'serverdetail.stats.wpNotDetected': 'Not detected',
+    'serverdetail.stats.php': 'PHP',
+    'serverdetail.stats.phpHint': 'The version the site runs on',
+    'serverdetail.stats.database': 'Database',
 
     // Connection card
     'serverdetail.connection.title': 'Connection',
     'serverdetail.connection.description': 'How MVNMigrate reaches this server.',
+    'serverdetail.connection.description.agentless': 'How MVNMigrate reaches this site.',
+    'serverdetail.connection.siteUrl': 'Site URL',
+    'serverdetail.connection.ftpHost': 'FTP host',
+    'serverdetail.connection.ftps': 'FTPS',
+    'serverdetail.connection.docroot': 'Path on the FTP server',
+    'serverdetail.connection.autoDetect': 'Auto-detect',
+    'serverdetail.connection.adminUser': 'wp-admin user',
     'serverdetail.connection.host': 'Host',
     'serverdetail.connection.port': 'Port',
     'serverdetail.connection.username': 'Username',
@@ -186,6 +219,23 @@ export const serverdetail: PageDict = {
     'serverdetail.system.empty.b1': 'Operating system and web server',
     'serverdetail.system.empty.b2': 'Total and used disk',
     'serverdetail.system.empty.b3': 'Installed PHP versions',
+
+    // Site probe card (FTP / WordPress sources)
+    'serverdetail.probe.title': 'Site probe',
+    'serverdetail.probe.description': 'What the helper reported on the last connection test.',
+    'serverdetail.probe.empty.title': 'No probe result yet',
+    'serverdetail.probe.empty.lead': 'One connection test uploads a temporary helper and returns:',
+    'serverdetail.probe.empty.b1': 'WordPress and PHP versions',
+    'serverdetail.probe.empty.b2': 'File count, size and the database',
+    'serverdetail.probe.empty.b3': 'Shell access and caching plugins that need attention',
+
+    // Site card (FTP / WordPress sources)
+    'serverdetail.site.title': 'Site',
+    'serverdetail.site.empty.title': 'Site not probed yet',
+    'serverdetail.site.empty.lead': 'Re-probing uploads the helper and returns:',
+    'serverdetail.site.empty.b1': 'Domain and PHP version',
+    'serverdetail.site.empty.b2': 'Files size and database size',
+    'serverdetail.site.empty.b3': 'WordPress detection',
 
     // Accounts card
     'serverdetail.accounts.title': 'Accounts',
@@ -235,24 +285,6 @@ export const serverdetail: PageDict = {
     'serverdetail.modal.databases.empty': 'No databases on this account',
     'serverdetail.modal.totalSize': 'Total size',
 
-    // Edit modal
-    'serverdetail.edit.title': 'Edit server',
-    'serverdetail.edit.description': 'Connection details used to reach this panel or host.',
-    'serverdetail.edit.name': 'Server name',
-    'serverdetail.edit.namePlaceholder': 'A name you will recognize',
-    'serverdetail.edit.panel': 'Panel type',
-    'serverdetail.edit.host': 'Host',
-    'serverdetail.edit.port': 'Port',
-    'serverdetail.edit.username': 'Username',
-    'serverdetail.edit.auth': 'Authentication method',
-    'serverdetail.edit.password': 'Password',
-    'serverdetail.edit.passwordHint': 'Leave empty to keep the current password',
-    'serverdetail.edit.sshKey': 'SSH key',
-    'serverdetail.edit.selectKey': 'Select SSH key',
-    'serverdetail.edit.apiEndpoint': 'API endpoint',
-    'serverdetail.edit.apiKey': 'API key',
-    'serverdetail.edit.apiKeyHint': 'Leave empty to keep the current key',
-    'serverdetail.edit.save': 'Save changes',
 
     // Toasts
     'serverdetail.toast.loadFailed': 'Failed to load server',
@@ -262,6 +294,8 @@ export const serverdetail: PageDict = {
     'serverdetail.toast.accountsLoadFailed': 'Failed to load accounts',
     'serverdetail.toast.accountsRefreshed': 'Accounts refreshed',
     'serverdetail.toast.accountsRefreshFailed': 'Failed to refresh accounts',
+    'serverdetail.toast.siteRefreshed': 'Site re-probed',
+    'serverdetail.toast.siteRefreshFailed': 'Could not re-probe the site',
     'serverdetail.toast.saved': 'Server updated',
     'serverdetail.toast.saveFailed': 'Failed to update server',
 

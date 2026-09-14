@@ -4,7 +4,7 @@ import { useCountUp } from '../../lib/useCountUp';
 import { surfaceClasses } from './Card';
 import { Skeleton } from './Skeleton';
 
-export type StatTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange';
+export type StatTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange' | 'cyan' | 'lime';
 
 export interface StatProps {
   label: ReactNode;
@@ -35,6 +35,8 @@ const toneIcon: Record<StatTone, string> = {
   violet: 'text-violet-500',
   blue: 'text-blue-500',
   orange: 'text-orange-500',
+  cyan: 'text-cyan-500',
+  lime: 'text-lime-500',
 };
 
 const toneLine: Record<StatTone, string> = {
@@ -47,6 +49,8 @@ const toneLine: Record<StatTone, string> = {
   violet: 'via-violet-500/50',
   blue: 'via-blue-500/50',
   orange: 'via-orange-500/50',
+  cyan: 'via-cyan-500/50',
+  lime: 'via-lime-500/50',
 };
 
 function CountUp({ value }: { value: number }) {

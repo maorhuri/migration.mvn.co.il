@@ -2,16 +2,17 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
   ArrowsRightLeftIcon,
   CircleStackIcon,
   MagnifyingGlassIcon,
   PencilIcon,
   SignalIcon,
 } from '@heroicons/react/20/solid';
-import { CpuChipIcon, ServerStackIcon as ServerStackOutlineIcon, UsersIcon as UsersOutlineIcon } from '@heroicons/react/24/outline';
+import { CodeBracketIcon, CpuChipIcon, DocumentDuplicateIcon, GlobeAltIcon, ServerStackIcon as ServerStackOutlineIcon, UsersIcon as UsersOutlineIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServer, getServerAccounts, getServerInfo, testServerConnection, updateServer, getSSHKeys, refreshServerAccounts } from '../api/client';
-import type { Server, Account, SSHKey } from '../types';
+import type { Server, Account, SSHKey, ServerTestResponse } from '../types';
 import {
   Badge,
   Button,
@@ -33,12 +34,14 @@ import {
   Stat,
   StatusBadge,
 } from '../components/ui';
-import { formatDate, formatRelativeTime, parseSizeToBytes, percent } from '../lib/format';
+import { formatBytes, formatDate, formatRelativeTime, parseSizeToBytes, percent } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { isAgentlessPanel, serverDocroot, serverFtps, serverSiteUrl } from '../lib/agentless';
 import { AccountsTable } from '../components/serverdetail/AccountsTable';
 import type { AccountSortField } from '../components/serverdetail/AccountsTable';
-import { EditServerModal } from '../components/serverdetail/EditServerModal';
 import { DatabasesModal, EmailAccountsModal } from '../components/serverdetail/AccountListModals';
+import { EMPTY_SERVER_FORM, ServerFormModal, buildServerPayload, serverToForm, type ServerFormData } from '../components/servers/ServerFormModal';
+import { ProbeResultCard } from '../components/servers/ProbeResultCard';
 
 interface ServerAccounts {
   accounts: Account[];
@@ -77,18 +80,9 @@ export default function ServerDetail() {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<string>('domain');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [editFormData, setEditFormData] = useState({
-    name: '',
-    panel_type: 'directadmin' as Server['panel_type'],
-    host: '',
-    port: 22,
-    username: 'root',
-    auth_method: 'password' as Server['auth_method'],
-    password: '',
-    ssh_key_id: '',
-    api_endpoint: '',
-    api_key: '',
-  });
+  const [editFormData, setEditFormData] = useState<ServerFormData>(EMPTY_SERVER_FORM);
+  // What the agentless helper reported on the last connection test (ftp / wordpress sources).
+  const [probe, setProbe] = useState<ServerTestResponse | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -103,18 +97,7 @@ export default function ServerDetail() {
     try {
       const data = await getServer(id!);
       setServer(data);
-      setEditFormData({
-        name: data.name,
-        panel_type: data.panel_type,
-        host: data.host,
-        port: data.port,
-        username: data.username,
-        auth_method: data.auth_method,
-        password: '',
-        ssh_key_id: data.ssh_key_id || '',
-        api_endpoint: data.api_endpoint || '',
-        api_key: '',
-      });
+      setEditFormData(serverToForm(data));
     } catch (error) {
       toast.error(t('serverdetail.toast.loadFailed'));
       navigate('/servers');
@@ -147,13 +130,16 @@ export default function ServerDetail() {
     setTesting(true);
     try {
       const result = await testServerConnection(id);
+      const agentless = isAgentlessPanel(server?.panel_type);
+      if (agentless) setProbe(result);
       if (result.success) {
         setConnectionStatus('success');
         toast.success(t('serverdetail.toast.connected'));
-        loadServerInfo();
+        if (!agentless) loadServerInfo();
       } else {
         setConnectionStatus('failed');
-        toast.error(result.message || t('serverdetail.toast.connectionFailed'));
+        // Agentless sources explain the failure in the probe card; a short toast is enough.
+        toast.error(agentless ? t('serverdetail.toast.connectionFailed') : result.message || t('serverdetail.toast.connectionFailed'));
       }
     } catch (error) {
       setConnectionStatus('failed');
@@ -184,9 +170,9 @@ export default function ServerDetail() {
       const data = await refreshServerAccounts(id);
       setAccounts(data);
       setAccountsSource({ kind: 'refreshed', at: new Date() });
-      toast.success(t('serverdetail.toast.accountsRefreshed'));
+      toast.success(isAgentlessPanel(server?.panel_type) ? t('serverdetail.toast.siteRefreshed') : t('serverdetail.toast.accountsRefreshed'));
     } catch (error) {
-      toast.error(t('serverdetail.toast.accountsRefreshFailed'));
+      toast.error(isAgentlessPanel(server?.panel_type) ? t('serverdetail.toast.siteRefreshFailed') : t('serverdetail.toast.accountsRefreshFailed'));
     } finally {
       setLoadingAccounts(false);
     }
@@ -197,7 +183,9 @@ export default function ServerDetail() {
     if (!id) return;
     setSaving(true);
     try {
-      await updateServer(id, editFormData);
+      // Secrets are never returned by the API — blank means "keep current".
+      const { password, api_key, ...rest } = buildServerPayload(editFormData);
+      await updateServer(id, { ...rest, ...(password ? { password } : {}), ...(api_key ? { api_key } : {}) });
       toast.success(t('serverdetail.toast.saved'));
       setIsEditModalOpen(false);
       loadServer();
@@ -325,7 +313,13 @@ export default function ServerDetail() {
     );
   }
 
+  const agentless = isAgentlessPanel(server.panel_type);
+  const siteUrl = serverSiteUrl(server);
+  const docroot = serverDocroot(server);
   const accountList = accounts?.accounts ?? [];
+  // Agentless sources expose exactly one account: the site itself.
+  const site: Account | undefined = agentless ? accountList[0] : undefined;
+  const probeInfo = probe?.success ? probe.info : undefined;
   const totalDatabases = accountList.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0);
   const wordpressCount = accountList.filter((acc) => acc.is_wordpress).length;
   const sslCount = accountList.filter((acc) => acc.ssl_enabled).length;
@@ -344,12 +338,23 @@ export default function ServerDetail() {
     <div className="space-y-6">
       <PageHeader
         backTo="/servers"
-        eyebrow={t('serverdetail.eyebrow')}
+        eyebrow={agentless ? t(`serverdetail.eyebrow.${server.panel_type}`) : t('serverdetail.eyebrow')}
         title={server.name}
         description={
-          <Mono className="text-[13px]">
-            {server.username}@{server.host}:{server.port}
-          </Mono>
+          agentless ? (
+            siteUrl ? (
+              <a href={siteUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-sm transition-colors hover:text-brand-700 dark:hover:text-brand-300">
+                <Mono className="text-[13px]">{siteUrl}</Mono>
+                <ArrowTopRightOnSquareIcon className="flip-rtl h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+              </a>
+            ) : (
+              <Mono className="text-[13px]">{server.host}</Mono>
+            )
+          ) : (
+            <Mono className="text-[13px]">
+              {server.username}@{server.host}:{server.port}
+            </Mono>
+          )
         }
         meta={
           <>
@@ -363,7 +368,7 @@ export default function ServerDetail() {
               {t('serverdetail.actions.test')}
             </Button>
             <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
-              {t('serverdetail.actions.refresh')}
+              {agentless ? t('serverdetail.actions.refreshSite') : t('serverdetail.actions.refresh')}
             </Button>
             <Button variant="primary" leftIcon={<ArrowsRightLeftIcon />} onClick={() => navigate('/migrations/new')}>
               {t('serverdetail.actions.newMigration')}
@@ -372,6 +377,60 @@ export default function ServerDetail() {
         }
       />
 
+      {agentless ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="motion-safe:animate-rise stagger" style={stagger(1)}>
+            <Stat
+              label={t('serverdetail.stats.wordpressVersion')}
+              value={probeInfo?.wordpress && probeInfo.wp_version ? <Mono>{probeInfo.wp_version}</Mono> : probeInfo ? (probeInfo.wordpress ? t('serverdetail.stats.wpDetected') : t('serverdetail.stats.wpNotDetected')) : site ? (site.is_wordpress ? t('serverdetail.stats.wpDetected') : t('serverdetail.stats.wpNotDetected')) : EMPTY}
+              icon={GlobeAltIcon}
+              tone={probeInfo?.wordpress || site?.is_wordpress ? 'cyan' : 'neutral'}
+              loading={loadingAccounts && !accounts && !probe}
+              quiet={!probeInfo && !site}
+              hint={probeInfo?.multisite ? t('servers.probe.multisite') : probeInfo || site ? undefined : t('serverdetail.stats.testToLoad')}
+            />
+          </div>
+          <div className="motion-safe:animate-rise stagger" style={stagger(2)}>
+            <Stat
+              label={t('serverdetail.stats.php')}
+              value={probeInfo?.php_version || site?.php_version ? <Mono>{probeInfo?.php_version || site?.php_version}</Mono> : EMPTY}
+              icon={CodeBracketIcon}
+              tone={probeInfo?.php_version || site?.php_version ? 'info' : 'neutral'}
+              loading={loadingAccounts && !accounts && !probe}
+              quiet={!probeInfo?.php_version && !site?.php_version}
+              hint={probeInfo?.php_version || site?.php_version ? t('serverdetail.stats.phpHint') : t('serverdetail.stats.testToLoad')}
+            />
+          </div>
+          <div className="motion-safe:animate-rise stagger" style={stagger(3)}>
+            <Stat
+              label={t('serverdetail.stats.disk')}
+              value={
+                probeInfo?.files?.bytes !== undefined ? <Mono>{formatBytes(probeInfo.files.bytes)}</Mono> : site?.disk_used ? <Mono>{site.disk_used}</Mono> : EMPTY
+              }
+              icon={DocumentDuplicateIcon}
+              tone={probeInfo?.files?.bytes !== undefined || site?.disk_used ? 'brand' : 'neutral'}
+              loading={loadingAccounts && !accounts && !probe}
+              quiet={probeInfo?.files?.bytes === undefined && !site?.disk_used}
+              hint={
+                probeInfo?.files?.count !== undefined
+                  ? `${t('units.files', { count: probeInfo.files.count })}${probeInfo.files.partial ? ` · ${t('servers.probe.filesPartial')}` : ''}`
+                  : t('serverdetail.stats.testToLoad')
+              }
+            />
+          </div>
+          <div className="motion-safe:animate-rise stagger" style={stagger(4)}>
+            <Stat
+              label={t('serverdetail.stats.database')}
+              value={probeInfo?.db?.name || site?.databases?.[0] ? <Mono className="text-xl">{probeInfo?.db?.name || site?.databases?.[0]}</Mono> : EMPTY}
+              icon={CircleStackIcon}
+              tone={probeInfo?.db?.name || site?.databases?.[0] ? 'violet' : 'neutral'}
+              loading={loadingAccounts && !accounts && !probe}
+              quiet={!probeInfo?.db?.name && !site?.databases?.[0]}
+              hint={site?.db_size ? <Mono className="text-xs">{site.db_size}</Mono> : probeInfo?.db?.name || site?.databases?.[0] ? undefined : t('serverdetail.stats.testToLoad')}
+            />
+          </div>
+        </div>
+      ) : (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="motion-safe:animate-rise stagger" style={stagger(1)}>
           <Stat
@@ -428,6 +487,7 @@ export default function ServerDetail() {
           />
         </div>
       </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="motion-safe:animate-rise stagger" style={stagger(5)}>
@@ -439,25 +499,62 @@ export default function ServerDetail() {
             }
           >
             <CardTitle>{t('serverdetail.connection.title')}</CardTitle>
-            <CardDescription>{t('serverdetail.connection.description')}</CardDescription>
+            <CardDescription>{agentless ? t('serverdetail.connection.description.agentless') : t('serverdetail.connection.description')}</CardDescription>
           </CardHeader>
-          <KeyValue
-            layout="grid"
-            columns={3}
-            items={[
-              { label: t('serverdetail.connection.host'), value: server.host, mono: true },
-              { label: t('serverdetail.connection.port'), value: server.port, mono: true },
-              { label: t('serverdetail.connection.username'), value: server.username, mono: true },
-              { label: t('serverdetail.connection.auth'), value: t(`auth.${server.auth_method}`) },
-              { label: t('serverdetail.connection.panel'), value: <PanelBadge panelType={server.panel_type} size="sm" /> },
-              ...(server.auth_method === 'ssh_key'
-                ? [{ label: t('serverdetail.connection.sshKey'), value: sshKeyName ?? server.ssh_key_id, mono: !sshKeyName }]
-                : []),
-              ...(server.api_endpoint ? [{ label: t('serverdetail.connection.apiEndpoint'), value: server.api_endpoint, mono: true, span: true }] : []),
-              ...(server.enhance_org_id ? [{ label: t('serverdetail.connection.enhanceOrg'), value: server.enhance_org_id, mono: true, span: true }] : []),
-            ]}
-          />
-          {server.auth_method !== 'api_key' && (
+          {server.panel_type === 'ftp' ? (
+            <KeyValue
+              layout="grid"
+              columns={3}
+              items={[
+                { label: t('serverdetail.connection.siteUrl'), value: siteUrl, mono: true, span: true },
+                { label: t('serverdetail.connection.ftpHost'), value: server.host, mono: true, span: true },
+                { label: t('serverdetail.connection.port'), value: server.port, mono: true },
+                { label: t('serverdetail.connection.username'), value: server.username, mono: true },
+                {
+                  label: t('serverdetail.connection.ftps'),
+                  value: (
+                    <Badge tone={serverFtps(server) ? 'success' : 'neutral'} size="sm">
+                      {serverFtps(server) ? t('common.yes') : t('common.no')}
+                    </Badge>
+                  ),
+                },
+                {
+                  label: t('serverdetail.connection.docroot'),
+                  value: docroot ? <Mono className="text-[13px]">{docroot}</Mono> : <span className="font-normal text-slate-500 dark:text-slate-400">{t('serverdetail.connection.autoDetect')}</span>,
+                },
+                { label: t('serverdetail.connection.panel'), value: <PanelBadge panelType={server.panel_type} size="sm" /> },
+              ]}
+            />
+          ) : server.panel_type === 'wordpress' ? (
+            <KeyValue
+              layout="grid"
+              columns={3}
+              items={[
+                { label: t('serverdetail.connection.siteUrl'), value: siteUrl, mono: true, span: true },
+                { label: t('serverdetail.connection.host'), value: server.host, mono: true },
+                { label: t('serverdetail.connection.adminUser'), value: server.username, mono: true },
+                { label: t('serverdetail.connection.panel'), value: <PanelBadge panelType={server.panel_type} size="sm" /> },
+              ]}
+            />
+          ) : (
+            <KeyValue
+              layout="grid"
+              columns={3}
+              items={[
+                { label: t('serverdetail.connection.host'), value: server.host, mono: true },
+                { label: t('serverdetail.connection.port'), value: server.port, mono: true },
+                { label: t('serverdetail.connection.username'), value: server.username, mono: true },
+                { label: t('serverdetail.connection.auth'), value: t(`auth.${server.auth_method}`) },
+                { label: t('serverdetail.connection.panel'), value: <PanelBadge panelType={server.panel_type} size="sm" /> },
+                ...(server.auth_method === 'ssh_key'
+                  ? [{ label: t('serverdetail.connection.sshKey'), value: sshKeyName ?? server.ssh_key_id, mono: !sshKeyName }]
+                  : []),
+                ...(server.api_endpoint ? [{ label: t('serverdetail.connection.apiEndpoint'), value: server.api_endpoint, mono: true, span: true }] : []),
+                ...(server.enhance_org_id ? [{ label: t('serverdetail.connection.enhanceOrg'), value: server.enhance_org_id, mono: true, span: true }] : []),
+              ]}
+            />
+          )}
+          {!agentless && server.auth_method !== 'api_key' && (
             <div className="mt-6">
               <p className="eyebrow mb-1.5">{t('serverdetail.connection.sshCommand')}</p>
               <CodeBlock language="ssh" code={`ssh -p ${server.port} ${server.username}@${server.host}`} />
@@ -468,6 +565,49 @@ export default function ServerDetail() {
           </p>
         </Card>
 
+        {agentless ? (
+          <Card className="motion-safe:animate-rise stagger" style={stagger(6)}>
+            <CardHeader
+              actions={
+                probe ? (
+                  <Button size="sm" variant="ghost" leftIcon={<ArrowPathIcon />} onClick={handleTestConnection} loading={testing}>
+                    {t('serverdetail.actions.reload')}
+                  </Button>
+                ) : undefined
+              }
+            >
+              <CardTitle>{t('serverdetail.probe.title')}</CardTitle>
+              <CardDescription>{t('serverdetail.probe.description')}</CardDescription>
+            </CardHeader>
+            {probe ? (
+              <ProbeResultCard result={probe} />
+            ) : (
+              <EmptyState
+                size="sm"
+                illustration="system"
+                title={t('serverdetail.probe.empty.title')}
+                description={
+                  <>
+                    <p>{t('serverdetail.probe.empty.lead')}</p>
+                    <ul className="mt-2 space-y-1 text-start">
+                      {(['b1', 'b2', 'b3'] as const).map((k) => (
+                        <li key={k} className="flex items-start gap-2">
+                          <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                          {t(`serverdetail.probe.empty.${k}`)}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                }
+                action={
+                  <Button size="sm" variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
+                    {t('serverdetail.actions.test')}
+                  </Button>
+                }
+              />
+            )}
+          </Card>
+        ) : (
         <Card className="motion-safe:animate-rise stagger" style={stagger(6)}>
           <CardHeader
             actions={
@@ -556,13 +696,14 @@ export default function ServerDetail() {
             />
           )}
         </Card>
+        )}
       </div>
 
       <Card flush className="motion-safe:animate-rise stagger" style={stagger(7)}>
         <CardHeader
           divided
           actions={
-            hasAccounts ? (
+            hasAccounts && !agentless ? (
               <Input
                 size="sm"
                 type="search"
@@ -577,8 +718,8 @@ export default function ServerDetail() {
           }
         >
           <div className="flex flex-wrap items-center gap-2">
-            <CardTitle>{t('serverdetail.accounts.title')}</CardTitle>
-            {accounts && (
+            <CardTitle>{agentless ? t('serverdetail.site.title') : t('serverdetail.accounts.title')}</CardTitle>
+            {accounts && !agentless && (
               <Badge tone="neutral" size="sm">
                 {searchTerm ? t('serverdetail.accounts.countOf', { shown: filteredAndSortedAccounts.length, total: accounts.total }) : accounts.total}
               </Badge>
@@ -601,7 +742,7 @@ export default function ServerDetail() {
               </Badge>
             )}
           </div>
-          {hasAccounts && (
+          {hasAccounts && !agentless && (
             <div className="flex flex-wrap items-center gap-1.5 pt-1.5">
               <Badge tone="neutral" size="sm">
                 {t('serverdetail.accounts.facts.wordpress', { count: wordpressCount })}
@@ -621,29 +762,23 @@ export default function ServerDetail() {
         ) : !hasAccounts ? (
           <EmptyState
             illustration="accounts"
-            title={t('serverdetail.accounts.empty.title')}
+            title={agentless ? t('serverdetail.site.empty.title') : t('serverdetail.accounts.empty.title')}
             description={
               <>
-                <p>{t('serverdetail.accounts.empty.lead')}</p>
+                <p>{agentless ? t('serverdetail.site.empty.lead') : t('serverdetail.accounts.empty.lead')}</p>
                 <ul className="mt-2 space-y-1 text-start">
-                  <li className="flex items-start gap-2">
-                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
-                    {t('serverdetail.accounts.empty.b1')}
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
-                    {t('serverdetail.accounts.empty.b2')}
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
-                    {t('serverdetail.accounts.empty.b3')}
-                  </li>
+                  {(['b1', 'b2', 'b3'] as const).map((k) => (
+                    <li key={k} className="flex items-start gap-2">
+                      <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                      {agentless ? t(`serverdetail.site.empty.${k}`) : t(`serverdetail.accounts.empty.${k}`)}
+                    </li>
+                  ))}
                 </ul>
               </>
             }
             action={
               <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
-                {t('serverdetail.actions.refresh')}
+                {agentless ? t('serverdetail.actions.refreshSite') : t('serverdetail.actions.refresh')}
               </Button>
             }
           />
@@ -671,9 +806,12 @@ export default function ServerDetail() {
         )}
       </Card>
 
-      <EditServerModal
+      <ServerFormModal
         open={isEditModalOpen}
-        onClose={() => setIsEditModalOpen(false)}
+        onClose={() => {
+          if (!saving) setIsEditModalOpen(false);
+        }}
+        mode="edit"
         form={editFormData}
         onChange={setEditFormData}
         sshKeys={sshKeys}

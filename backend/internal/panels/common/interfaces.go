@@ -14,7 +14,8 @@ const (
 	PanelTypeDirectAdmin PanelType = "directadmin"
 	PanelTypeEnhance     PanelType = "enhance"
 	PanelTypeCPanel      PanelType = "cpanel"
-	PanelTypeFTP         PanelType = "ftp"
+	PanelTypeFTP         PanelType = "ftp"       // agentless: FTP login + uploaded PHP helper
+	PanelTypeWordPress   PanelType = "wordpress" // agentless: wp-admin login + helper plugin
 )
 
 // ConnectionConfig holds connection details for a server

@@ -3,6 +3,7 @@ import { MagnifyingGlassIcon } from '@heroicons/react/20/solid';
 import { Button, EmptyState, Input, Mono, PanelBadge, PanelMonogram, SkeletonCard, Tabs, surfaceClasses } from '../ui';
 import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n';
+import { isAgentlessPanel, serverSiteUrl } from '../../lib/agentless';
 import type { Server } from '../../types';
 import { PANEL_FILTER_OPTIONS } from './types';
 
@@ -12,9 +13,10 @@ export interface ServerCardProps {
   onSelect: (server: Server) => void;
 }
 
-/** Selectable server tile: panel monogram, name, PanelBadge and the mono host:port. */
+/** Selectable server tile: panel monogram, name, PanelBadge and the mono host:port (site URL for FTP / WordPress sources). */
 export function ServerCard({ server, selected, onSelect }: ServerCardProps) {
   const t = useT();
+  const siteUrl = isAgentlessPanel(server.panel_type) ? serverSiteUrl(server) : '';
   return (
     <button
       type="button"
@@ -36,10 +38,14 @@ export function ServerCard({ server, selected, onSelect }: ServerCardProps) {
           <PanelBadge panelType={server.panel_type} size="sm" />
         </span>
         <span className="mt-1 block text-xs text-slate-500 dark:text-slate-400">
-          <Mono>
-            {server.host}
-            {server.port ? <span className="text-slate-400 dark:text-slate-500">:{server.port}</span> : null}
-          </Mono>
+          {siteUrl ? (
+            <Mono>{siteUrl}</Mono>
+          ) : (
+            <Mono>
+              {server.host}
+              {server.port ? <span className="text-slate-400 dark:text-slate-500">:{server.port}</span> : null}
+            </Mono>
+          )}
         </span>
       </span>
       <span
