@@ -523,7 +523,7 @@ func stripArtifacts(dest, helperName string, logFn LogFunc) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() && strings.HasPrefix(name, ".mvn-tmp-") {
+		if e.IsDir() && strings.HasPrefix(name, ".mig-tmp-") {
 			os.RemoveAll(filepath.Join(dest, name))
 			logFn("info", "Removed helper temp directory "+name+" from the extracted files")
 		}
@@ -670,7 +670,7 @@ func (ex *exporter) lftpMirror(ctx context.Context, docroot, dest string) error 
 	}
 	excludes := []string{
 		"wp-content/cache/*", "wp-content/*cache*/", "wp-content/ai1wm-backups/*", "wp-content/updraft/*",
-		"wp-content/backups-dup-*", "*.wpress", "debug.log", "error_log", ".git/", ".mvn-tmp-*/",
+		"wp-content/backups-dup-*", "*.wpress", "debug.log", "error_log", ".git/", ".mig-tmp-*/",
 	}
 	mirror := "mirror --parallel=6 --use-pget-n=3 --no-perms --continue"
 	for _, pattern := range excludes {

@@ -90,7 +90,7 @@ func TestLivePHPHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperName := "mvn-" + randHex(12) + ".php"
+	helperName := "mig-" + randHex(12) + ".php"
 	if err := os.WriteFile(filepath.Join(docroot, helperName), rendered, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestLivePHPHelper(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(out); len(entries) > 0 {
 		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), ".mvn-tmp-") {
+			if strings.HasPrefix(e.Name(), ".mig-tmp-") {
 				t.Errorf("temp dir %s leaked into the export", e.Name())
 			}
 		}
@@ -155,7 +155,7 @@ func TestLivePHPHelper(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(docroot)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".mvn-tmp-") {
+		if strings.HasPrefix(e.Name(), ".mig-tmp-") {
 			t.Errorf("temp dir %s still in the docroot after cleanup", e.Name())
 		}
 	}

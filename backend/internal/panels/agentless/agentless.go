@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -326,6 +327,11 @@ type Info struct {
 	Files            InfoFiles   `json:"files"`
 	Plugins          InfoPlugins `json:"plugins"`
 
+	// HelperUnreachable is true when this Info was assembled without ever reaching the helper
+	// (the FTP-only probe fallback): Files/Plugins/PHPVersion/etc are unknown, not genuinely
+	// zero, and the UI must not render them as facts.
+	HelperUnreachable bool `json:"helper_unreachable,omitempty"`
+
 	// Raw is the payload exactly as the helper returned it (stored as last_info, shown by the UI).
 	Raw json.RawMessage `json:"-"`
 	// Warnings collected while probing (for example a cleanup that did not finish).
@@ -513,12 +519,56 @@ func Probe(ctx context.Context, server *storage.Server, password string, logFn L
 	}
 	sess, err := open(ctx, cfg, logFn)
 	if err != nil {
+		var un *UnreachableError
+		if cfg.Mode == common.PanelTypeFTP && errors.As(err, &un) {
+			if info, ferr := probeFTPOnly(ctx, cfg, un, logFn); ferr == nil {
+				return info, nil
+			}
+		}
 		return nil, err
 	}
 	info := sess.info
 	if err := sess.close(ctx); err != nil {
 		logFn("warn", "Helper cleanup: "+err.Error())
 		info.Warnings = append(info.Warnings, "cleanup did not finish: "+err.Error())
+	}
+	return info, nil
+}
+
+// probeFTPOnly runs when the helper cannot be reached over HTTP (a WAF, maintenance-mode gate,
+// or a missing HTTPS vhost are common causes on shared hosting). It connects over FTP alone,
+// finds the docroot and, for a WordPress site, reads wp-config.php for the database name/user
+// and host so the operator knows what to expect: the actual migration will fall back to an FTP
+// file mirror plus a direct database dump, which needs a remote-reachable db_host (wp-config's
+// own DB_HOST is normally "localhost", meaningless from this migration server).
+func probeFTPOnly(ctx context.Context, cfg *Config, reason *UnreachableError, logFn LogFunc) (*Info, error) {
+	conn, docroot, isWP, err := ftpPrepare(ctx, cfg, logFn)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.close()
+
+	info := &Info{Docroot: docroot, HelperUnreachable: true}
+	info.WordPress = flexBool(isWP)
+	warn := fmt.Sprintf("The site does not answer over HTTP at the address(es) tried (%s). Files can still be transferred directly over FTP when the migration runs; email accounts, cron jobs and DNS records are not available from this source either way, and the PHP/WordPress/plugin facts below are unknown until then.", reason.Reason)
+
+	if isWP {
+		if src, rerr := conn.readFile(docroot+"/wp-config.php", 256<<10); rerr == nil {
+			wp := wpConfigCredentials(src)
+			info.DB = InfoDB{Name: wp["DB_NAME"], User: wp["DB_USER"], Host: wp["DB_HOST"]}
+			if wp["DB_NAME"] != "" {
+				warn += fmt.Sprintf(" wp-config.php on the site names database %q (user %q, host %q, usually only reachable from the site's own server): to migrate the database too, add a remote-reachable db_host/db_user/db_pass/db_name to this server before starting, or ask the host whether remote MySQL connections are allowed.", wp["DB_NAME"], wp["DB_USER"], wp["DB_HOST"])
+			}
+		} else {
+			warn += " wp-config.php could not be read over FTP: " + rerr.Error()
+		}
+	} else if cfg.DBHost == "" {
+		warn += " No wp-config.php was found and no db_host/db_user/db_pass/db_name is set on this server, so no database will be exported."
+	}
+	info.Warnings = []string{warn}
+	raw, err := json.Marshal(info)
+	if err == nil {
+		info.Raw = raw
 	}
 	return info, nil
 }

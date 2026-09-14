@@ -17,11 +17,11 @@ import (
 var assets embed.FS
 
 const (
-	agentAssetPath   = "assets/mvn-agent.php"
-	pluginAssetPath  = "assets/plugin/mvn-migrator.php"
-	pluginSlug       = "mvn-migrator"
-	pluginFile       = "mvn-migrator/mvn-migrator.php" // plugin basename as WordPress reports it
-	pluginAjaxAction = "mvn_migrator"
+	agentAssetPath   = "assets/mvn-agent.php"           // repo path only, never exposed externally
+	pluginAssetPath  = "assets/plugin/mvn-migrator.php" // repo path only, never exposed externally
+	pluginSlug       = "mig-helper"
+	pluginFile       = "mig-helper/mig-helper.php" // plugin basename as WordPress reports it
+	pluginAjaxAction = "mig_helper"
 )
 
 // helperConfig is what gets baked into the helper by placeholder replacement.
@@ -52,7 +52,8 @@ func renderAgent(cfg helperConfig) ([]byte, error) {
 	return replacePlaceholders(src, cfg), nil
 }
 
-// BuildPluginZip packages the helper as the mvn-migrator WordPress plugin with the given token.
+// BuildPluginZip packages the helper as a generically named WordPress plugin with the given
+// token (the plugin slug/filenames deliberately carry no identifying company name).
 // It is used for the wp-admin upload and can later be served to operators for manual installs.
 func BuildPluginZip(token, allowedIP string, expires time.Time) ([]byte, error) {
 	return buildPluginZip(helperConfig{Token: token, AllowedIP: allowedIP, Expires: expires})
@@ -78,10 +79,10 @@ func buildPluginZip(cfg helperConfig) ([]byte, error) {
 		_, err = w.Write(data)
 		return err
 	}
-	if err := add(pluginSlug+"/mvn-migrator.php", replacePlaceholders(wrapper, cfg)); err != nil {
+	if err := add(pluginSlug+"/mig-helper.php", replacePlaceholders(wrapper, cfg)); err != nil {
 		return nil, err
 	}
-	if err := add(pluginSlug+"/mvn-agent.php", replacePlaceholders(agent, cfg)); err != nil {
+	if err := add(pluginSlug+"/mig-agent.php", replacePlaceholders(agent, cfg)); err != nil {
 		return nil, err
 	}
 	if err := zw.Close(); err != nil {

@@ -946,9 +946,35 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 		e.logf("info", "Dump of %s contains %d DEFINER / CREATE DATABASE / USE line(s); stripped before import", db.Name, lastInt(counts))
 	}
 	filter := "sed -E -e '/^(CREATE DATABASE|USE )/d' -e 's/DEFINER=`[^`]*`@`[^`]*`//g'"
+
+	// A single INSERT can hold a row bigger than the server's max_allowed_packet (a page-builder
+	// like Elementor storing one giant compiled-HTML field is a common case): mysqldump/mysqli
+	// have no way to know that limit when writing the dump, and the import fails mid-stream with
+	// a bare "server has gone away". Measure the longest line up front so that failure, if it
+	// happens, gets a precise explanation instead of a raw SQL dump in the log.
+	maxPacket := e.nodeMaxAllowedPacket(ctx)
+	longest, _ := strconv.ParseInt(strings.TrimSpace(mustStr(e.nodeRun(ctx, fmt.Sprintf("%s | %s | awk '{ if (length($0) > m) m = length($0) } END { print m+0 }'", reader, filter)))), 10, 64)
+	if maxPacket > 0 && longest > maxPacket {
+		e.warnf("Database %s contains at least one row (or statement) of %s, larger than this node's MariaDB max_allowed_packet (%s); the import will very likely fail with \"server has gone away\". This is a server setting (common with page-builder content such as Elementor templates), not something this tool can change on its own: ask whoever administers the node's MariaDB to raise max_allowed_packet (for example to 512M) and run the migration again.",
+			db.Name, humanBytes(longest), humanBytes(maxPacket))
+	}
+
 	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
 	if out, err := e.nodeRun(ctx, cmd); err != nil {
-		return nil, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, res.Host, lastLines(out, 3))
+		tail := lastLines(out, 3)
+		if strings.Contains(tail, "gone away") || strings.Contains(tail, "Lost connection") || strings.Contains(tail, "max_allowed_packet") {
+			detail := "the exact statement size on the node was not measured"
+			if longest > 0 {
+				detail = fmt.Sprintf("the largest row/statement measured %s", humanBytes(longest))
+			}
+			limit := "unknown"
+			if maxPacket > 0 {
+				limit = humanBytes(maxPacket)
+			}
+			return nil, fmt.Errorf("mysql import of %s failed on node (host %s): the connection dropped while sending data (%s). This node's MariaDB max_allowed_packet is %s and %s; a single database row or statement almost certainly exceeded it (common with page-builder content). Ask the node's MariaDB administrator to raise max_allowed_packet (for example to 512M) and run the migration again. Last output: %s",
+				actualDB, res.Host, tail, limit, detail, tail)
+		}
+		return nil, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, res.Host, tail)
 	}
 
 	// Verify with the same host that worked for the import; MariaDB's client prints a
@@ -1056,6 +1082,52 @@ func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userE
 }
 
 // lastLines returns the last n meaningful lines of a command output, joined with " | ".
+// lastLinesMaxBytes bounds lastLines' result regardless of how many "lines" that spans: a
+// single field with embedded literal newlines (raw HTML/text stored in a SQL string, echoed
+// back by a failing command) can turn one logical line into millions of \n-delimited pieces,
+// so byte-length is capped independently of the line count.
+const lastLinesMaxBytes = 4000
+
+// nodeMaxAllowedPacket reads the node MariaDB's max_allowed_packet (read-only; 0 if it cannot
+// be determined, which callers treat as "unknown" rather than failing anything on it).
+func (e *Enhance) nodeMaxAllowedPacket(ctx context.Context) int64 {
+	out, err := e.nodeRun(ctx, "mysql -N -e \"SELECT @@max_allowed_packet\" 2>/dev/null")
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseInt(lastInt2(out), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// mustStr turns the (string, error) shape nodeRun returns into just the string; a failed
+// measurement yields "" and the caller's ParseInt below then leaves the value at 0 ("unknown").
+func mustStr(s string, _ error) string { return s }
+
+// lastInt2 returns the last whitespace-separated token of a command's output as a string.
+func lastInt2(s string) string {
+	f := strings.Fields(strings.TrimSpace(s))
+	if len(f) == 0 {
+		return "0"
+	}
+	return f[len(f)-1]
+}
+
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
 func lastLines(s string, n int) string {
 	var lines []string
 	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
@@ -1063,12 +1135,19 @@ func lastLines(s string, n int) string {
 		if l == "" || strings.Contains(l, "Deprecated program name") {
 			continue
 		}
+		if len(l) > lastLinesMaxBytes {
+			l = l[:lastLinesMaxBytes] + fmt.Sprintf("... [%d more characters on this line]", len(l)-lastLinesMaxBytes)
+		}
 		lines = append(lines, l)
 	}
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	return strings.Join(lines, " | ")
+	out := strings.Join(lines, " | ")
+	if len(out) > lastLinesMaxBytes {
+		out = out[len(out)-lastLinesMaxBytes:] // keep the tail: the actual ERROR line is normally last
+	}
+	return out
 }
 
 // findMySQLName lists mysql-dbs or mysql-users and returns the actual (possibly prefixed) name

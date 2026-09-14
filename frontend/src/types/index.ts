@@ -43,6 +43,9 @@ export interface AgentlessInfo {
   /** Docroot walk with a 15 s budget: `partial` when the budget was hit. */
   files?: { count?: number; bytes?: number; partial?: boolean };
   plugins?: { active?: string[]; litespeed_cache?: boolean; wp_rocket?: boolean; object_cache?: boolean };
+  /** True when this came from the FTP-only fallback (the helper could not be reached over HTTP):
+   *  only docroot and db (from wp-config.php) are real; everything else here is unknown, not zero. */
+  helper_unreachable?: boolean;
 }
 
 /** Result of POST /servers/:id/test. `info` is only present for agentless sources. */

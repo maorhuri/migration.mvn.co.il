@@ -124,19 +124,46 @@ export function ProbeResultCard({ result, className }: ProbeResultCardProps) {
   const t = useT();
   const ok = result.success;
   const kind = ok ? null : classifyProbeError(result.message);
+  const partial = ok && !!result.info?.helper_unreachable;
 
   return (
     <div className={cn('space-y-4', className)}>
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge status={ok ? 'connected' : 'disconnected'} />
-        {ok && result.message && (
+        {ok && !partial && result.message && (
           <bdi dir="auto" className="min-w-0 truncate text-sm text-slate-500 dark:text-slate-400" title={result.message}>
             {result.message}
           </bdi>
         )}
       </div>
 
-      {ok && result.info ? (
+      {partial && result.info ? (
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+            <ExclamationTriangleIcon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0">
+              <span className="block font-medium">{t('servers.probe.partial.title')}</span>
+              <bdi dir="auto" className="mt-0.5 block whitespace-pre-wrap break-words text-xs leading-relaxed opacity-90">
+                {result.message}
+              </bdi>
+            </span>
+          </div>
+          <KeyValue
+            layout="grid"
+            columns={2}
+            items={[
+              { label: t('servers.probe.docroot'), value: result.info.docroot, mono: true, span: true },
+              ...(result.info.db?.name
+                ? [
+                    { label: t('servers.probe.database'), value: result.info.db.name, mono: true },
+                    ...(result.info.db.user ? [{ label: t('servers.probe.ftpDbUser'), value: result.info.db.user, mono: true }] : []),
+                    ...(result.info.db.host ? [{ label: t('servers.probe.ftpDbHost'), value: result.info.db.host, mono: true }] : []),
+                  ]
+                : []),
+            ]}
+          />
+        </div>
+      ) : ok && result.info ? (
         <ProbeFacts info={result.info} />
       ) : (
         <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 dark:border-rose-500/30 dark:bg-rose-500/10">

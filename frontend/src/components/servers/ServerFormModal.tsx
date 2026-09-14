@@ -29,6 +29,12 @@ export interface ServerFormData {
   site_url: string;
   ftps: boolean;
   docroot: string;
+  // FTP only, optional: a directly reachable MySQL server for when the site blocks the helper
+  // over HTTP (see lib/agentless dbFields helpers)
+  db_host: string;
+  db_user: string;
+  db_pass: string;
+  db_name: string;
 }
 
 export const EMPTY_SERVER_FORM: ServerFormData = {
@@ -46,6 +52,10 @@ export const EMPTY_SERVER_FORM: ServerFormData = {
   site_url: '',
   ftps: false,
   docroot: '',
+  db_host: '',
+  db_user: '',
+  db_pass: '',
+  db_name: '',
 };
 
 /** Field values a kind starts with when picked in the form. */
@@ -82,6 +92,10 @@ export function serverToForm(server: Server): ServerFormData {
     site_url: serverSiteUrl(server),
     ftps: serverFtps(server),
     docroot: serverDocroot(server),
+    db_host: typeof server.metadata?.db_host === 'string' ? server.metadata.db_host : '',
+    db_user: typeof server.metadata?.db_user === 'string' ? server.metadata.db_user : '',
+    db_pass: '',
+    db_name: typeof server.metadata?.db_name === 'string' ? server.metadata.db_name : '',
   };
 }
 
@@ -95,6 +109,11 @@ export function buildServerPayload(form: ServerFormData): ServerPayload {
   const kind = kindOf(form.panel_type);
   if (kind === 'ftp') {
     const site_url = normalizeSiteUrl(form.site_url);
+    const metadata: Record<string, unknown> = { site_url, ftps: !!form.ftps, docroot: form.docroot.trim() };
+    if (form.db_host.trim()) metadata.db_host = form.db_host.trim();
+    if (form.db_user.trim()) metadata.db_user = form.db_user.trim();
+    if (form.db_pass) metadata.db_pass = form.db_pass; // blank = keep the stored one on edit, same convention as the account password
+    if (form.db_name.trim()) metadata.db_name = form.db_name.trim();
     return {
       name: form.name,
       panel_type: 'ftp',
@@ -103,7 +122,7 @@ export function buildServerPayload(form: ServerFormData): ServerPayload {
       username: form.username.trim(),
       auth_method: 'password',
       password: form.password,
-      metadata: { site_url, ftps: !!form.ftps, docroot: form.docroot.trim() },
+      metadata,
     };
   }
   if (kind === 'wordpress') {
@@ -462,6 +481,32 @@ export function ServerFormModal({ open, onClose, mode, form, onChange, onSubmit,
                 <Input mono type="text" value={form.docroot} onChange={(e) => set('docroot', e.target.value)} placeholder="/public_html" autoComplete="off" />
               </Field>
             </Section>
+
+            <Divider />
+
+            <details className="group rounded-lg border border-slate-200 open:bg-slate-50/60 dark:border-white/[0.08] dark:open:bg-white/[0.02]">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-slate-700 marker:content-none dark:text-slate-300">
+                <span>{t('servers.form.ftp.db.title')}</span>
+                <span className="text-xs font-normal text-slate-400 group-open:hidden">{t('common.optional')}</span>
+              </summary>
+              <div className="space-y-4 border-t border-slate-200 px-4 py-4 dark:border-white/[0.08]">
+                <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">{t('servers.form.ftp.db.hint')}</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label={t('servers.form.ftp.db.host')} hint={t('servers.form.ftp.db.host.hint')}>
+                    <Input mono type="text" value={form.db_host} onChange={(e) => set('db_host', e.target.value)} placeholder="mysql.example-host.com" autoComplete="off" />
+                  </Field>
+                  <Field label={t('servers.form.ftp.db.name')}>
+                    <Input mono type="text" value={form.db_name} onChange={(e) => set('db_name', e.target.value)} autoComplete="off" />
+                  </Field>
+                  <Field label={t('servers.form.ftp.db.user')}>
+                    <Input mono type="text" value={form.db_user} onChange={(e) => set('db_user', e.target.value)} autoComplete="off" />
+                  </Field>
+                  <Field label={t('servers.form.ftp.db.pass')} hint={isEdit ? t('servers.form.password.keep') : undefined}>
+                    <Input type="password" value={form.db_pass} onChange={(e) => set('db_pass', e.target.value)} autoComplete="new-password" />
+                  </Field>
+                </div>
+              </div>
+            </details>
           </>
         )}
 

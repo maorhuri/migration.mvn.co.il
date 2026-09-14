@@ -62,8 +62,8 @@ func (e *HelperError) Error() string { return fmt.Sprintf("helper %s failed: %s"
 
 // helper is an HTTP client for one uploaded helper (file or plugin endpoint).
 type helper struct {
-	base     string // URL without query: .../mvn-xxx.php or .../wp-admin/admin-ajax.php
-	plugin   bool   // plugin endpoint: action=mvn_migrator&mvn_action=<a>
+	base     string // URL without query: .../mig-xxx.php or .../wp-admin/admin-ajax.php
+	plugin   bool   // plugin endpoint: action=mig_helper&mig_action=<a>
 	token    string
 	client   *http.Client
 	insecure bool
@@ -107,7 +107,7 @@ func (h *helper) url(action string, params map[string]string) string {
 	q := url.Values{}
 	if h.plugin {
 		q.Set("action", pluginAjaxAction)
-		q.Set("mvn_action", action)
+		q.Set("mig_action", action)
 	} else {
 		q.Set("action", action)
 	}
@@ -124,7 +124,7 @@ func (h *helper) newRequest(ctx context.Context, action string, params map[strin
 		return nil, err
 	}
 	req.Header.Set("X-MT-Token", h.token)
-	req.Header.Set("User-Agent", "mvn-migration-tool/1.0")
+	req.Header.Set("User-Agent", "mig-helper/1.0")
 	req.Header.Set("Accept", "application/json, application/octet-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 	return req, nil
@@ -197,7 +197,7 @@ func (h *helper) call(ctx context.Context, action string, params map[string]stri
 func (h *helper) decode(action string, status int, body []byte) (json.RawMessage, error) {
 	trimmed := bytes.TrimSpace(body)
 	if h.plugin && string(trimmed) == "0" {
-		return nil, &HelperError{Action: action, Message: "the mvn-migrator plugin endpoint is not registered (plugin not active?)"}
+		return nil, &HelperError{Action: action, Message: "the migration helper plugin endpoint is not registered (plugin not active?)"}
 	}
 	if status == http.StatusNotFound {
 		return nil, &UnreachableError{URL: h.base, Status: status, Reason: "not found: the site URL does not serve the directory the helper was uploaded to, or a rewrite rule hides .php files"}

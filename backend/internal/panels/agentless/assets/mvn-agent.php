@@ -1,8 +1,8 @@
 <?php
 /**
- * MVN Migrator agent (mvn-agent.php).
+ * Site migration helper agent (mig-agent.php).
  *
- * Temporary helper the MVN migration tool uploads to a customer's web root. One file,
+ * Temporary helper this migration tool uploads to a customer's web root. One file,
  * PHP >= 7.2, no dependencies, runs under max_execution_time=30 / memory_limit=128M and
  * removes itself on cleanup. Authoritative contract: docs/agentless-protocol.md in the tool.
  *
@@ -17,14 +17,14 @@
  *           parameters also accepted as POST fields). Responses are JSON, HTTP 200:
  *           {"ok":true,...} or {"ok":false,"error":"..."}; 403 bad/expired token or wrong IP;
  *           404 unknown file (get); 416 bad Range. Every response: Cache-Control: no-store.
- *   CLI     php mvn-agent.php <action> key=value ...  Env MVN_DOCROOT overrides the docroot,
- *           env MVN_TMP places the temp dir elsewhere. No token/IP/expiry check in CLI.
- *   Plugin  included by mvn-migrator.php with MVN_AGENT_PLUGIN_MODE defined. Nothing runs at
- *           include time; the plugin calls mvn_agent_plugin_request() from admin-ajax.php
- *           (action=mvn_migrator&mvn_action=<a>&token=<t>), token/expiry from the option
- *           mvn_migrator_token, docroot = ABSPATH.
+ *   CLI     php mig-agent.php <action> key=value ...  Env MIG_DOCROOT overrides the docroot,
+ *           env MIG_TMP places the temp dir elsewhere. No token/IP/expiry check in CLI.
+ *   Plugin  included by mig-helper.php with MIG_AGENT_PLUGIN_MODE defined. Nothing runs at
+ *           include time; the plugin calls mig_agent_plugin_request() from admin-ajax.php
+ *           (action=mig_helper&mig_action=<a>&token=<t>), token/expiry from the option
+ *           mig_helper_token, docroot = ABSPATH.
  *
- * Temp dir  <docroot>/.mvn-tmp-<8 hex>/ (with .htaccess "deny" and an empty index.html) holds
+ * Temp dir  <docroot>/.mig-tmp-<8 hex>/ (with .htaccess "deny" and an empty index.html) holds
  *           every state file and artifact. info returns it as tmp_dir (absolute path) and
  *           tmp_dir_name (basename).
  *
@@ -73,32 +73,32 @@
  *   - exec-mode tar stores a top-level entry whose name starts with "-" as "./-name".
  *   - Extra fields beyond the contract (mysqli, zlib, exec_tools, db_size, db_tables,
  *     tmp_dir_name, mode, notes, rows, views, elapsed, out_bytes, ...) are informational.
- *   - Tests: env MVN_BUDGET=<seconds> (CLI only) shortens the per-call budget.
+ *   - Tests: env MIG_BUDGET=<seconds> (CLI only) shortens the per-call budget.
  */
 
-if (!defined('MVN_CFG_TOKEN')) {
-    define('MVN_CFG_TOKEN', '__TOKEN__');
-    define('MVN_CFG_ALLOWED_IP', '__ALLOWED_IP__');
-    define('MVN_CFG_EXPIRES', '__EXPIRES__');
+if (!defined('MIG_CFG_TOKEN')) {
+    define('MIG_CFG_TOKEN', '__TOKEN__');
+    define('MIG_CFG_ALLOWED_IP', '__ALLOWED_IP__');
+    define('MIG_CFG_EXPIRES', '__EXPIRES__');
     // nowdoc: the replaced path may contain quotes or backslashes without breaking the file
-    define('MVN_CFG_DOCROOT', trim(<<<'MVNDOCROOT'
+    define('MIG_CFG_DOCROOT', trim(<<<'MIGDOCROOT'
 __DOCROOT__
-MVNDOCROOT
+MIGDOCROOT
     ));
-    define('MVN_AGENT_VERSION', '1.0.0');
-    define('MVN_CALL_BUDGET', 20);      // seconds of work per chunked call
-    define('MVN_INFO_WALK_BUDGET', 15); // seconds for the info file walk
-    define('MVN_GZ_LEVEL', 6);          // deflate level for PHP-written gzip
-    define('MVN_SQL_BATCH_BYTES', 500 * 1024);
-    define('MVN_SQL_BATCH_ROWS', 1000);
-    define('MVN_PART_BYTES', 1073741824); // 1 GB parts (exec mode)
+    define('MIG_AGENT_VERSION', '1.0.0');
+    define('MIG_CALL_BUDGET', 20);      // seconds of work per chunked call
+    define('MIG_INFO_WALK_BUDGET', 15); // seconds for the info file walk
+    define('MIG_GZ_LEVEL', 6);          // deflate level for PHP-written gzip
+    define('MIG_SQL_BATCH_BYTES', 500 * 1024);
+    define('MIG_SQL_BATCH_ROWS', 1000);
+    define('MIG_PART_BYTES', 1073741824); // 1 GB parts (exec mode)
 }
 
 /* ------------------------------------------------------------------------------------------
  * Small helpers
  * ---------------------------------------------------------------------------------------- */
 
-class MvnError extends Exception
+class MigError extends Exception
 {
     public $status;
     public $extra;
@@ -111,7 +111,7 @@ class MvnError extends Exception
     }
 }
 
-final class MvnUtil
+final class MigUtil
 {
     /** Functions listed in disable_functions (lowercase). */
     public static function disabledFunctions()
@@ -236,8 +236,8 @@ final class MvnUtil
         if ($ok === null) {
             $ok = false;
             if (self::shellFunction() !== null) {
-                list($code, $out) = self::run('echo mvn-probe-ok', 5);
-                $ok = (strpos($out, 'mvn-probe-ok') !== false);
+                list($code, $out) = self::run('echo probe-ok', 5);
+                $ok = (strpos($out, 'probe-ok') !== false);
             }
         }
         return $ok;
@@ -410,7 +410,7 @@ final class MvnUtil
  * WordPress configuration and database access
  * ---------------------------------------------------------------------------------------- */
 
-final class MvnWp
+final class MigWp
 {
     /** wp-config.php in the docroot, or one level up (WordPress allows that). */
     public static function findConfig($docroot)
@@ -757,7 +757,7 @@ final class MvnWp
  * Output writer (plain or gzip member per call), tar writer, directory walker
  * ---------------------------------------------------------------------------------------- */
 
-final class MvnOutput
+final class MigOutput
 {
     private $fh = null;
     private $ctx = null;
@@ -777,16 +777,16 @@ final class MvnOutput
         $this->gz = (bool) $gz;
         $this->fh = @fopen($path, 'c');
         if (!$this->fh) {
-            throw new MvnError('cannot open ' . basename($path) . ' for writing');
+            throw new MigError('cannot open ' . basename($path) . ' for writing');
         }
         if ($truncateTo !== null) {
             @ftruncate($this->fh, (int) $truncateTo);
         }
         fseek($this->fh, 0, SEEK_END);
         if ($this->gz) {
-            $this->ctx = @deflate_init(ZLIB_ENCODING_GZIP, array('level' => MVN_GZ_LEVEL));
+            $this->ctx = @deflate_init(ZLIB_ENCODING_GZIP, array('level' => MIG_GZ_LEVEL));
             if ($this->ctx === false) {
-                throw new MvnError('deflate_init failed');
+                throw new MigError('deflate_init failed');
             }
         }
     }
@@ -804,7 +804,7 @@ final class MvnOutput
         if ($this->ctx !== null) {
             $o = @deflate_add($this->ctx, $this->buf, $finish ? ZLIB_FINISH : ZLIB_NO_FLUSH);
             if ($o === false) {
-                throw new MvnError('deflate_add failed');
+                throw new MigError('deflate_add failed');
             }
         } else {
             $o = $this->buf;
@@ -813,7 +813,7 @@ final class MvnOutput
         if ($o !== '') {
             $n = @fwrite($this->fh, $o);
             if ($n !== strlen($o)) {
-                throw new MvnError('write failed on ' . basename($this->path) . ' (disk full or quota exceeded?)');
+                throw new MigError('write failed on ' . basename($this->path) . ' (disk full or quota exceeded?)');
             }
         }
     }
@@ -843,11 +843,11 @@ final class MvnOutput
     }
 }
 
-final class MvnTar
+final class MigTar
 {
     private $out;
 
-    public function __construct(MvnOutput $out)
+    public function __construct(MigOutput $out)
     {
         $this->out = $out;
     }
@@ -968,7 +968,7 @@ final class MvnTar
  * Depth-first walk of the docroot with the archive exclusions. The pending-directory stack
  * is plain data so it can be stored in a state file and resumed in a later call.
  */
-final class MvnWalker
+final class MigWalker
 {
     public $docroot;
     public $stack = array('');
@@ -986,7 +986,7 @@ final class MvnWalker
         } elseif ($helperRel !== '') {
             $this->relSkip[$helperRel] = true;
         }
-        $this->relSkip['wp-content/plugins/mvn-migrator'] = true;
+        $this->relSkip['wp-content/plugins/mig-helper'] = true;
         $this->relSkip['wp-content/cache'] = true;
         $this->relSkip['wp-content/ai1wm-backups'] = true;
         $this->relSkip['wp-content/updraft'] = true;
@@ -996,7 +996,7 @@ final class MvnWalker
     public function excluded($rel, $base, $isDir)
     {
         if (strpos($rel, '/') === false) {
-            if (isset($this->topSkip[$rel]) || strncmp($rel, '.mvn-tmp-', 9) === 0) {
+            if (isset($this->topSkip[$rel]) || strncmp($rel, '.mig-tmp-', 9) === 0) {
                 return true;
             }
         }
@@ -1077,7 +1077,7 @@ final class MvnWalker
  * The agent: request context, temp dir, state files, actions
  * ---------------------------------------------------------------------------------------- */
 
-final class MvnAgent
+final class MigAgent
 {
     public static $responded = false;
 
@@ -1118,7 +1118,7 @@ final class MvnAgent
             }
         }
         if (!is_dir($d)) {
-            throw new MvnError('docroot not found: ' . $d);
+            throw new MigError('docroot not found: ' . $d);
         }
         $this->docroot = $d;
 
@@ -1132,19 +1132,19 @@ final class MvnAgent
             $this->tmp = $ov;
             $this->tmpName = basename($ov);
         } else {
-            $this->tmpName = '.mvn-tmp-' . substr(hash('sha256', 'mvn|' . MVN_CFG_TOKEN . '|' . $d), 0, 8);
+            $this->tmpName = '.mig-tmp-' . substr(hash('sha256', 'mig|' . MIG_CFG_TOKEN . '|' . $d), 0, 8);
             $this->tmp = $d . '/' . $this->tmpName;
         }
 
-        $this->budget = MVN_CALL_BUDGET;
+        $this->budget = MIG_CALL_BUDGET;
         if (!$this->cli) {
             $max = (int) @ini_get('max_execution_time');
             if (!@set_time_limit(0) && $max > 0 && $max < 30) {
-                $this->budget = max(5, min(MVN_CALL_BUDGET, $max - 8));
+                $this->budget = max(5, min(MIG_CALL_BUDGET, $max - 8));
             }
         }
-        if ($this->cli && is_numeric(getenv('MVN_BUDGET'))) {
-            $this->budget = (float) getenv('MVN_BUDGET'); // tests only: force short calls
+        if ($this->cli && is_numeric(getenv('MIG_BUDGET'))) {
+            $this->budget = (float) getenv('MIG_BUDGET'); // tests only: force short calls
         }
         $this->deadline = $this->start + $this->budget;
         $this->hostMemoryLimit = (string) @ini_get('memory_limit');
@@ -1174,7 +1174,7 @@ final class MvnAgent
     {
         if (!is_dir($this->tmp)) {
             if (!@mkdir($this->tmp, 0755, true) && !is_dir($this->tmp)) {
-                throw new MvnError('cannot create temp dir ' . $this->tmp . ' (permissions?)');
+                throw new MigError('cannot create temp dir ' . $this->tmp . ' (permissions?)');
             }
         }
         $ht = $this->tmp . '/.htaccess';
@@ -1204,9 +1204,9 @@ final class MvnAgent
     {
         $f = $this->tmp . '/' . $name;
         $t = $f . '.' . getmypid() . '.tmp';
-        if (@file_put_contents($t, MvnUtil::jsonEncode($data)) === false || !@rename($t, $f)) {
+        if (@file_put_contents($t, MigUtil::jsonEncode($data)) === false || !@rename($t, $f)) {
             @unlink($t);
-            throw new MvnError('cannot write state file ' . $name);
+            throw new MigError('cannot write state file ' . $name);
         }
     }
 
@@ -1258,7 +1258,7 @@ final class MvnAgent
             return $this->wp;
         }
         $this->wp = array('is' => false, 'config' => null, 'constants' => array(), 'table_prefix' => null, 'multisite' => false, 'version' => null);
-        $cfg = MvnWp::findConfig($this->docroot);
+        $cfg = MigWp::findConfig($this->docroot);
         $core = is_file($this->docroot . '/wp-includes/version.php') || is_file($this->docroot . '/wp-settings.php');
         if ($cfg === null && !$core) {
             return $this->wp;
@@ -1266,7 +1266,7 @@ final class MvnAgent
         $this->wp['is'] = true;
         $this->wp['config'] = $cfg;
         if ($cfg !== null) {
-            $p = MvnWp::parse($cfg);
+            $p = MigWp::parse($cfg);
             $this->wp['constants'] = $p['constants'];
             $this->wp['table_prefix'] = ($p['table_prefix'] !== null && $p['table_prefix'] !== '') ? $p['table_prefix'] : 'wp_';
             $this->wp['multisite'] = !empty($p['constants']['MULTISITE']);
@@ -1299,7 +1299,7 @@ final class MvnAgent
 
     public function walker()
     {
-        return new MvnWalker($this->docroot, $this->tmpName, $this->helperRel);
+        return new MigWalker($this->docroot, $this->tmpName, $this->helperRel);
     }
 
     /* ---------------------------------------------------------------- info */
@@ -1310,12 +1310,12 @@ final class MvnAgent
         $wp = $this->wp();
         $r = array(
             'ok' => true,
-            'agent_version' => MVN_AGENT_VERSION,
+            'agent_version' => MIG_AGENT_VERSION,
             'agent_mode' => $this->plugin ? 'plugin' : ($this->cli ? 'cli' : 'file'),
             'php_version' => PHP_VERSION,
-            'exec' => MvnUtil::execAvailable(),
-            'mysqli' => MvnWp::mysqliAvailable(),
-            'zlib' => MvnOutput::gzAvailable(),
+            'exec' => MigUtil::execAvailable(),
+            'mysqli' => MigWp::mysqliAvailable(),
+            'zlib' => MigOutput::gzAvailable(),
             'wordpress' => $wp['is'],
             'wp_version' => $wp['version'],
             'table_prefix' => $wp['is'] ? $wp['table_prefix'] : null,
@@ -1334,12 +1334,12 @@ final class MvnAgent
         if ($free !== false) {
             $r['disk_free'] = (int) $free;
         }
-        if (MvnUtil::execAvailable()) {
+        if (MigUtil::execAvailable()) {
             $r['exec_tools'] = array(
-                'mysqldump' => MvnUtil::haveBinary('mysqldump') !== '' || MvnUtil::haveBinary('mariadb-dump') !== '',
-                'tar' => MvnUtil::haveBinary('tar') !== '',
-                'gzip' => MvnUtil::haveBinary('gzip') !== '',
-                'split' => MvnUtil::haveBinary('split') !== '',
+                'mysqldump' => MigUtil::haveBinary('mysqldump') !== '' || MigUtil::haveBinary('mariadb-dump') !== '',
+                'tar' => MigUtil::haveBinary('tar') !== '',
+                'gzip' => MigUtil::haveBinary('gzip') !== '',
+                'split' => MigUtil::haveBinary('split') !== '',
             );
         }
 
@@ -1349,7 +1349,7 @@ final class MvnAgent
             if ($creds !== null) {
                 $r['db'] = array('name' => $creds['name'], 'user' => $creds['user'], 'host' => $creds['host']);
                 $err = '';
-                $m = MvnWp::connect($creds, $err);
+                $m = MigWp::connect($creds, $err);
                 if ($m) {
                     $this->wpFactsFromDb($m, $wp['table_prefix'], $wp['multisite'], $r);
                     @$m->close();
@@ -1378,7 +1378,7 @@ final class MvnAgent
         $count = 0;
         $bytes = 0;
         $w = $this->walker();
-        $done = $w->step(microtime(true) + MVN_INFO_WALK_BUDGET, function ($kind, $rel, $size) use (&$count, &$bytes) {
+        $done = $w->step(microtime(true) + MIG_INFO_WALK_BUDGET, function ($kind, $rel, $size) use (&$count, &$bytes) {
             if ($kind === 'file') {
                 $count++;
                 $bytes += $size;
@@ -1390,7 +1390,7 @@ final class MvnAgent
 
     private function wpFactsFromDb($m, $prefix, $multisite, &$r)
     {
-        $opt = MvnUtil::backtick($prefix . 'options');
+        $opt = MigUtil::backtick($prefix . 'options');
         $res = @$m->query("SELECT option_name, option_value FROM $opt WHERE option_name IN ('siteurl','home','active_plugins')");
         $active = array();
         if ($res) {
@@ -1413,7 +1413,7 @@ final class MvnAgent
             $res->free();
         }
         if ($multisite) {
-            $meta = MvnUtil::backtick($prefix . 'sitemeta');
+            $meta = MigUtil::backtick($prefix . 'sitemeta');
             $res = @$m->query("SELECT meta_value FROM $meta WHERE meta_key='active_sitewide_plugins' LIMIT 1");
             if ($res) {
                 if ($row = $res->fetch_row()) {
@@ -1436,7 +1436,7 @@ final class MvnAgent
         $r['plugins']['wp_rocket'] = isset($active['wp-rocket/wp-rocket.php']);
         $r['db_size'] = 0;
         $r['db_tables'] = 0;
-        foreach (MvnWp::listTables($m, $r['db']['name']) as $t) {
+        foreach (MigWp::listTables($m, $r['db']['name']) as $t) {
             $r['db_size'] += $t['bytes'];
             $r['db_tables']++;
         }
@@ -1448,12 +1448,12 @@ final class MvnAgent
     {
         $name = $this->param('file');
         if ($name === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/', $name) || strpos($name, '..') !== false) {
-            throw new MvnError('file not found', 404);
+            throw new MigError('file not found', 404);
         }
         $real = @realpath($this->tmp . '/' . $name);
         $tmpReal = @realpath($this->tmp);
         if ($real === false || $tmpReal === false || dirname($real) !== $tmpReal || !is_file($real) || is_link($this->tmp . '/' . $name)) {
-            throw new MvnError('file not found', 404);
+            throw new MigError('file not found', 404);
         }
         clearstatcache(true, $real);
         $size = (int) filesize($real);
@@ -1480,7 +1480,7 @@ final class MvnAgent
                 }
             }
             if ($bad) {
-                throw new MvnError('range not satisfiable', 416, array('size' => $size));
+                throw new MigError('range not satisfiable', 416, array('size' => $size));
             }
             $partial = true;
         }
@@ -1548,20 +1548,20 @@ final class MvnAgent
         foreach (array('dump.state.json', 'archive.state.json') as $s) {
             $st = $this->stateRead($s);
             if ($st && !empty($st['pid'])) {
-                MvnUtil::kill($st['pid']);
+                MigUtil::kill($st['pid']);
             }
         }
-        if (MvnUtil::execAvailable() && MvnUtil::haveBinary('pkill') !== '') {
-            MvnUtil::run('pkill -f ' . escapeshellarg($this->tmp . '/'), 5);
+        if (MigUtil::execAvailable() && MigUtil::haveBinary('pkill') !== '') {
+            MigUtil::run('pkill -f ' . escapeshellarg($this->tmp . '/'), 5);
         }
         if (is_dir($this->tmp)) {
-            $r['tmp_removed'] = MvnUtil::rmTree($this->tmp);
+            $r['tmp_removed'] = MigUtil::rmTree($this->tmp);
         } else {
             $r['tmp_removed'] = true;
         }
         if ($this->plugin) {
-            if (function_exists('mvn_migrator_self_destruct')) {
-                $r['plugin_removed'] = (bool) mvn_migrator_self_destruct();
+            if (function_exists('mig_helper_self_destruct')) {
+                $r['plugin_removed'] = (bool) mig_helper_self_destruct();
             }
         } elseif (!$this->cli || $this->param('self_delete') === '1') {
             $r['helper_removed'] = @unlink(__FILE__) || !file_exists(__FILE__);
@@ -1634,7 +1634,7 @@ final class MvnAgent
     private function dumpDiscard($st)
     {
         if (!empty($st['pid'])) {
-            MvnUtil::kill($st['pid']);
+            MigUtil::kill($st['pid']);
         }
         foreach (array('db.sql', 'db.sql.gz', 'db.out.part', 'dump.err', 'dump.exit', 'dump.fin', 'dump.pid', 'dump.sh', 'dump.sed', '.dump.cnf', 'dump.state.json') as $f) {
             @unlink($this->tmp . '/' . $f);
@@ -1645,24 +1645,24 @@ final class MvnAgent
     {
         $creds = $this->dbCreds();
         if ($creds === null) {
-            throw new MvnError('database credentials not found: no DB_NAME/DB_USER in wp-config.php and no db_name/db_user parameters');
+            throw new MigError('database credentials not found: no DB_NAME/DB_USER in wp-config.php and no db_name/db_user parameters');
         }
         $tables = null;
         $connErr = '';
-        if (MvnWp::mysqliAvailable()) {
-            $m = MvnWp::connect($creds, $connErr);
+        if (MigWp::mysqliAvailable()) {
+            $m = MigWp::connect($creds, $connErr);
             if ($m) {
-                $tables = MvnWp::listTables($m, $creds['name']);
+                $tables = MigWp::listTables($m, $creds['name']);
                 @$m->close();
             }
         }
-        $useExec = MvnUtil::execAvailable() && (MvnUtil::haveBinary('mysqldump') !== '' || MvnUtil::haveBinary('mariadb-dump') !== '');
+        $useExec = MigUtil::execAvailable() && (MigUtil::haveBinary('mysqldump') !== '' || MigUtil::haveBinary('mariadb-dump') !== '');
         if (!$useExec) {
-            if (!MvnWp::mysqliAvailable()) {
-                throw new MvnError('cannot dump the database: no shell access to mysqldump and the PHP mysqli extension is missing');
+            if (!MigWp::mysqliAvailable()) {
+                throw new MigError('cannot dump the database: no shell access to mysqldump and the PHP mysqli extension is missing');
             }
             if ($tables === null) {
-                throw new MvnError($connErr !== '' ? $connErr : 'database connection failed');
+                throw new MigError($connErr !== '' ? $connErr : 'database connection failed');
             }
         }
         $st = array(
@@ -1710,19 +1710,19 @@ final class MvnAgent
 
     private function dumpStartExec($st, $creds)
     {
-        $bin = MvnUtil::haveBinary('mysqldump');
+        $bin = MigUtil::haveBinary('mysqldump');
         if ($bin === '') {
-            $bin = MvnUtil::haveBinary('mariadb-dump');
+            $bin = MigUtil::haveBinary('mariadb-dump');
         }
-        $gz = MvnUtil::haveBinary('gzip') !== '';
+        $gz = MigUtil::haveBinary('gzip') !== '';
         $st['gz'] = $gz;
         $st['file'] = $gz ? 'db.sql.gz' : 'db.sql';
         $st['tool'] = basename($bin);
 
-        list($host, $port, $socket) = MvnWp::parseHost($creds['host']);
-        if (is_array(MvnWp::$resolved) && $socket === null && ($host === 'localhost' || $host === '')) {
+        list($host, $port, $socket) = MigWp::parseHost($creds['host']);
+        if (is_array(MigWp::$resolved) && $socket === null && ($host === 'localhost' || $host === '')) {
             // the PHP probe only reached the server through a specific socket or TCP: reuse it
-            list($host, $port, $socket) = MvnWp::$resolved;
+            list($host, $port, $socket) = MigWp::$resolved;
         }
         $cnf = "[client]\nuser=" . self::cnfQuote($creds['user']) . "\npassword=" . self::cnfQuote($creds['pass']) . "\n";
         if ($socket !== null) {
@@ -1736,7 +1736,7 @@ final class MvnAgent
         $cnfPath = $this->tmp . '/.dump.cnf';
         @unlink($cnfPath);
         if (@file_put_contents($cnfPath, $cnf) === false) {
-            throw new MvnError('cannot write the credentials file in the temp dir');
+            throw new MigError('cannot write the credentials file in the temp dir');
         }
         @chmod($cnfPath, 0600);
         // MariaDB 11.4 dumps start with "/*!999999\- enable the sandbox mode */" which older
@@ -1761,13 +1761,13 @@ final class MvnAgent
             . "echo done > dump.fin\n";
         $shPath = $this->tmp . '/dump.sh';
         if (@file_put_contents($shPath, $sh) === false) {
-            throw new MvnError('cannot write the dump script in the temp dir');
+            throw new MigError('cannot write the dump script in the temp dir');
         }
         @chmod($shPath, 0700);
         foreach (array('dump.err', 'dump.exit', 'dump.fin', 'db.out.part', $st['file']) as $f) {
             @unlink($this->tmp . '/' . $f);
         }
-        $st['pid'] = MvnUtil::spawn($shPath, $this->tmp . '/dump.pid');
+        $st['pid'] = MigUtil::spawn($shPath, $this->tmp . '/dump.pid');
         $st['last_bytes'] = 0;
         $st['last_change'] = time();
         if ($st['pid'] <= 0) {
@@ -1780,10 +1780,10 @@ final class MvnAgent
     private function dumpFallbackToMysqli($st, $why)
     {
         if (!empty($st['pid'])) {
-            MvnUtil::kill($st['pid']);
+            MigUtil::kill($st['pid']);
         }
         @unlink($this->tmp . '/.dump.cnf');
-        if (!MvnWp::mysqliAvailable() || $st['tables_total'] === null) {
+        if (!MigWp::mysqliAvailable() || $st['tables_total'] === null) {
             $st['error'] = $why;
             return $st;
         }
@@ -1890,7 +1890,7 @@ final class MvnAgent
                 @unlink($this->tmp . '/dump.sed');
                 return $st;
             }
-            $alive = MvnUtil::pidAlive($st['pid']);
+            $alive = MigUtil::pidAlive($st['pid']);
             if ($alive === false) {
                 usleep(300000);
                 clearstatcache();
@@ -1904,7 +1904,7 @@ final class MvnAgent
                 $st['last_bytes'] = $st['bytes'];
                 $st['last_change'] = time();
             } elseif (time() - $st['last_change'] > 1200) {
-                MvnUtil::kill($st['pid']);
+                MigUtil::kill($st['pid']);
                 $st['error'] = 'mysqldump produced no output for 20 minutes';
                 return $st;
             }
@@ -1918,7 +1918,7 @@ final class MvnAgent
     private function dumpStartMysqli($st)
     {
         $st['mode'] = 'mysqli';
-        $st['gz'] = MvnOutput::gzAvailable();
+        $st['gz'] = MigOutput::gzAvailable();
         $st['file'] = $st['gz'] ? 'db.sql.gz' : 'db.sql';
         $st['cur'] = null;
         $st['idx'] = 0;
@@ -1935,17 +1935,17 @@ final class MvnAgent
     {
         $creds = $this->dbCreds();
         if ($creds === null) {
-            throw new MvnError('database credentials not found');
+            throw new MigError('database credentials not found');
         }
         $err = '';
-        $m = MvnWp::connect($creds, $err);
+        $m = MigWp::connect($creds, $err);
         if (!$m) {
-            throw new MvnError($err);
+            throw new MigError($err);
         }
-        $out = new MvnOutput($this->tmp . '/' . $st['file'], $st['gz'], (int) $st['out_size']);
+        $out = new MigOutput($this->tmp . '/' . $st['file'], $st['gz'], (int) $st['out_size']);
         try {
             if (empty($st['header'])) {
-                $out->write("-- MVN Migrator SQL dump (mysqli mode)\n-- Database: " . $st['db'] . "\n-- Server: " . $m->server_info . "\n-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n\n"
+                $out->write("-- SQL dump (mysqli mode)\n-- Database: " . $st['db'] . "\n-- Server: " . $m->server_info . "\n-- Generated: " . gmdate('Y-m-d H:i:s') . " UTC\n\n"
                     . "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\nSET UNIQUE_CHECKS=0;\nSET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\nSET TIME_ZONE='+00:00';\n\n");
                 $st['header'] = true;
             }
@@ -1953,7 +1953,7 @@ final class MvnAgent
             while ($steps++ === 0 || !$this->overBudget()) {
                 if ($st['cur'] === null) {
                     if ($st['idx'] >= count($st['tables'])) {
-                        $out->write("\nSET FOREIGN_KEY_CHECKS=1;\nSET UNIQUE_CHECKS=1;\n-- MVN Migrator dump completed\n");
+                        $out->write("\nSET FOREIGN_KEY_CHECKS=1;\nSET UNIQUE_CHECKS=1;\n-- dump completed\n");
                         $st['done'] = true;
                         $st['finished'] = time();
                         break;
@@ -1985,9 +1985,9 @@ final class MvnAgent
         return $st;
     }
 
-    private function dumpView($m, $name, MvnOutput $out, &$st)
+    private function dumpView($m, $name, MigOutput $out, &$st)
     {
-        $q = MvnUtil::backtick($name);
+        $q = MigUtil::backtick($name);
         $r = @$m->query("SHOW CREATE VIEW $q");
         if (!$r) {
             self::note($st, "view $name skipped: " . $m->error);
@@ -1999,13 +1999,13 @@ final class MvnAgent
         $out->write("\n--\n-- View structure for view $q\n--\n\nDROP VIEW IF EXISTS $q;\n" . $create . ";\n\n");
     }
 
-    private function dumpTableBegin($m, $t, MvnOutput $out)
+    private function dumpTableBegin($m, $t, MigOutput $out)
     {
         $name = $t['n'];
-        $q = MvnUtil::backtick($name);
+        $q = MigUtil::backtick($name);
         $r = @$m->query("SHOW CREATE TABLE $q");
         if (!$r) {
-            throw new MvnError("SHOW CREATE TABLE $name failed: " . $m->error);
+            throw new MigError("SHOW CREATE TABLE $name failed: " . $m->error);
         }
         $row = $r->fetch_row();
         $r->free();
@@ -2015,7 +2015,7 @@ final class MvnAgent
         $types = array();
         $r = @$m->query("SHOW FULL COLUMNS FROM $q");
         if (!$r) {
-            throw new MvnError("SHOW COLUMNS FROM $name failed: " . $m->error);
+            throw new MigError("SHOW COLUMNS FROM $name failed: " . $m->error);
         }
         while ($c = $r->fetch_assoc()) {
             if (isset($c['Extra']) && stripos($c['Extra'], 'GENERATED') !== false) {
@@ -2081,9 +2081,9 @@ final class MvnAgent
         // full scan per OFFSET, so they use big batches capped at about 20 MB.
         $avg = (!empty($t['r']) && !empty($t['b'])) ? $t['b'] / max(1, $t['r']) : 0;
         if ($keyCols) {
-            $limit = MVN_SQL_BATCH_ROWS;
+            $limit = MIG_SQL_BATCH_ROWS;
             if ($avg > 20000) {
-                $limit = (int) max(20, min(MVN_SQL_BATCH_ROWS, floor(20000000 / $avg)));
+                $limit = (int) max(20, min(MIG_SQL_BATCH_ROWS, floor(20000000 / $avg)));
             }
         } else {
             $limit = 20000;
@@ -2114,17 +2114,17 @@ final class MvnAgent
     }
 
     /** Dump one batch of rows; returns true when the table is finished. */
-    private function dumpTableBatch($m, &$c, MvnOutput $out, &$st)
+    private function dumpTableBatch($m, &$c, MigOutput $out, &$st)
     {
-        $q = MvnUtil::backtick($c['n']);
+        $q = MigUtil::backtick($c['n']);
         if (!$c['cols']) {
             return true;
         }
-        $colList = implode(',', array_map(array('MvnUtil', 'backtick'), $c['cols']));
+        $colList = implode(',', array_map(array('MigUtil', 'backtick'), $c['cols']));
         $limit = (int) $c['limit'];
         $keyCols = $c['pk_cols'];
         if ($keyCols) {
-            $order = implode(',', array_map(array('MvnUtil', 'backtick'), $keyCols));
+            $order = implode(',', array_map(array('MigUtil', 'backtick'), $keyCols));
             $where = '';
             if (is_array($c['last'])) {
                 // (k1 > v1) OR (k1 = v1 AND k2 > v2) OR ... : index-friendly on every MySQL/MariaDB
@@ -2133,9 +2133,9 @@ final class MvnAgent
                 for ($i = 0; $i < $n; $i++) {
                     $ands = array();
                     for ($j = 0; $j < $i; $j++) {
-                        $ands[] = MvnUtil::backtick($keyCols[$j]) . ' = ' . self::keyLiteral($m, $c['last'][$j], $c['pk_kinds'][$j]);
+                        $ands[] = MigUtil::backtick($keyCols[$j]) . ' = ' . self::keyLiteral($m, $c['last'][$j], $c['pk_kinds'][$j]);
                     }
-                    $ands[] = MvnUtil::backtick($keyCols[$i]) . ' > ' . self::keyLiteral($m, $c['last'][$i], $c['pk_kinds'][$i]);
+                    $ands[] = MigUtil::backtick($keyCols[$i]) . ' > ' . self::keyLiteral($m, $c['last'][$i], $c['pk_kinds'][$i]);
                     $ors[] = '(' . implode(' AND ', $ands) . ')';
                 }
                 $where = ' WHERE ' . implode(' OR ', $ors);
@@ -2146,7 +2146,7 @@ final class MvnAgent
         }
         $res = @$m->query($sql, MYSQLI_USE_RESULT);
         if (!$res) {
-            throw new MvnError('SELECT from ' . $c['n'] . ' failed: ' . $m->error);
+            throw new MigError('SELECT from ' . $c['n'] . ' failed: ' . $m->error);
         }
         $numeric = array();
         $binary = array();
@@ -2185,7 +2185,7 @@ final class MvnAgent
             } else {
                 $buf .= ",\n" . $tuple;
             }
-            if (strlen($buf) >= MVN_SQL_BATCH_BYTES) {
+            if (strlen($buf) >= MIG_SQL_BATCH_BYTES) {
                 $out->write($buf . ";\n");
                 $buf = '';
                 $open = false;
@@ -2289,7 +2289,7 @@ final class MvnAgent
     private function archiveDiscard($st)
     {
         if (!empty($st['pid'])) {
-            MvnUtil::kill($st['pid']);
+            MigUtil::kill($st['pid']);
         }
         foreach (array('archive.index', 'archive.files', 'archive.list', 'archive.sh', 'archive.pid', 'archive.tarexit', 'archive.fin', 'archive.split', 'files.out.part', 'files.tar', 'files.tar.gz', 'archive.state.json') as $f) {
             @unlink($this->tmp . '/' . $f);
@@ -2301,7 +2301,7 @@ final class MvnAgent
 
     private function archiveStart()
     {
-        $exec = MvnUtil::execAvailable() && MvnUtil::haveBinary('tar') !== '';
+        $exec = MigUtil::execAvailable() && MigUtil::haveBinary('tar') !== '';
         $st = array(
             'mode' => $exec ? 'exec' : 'php',
             'started' => time(),
@@ -2320,7 +2320,7 @@ final class MvnAgent
             'cur' => null,
             'cursor' => 0,
             'out_size' => 0,
-            'gz' => $exec ? (MvnUtil::haveBinary('gzip') !== '') : MvnOutput::gzAvailable(),
+            'gz' => $exec ? (MigUtil::haveBinary('gzip') !== '') : MigOutput::gzAvailable(),
         );
         $st['file'] = $st['gz'] ? 'files.tar.gz' : 'files.tar';
         @unlink($this->tmp . '/archive.index');
@@ -2338,7 +2338,7 @@ final class MvnAgent
         if ($st['mode'] === 'php') {
             $ih = @fopen($this->tmp . '/archive.index', 'ab');
             if (!$ih) {
-                throw new MvnError('cannot write the archive index in the temp dir');
+                throw new MigError('cannot write the archive index in the temp dir');
             }
         }
         $finished = $w->step($this->deadline, function ($kind, $rel, $size) use (&$st, $ih) {
@@ -2377,8 +2377,8 @@ final class MvnAgent
 
     private function archiveStartExec($st)
     {
-        $tar = MvnUtil::haveBinary('tar');
-        list($code, $ver) = MvnUtil::run(escapeshellarg($tar) . ' --version', 5);
+        $tar = MigUtil::haveBinary('tar');
+        list($code, $ver) = MigUtil::run(escapeshellarg($tar) . ' --version', 5);
         $gnu = (stripos($ver, 'GNU tar') !== false);
         $st['tar'] = $gnu ? 'gnu' : 'other';
 
@@ -2390,7 +2390,7 @@ final class MvnAgent
         }
         $list = '';
         foreach ($entries as $e) {
-            if ($e === '.' || $e === '..' || $e === $this->tmpName || strncmp($e, '.mvn-tmp-', 9) === 0 || $e === $this->helperRel) {
+            if ($e === '.' || $e === '..' || $e === $this->tmpName || strncmp($e, '.mig-tmp-', 9) === 0 || $e === $this->helperRel) {
                 continue;
             }
             if (strpos($e, "\n") !== false || strpos($e, "\r") !== false) {
@@ -2400,7 +2400,7 @@ final class MvnAgent
             $list .= ($e[0] === '-' ? './' . $e : $e) . "\n";
         }
         if (@file_put_contents($this->tmp . '/archive.files', $list) === false) {
-            throw new MvnError('cannot write the archive file list');
+            throw new MigError('cannot write the archive file list');
         }
 
         $args = array('-c', '-v', '-f', '-');
@@ -2409,7 +2409,7 @@ final class MvnAgent
             $args[] = '--warning=no-file-removed';
             $args[] = '--ignore-failed-read';
         }
-        $ex = array('.git', 'debug.log', 'error_log', '*.wpress', '.mvn-tmp-*', 'wp-content/cache', 'wp-content/ai1wm-backups', 'wp-content/updraft', 'wp-content/plugins/mvn-migrator');
+        $ex = array('.git', 'debug.log', 'error_log', '*.wpress', '.mig-tmp-*', 'wp-content/cache', 'wp-content/ai1wm-backups', 'wp-content/updraft', 'wp-content/plugins/mig-helper');
         if ($this->helperRel !== '') {
             $ex[] = $this->helperRel;
         }
@@ -2432,7 +2432,7 @@ final class MvnAgent
         $flags = implode(' ', array_map('escapeshellarg', $args));
 
         $T = escapeshellarg($this->tmp);
-        $split = ($st['bytes_total'] > MVN_PART_BYTES || !empty($st['total_partial'])) && MvnUtil::haveBinary('split') !== '';
+        $split = ($st['bytes_total'] > MIG_PART_BYTES || !empty($st['total_partial'])) && MigUtil::haveBinary('split') !== '';
         $sh = "#!/bin/sh\n"
             . 'cd ' . escapeshellarg($this->docroot) . " || exit 1\n"
             . 'T=' . $T . "\n"
@@ -2441,15 +2441,15 @@ final class MvnAgent
             . 'COMPRESS=cat' . "\n" . ($st['gz'] ? "COMPRESS=\"\$NICE gzip\"\n" : '')
             . '( $NICE ' . escapeshellarg($tar) . ' ' . $flags . " 2>\"\$T/archive.list\"; echo \$? > \"\$T/archive.tarexit\" ) | \$COMPRESS > \"\$T/files.out.part\"\n"
             . "SIZE=\$(wc -c < \"\$T/files.out.part\" | tr -d ' ')\n"
-            . 'if [ ' . ($split ? '1' : '0') . " = 1 ] && [ \"\$SIZE\" -gt " . MVN_PART_BYTES . " ]; then\n"
-            . "  ( cd \"\$T\" && split -b " . MVN_PART_BYTES . ' files.out.part ' . escapeshellarg($st['file'] . '.') . " && rm -f files.out.part && echo split > archive.split )\n"
+            . 'if [ ' . ($split ? '1' : '0') . " = 1 ] && [ \"\$SIZE\" -gt " . MIG_PART_BYTES . " ]; then\n"
+            . "  ( cd \"\$T\" && split -b " . MIG_PART_BYTES . ' files.out.part ' . escapeshellarg($st['file'] . '.') . " && rm -f files.out.part && echo split > archive.split )\n"
             . "else\n"
             . "  mv -f \"\$T/files.out.part\" \"\$T/\"" . escapeshellarg($st['file']) . "\n"
             . "fi\n"
             . "echo done > \"\$T/archive.fin\"\n";
         $shPath = $this->tmp . '/archive.sh';
         if (@file_put_contents($shPath, $sh) === false) {
-            throw new MvnError('cannot write the archive script');
+            throw new MigError('cannot write the archive script');
         }
         @chmod($shPath, 0700);
         foreach (array('archive.list', 'archive.tarexit', 'archive.fin', 'archive.split', 'files.out.part') as $f) {
@@ -2458,12 +2458,12 @@ final class MvnAgent
         $st['list_offset'] = 0;
         $st['last_bytes'] = 0;
         $st['last_change'] = time();
-        $st['pid'] = MvnUtil::spawn($shPath, $this->tmp . '/archive.pid');
+        $st['pid'] = MigUtil::spawn($shPath, $this->tmp . '/archive.pid');
         if ($st['pid'] <= 0) {
             // fall back to the pure-PHP writer: rebuild the index in a fresh listing
             self::note($st, 'could not start tar in the background, using the PHP writer');
             $st['mode'] = 'php';
-            $st['gz'] = MvnOutput::gzAvailable();
+            $st['gz'] = MigOutput::gzAvailable();
             $st['file'] = $st['gz'] ? 'files.tar.gz' : 'files.tar';
             $st['phase'] = 'list';
             $st['stack'] = array('');
@@ -2555,7 +2555,7 @@ final class MvnAgent
                 }
                 return $st;
             }
-            $alive = MvnUtil::pidAlive($st['pid']);
+            $alive = MigUtil::pidAlive($st['pid']);
             if ($alive === false) {
                 usleep(300000);
                 clearstatcache();
@@ -2570,7 +2570,7 @@ final class MvnAgent
                 $st['last_bytes'] = $probe;
                 $st['last_change'] = time();
             } elseif (time() - $st['last_change'] > 1200) {
-                MvnUtil::kill($st['pid']);
+                MigUtil::kill($st['pid']);
                 $st['error'] = 'tar produced no output for 20 minutes';
                 return $st;
             }
@@ -2585,11 +2585,11 @@ final class MvnAgent
     {
         $ih = @fopen($this->tmp . '/archive.index', 'rb');
         if (!$ih) {
-            throw new MvnError('archive index missing; call archive with restart=1');
+            throw new MigError('archive index missing; call archive with restart=1');
         }
         fseek($ih, (int) $st['cursor']);
-        $out = new MvnOutput($this->tmp . '/' . $st['file'], $st['gz'], (int) $st['out_size']);
-        $tar = new MvnTar($out);
+        $out = new MigOutput($this->tmp . '/' . $st['file'], $st['gz'], (int) $st['out_size']);
+        $tar = new MigTar($out);
         $entries = 0;
         try {
             if (!empty($st['cur'])) {
@@ -2670,7 +2670,7 @@ final class MvnAgent
     }
 
     /** Continue a file whose header was written in an earlier call. */
-    private function archiveResumeFile(MvnTar $tar, &$st)
+    private function archiveResumeFile(MigTar $tar, &$st)
     {
         $c = $st['cur'];
         $fh = @fopen($this->docroot . '/' . $c['rel'], 'rb');
@@ -2684,7 +2684,7 @@ final class MvnAgent
         if (!$fh) {
             self::note($st, 'changed while archiving, rest zero-filled: ' . $c['rel']);
             $this->archivePad($tar, $st, (int) $c['size'] - (int) $c['offset']);
-            $tar->data(MvnTar::padding((int) $c['size']));
+            $tar->data(MigTar::padding((int) $c['size']));
             $st['files']++;
             $st['bytes'] += (int) $c['size'];
             $st['cur'] = null;
@@ -2694,7 +2694,7 @@ final class MvnAgent
         fclose($fh);
     }
 
-    private function archivePad(MvnTar $tar, &$st, $n)
+    private function archivePad(MigTar $tar, &$st, $n)
     {
         while ($n > 0) {
             $k = (int) min($n, 1048576);
@@ -2705,7 +2705,7 @@ final class MvnAgent
     }
 
     /** Stream the current file (state in $st['cur']) until done or out of budget. */
-    private function archiveStreamFile(MvnTar $tar, $fh, &$st)
+    private function archiveStreamFile(MigTar $tar, $fh, &$st)
     {
         $size = (int) $st['cur']['size'];
         $left = $size - (int) $st['cur']['offset'];
@@ -2724,7 +2724,7 @@ final class MvnAgent
                 return false; // resumed by the next call
             }
         }
-        $tar->data(MvnTar::padding($size));
+        $tar->data(MigTar::padding($size));
         $st['files']++;
         $st['bytes'] += $size;
         $st['cur'] = null;
@@ -2747,7 +2747,7 @@ final class MvnAgent
             case 'cleanup':
                 return $this->actionCleanup();
         }
-        throw new MvnError('unknown action' . ($action === '' ? '' : ': ' . substr(preg_replace('/[^A-Za-z0-9_-]/', '', $action), 0, 32)));
+        throw new MigError('unknown action' . ($action === '' ? '' : ': ' . substr(preg_replace('/[^A-Za-z0-9_-]/', '', $action), 0, 32)));
     }
 
     public function handle($action)
@@ -2755,7 +2755,7 @@ final class MvnAgent
         if ($action === 'dump' || $action === 'archive' || $action === 'cleanup') {
             $this->ensureTmp();
             if (!$this->lock($action)) {
-                throw new MvnError('busy', 200, array('busy' => true));
+                throw new MigError('busy', 200, array('busy' => true));
             }
         }
         $data = $this->dispatch($action);
@@ -2774,8 +2774,8 @@ final class MvnAgent
         });
         register_shutdown_function(function () {
             $e = error_get_last();
-            if ($e && !MvnAgent::$responded && in_array($e['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR), true)) {
-                MvnAgent::respond(array('ok' => false, 'error' => 'fatal: ' . $e['message'] . ' (line ' . $e['line'] . ')'), 200);
+            if ($e && !MigAgent::$responded && in_array($e['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR), true)) {
+                MigAgent::respond(array('ok' => false, 'error' => 'fatal: ' . $e['message'] . ' (line ' . $e['line'] . ')'), 200);
             }
         });
         ob_start();
@@ -2787,7 +2787,7 @@ final class MvnAgent
         while (ob_get_level() > 0) {
             @ob_end_clean();
         }
-        $body = MvnUtil::jsonEncode($data) . "\n";
+        $body = MigUtil::jsonEncode($data) . "\n";
         if ($cli || PHP_SAPI === 'cli') {
             echo $body;
             exit(!empty($data['ok']) ? 0 : 1);
@@ -2808,31 +2808,31 @@ final class MvnAgent
         exit;
     }
 
-    /** Token (constant time), expiry and optional client IP. Throws MvnError(403). */
+    /** Token (constant time), expiry and optional client IP. Throws MigError(403). */
     public static function authorize($cfgToken, $cfgExpires, $cfgIp, $given)
     {
         if (!is_string($cfgToken) || !preg_match('/^[0-9a-f]{32}$/i', $cfgToken)) {
-            throw new MvnError('agent not configured', 403);
+            throw new MigError('agent not configured', 403);
         }
         if (!is_string($given) || !hash_equals($cfgToken, $given)) {
-            throw new MvnError('forbidden', 403);
+            throw new MigError('forbidden', 403);
         }
         $exp = is_numeric($cfgExpires) ? (int) $cfgExpires : 0;
         if ($exp <= 0 || time() > $exp) {
-            throw new MvnError('expired', 403);
+            throw new MigError('expired', 403);
         }
         $cfgIp = trim((string) $cfgIp);
         if ($cfgIp !== '' && $cfgIp !== '__' . 'ALLOWED_IP__') {
             $remote = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
-            if (!MvnUtil::ipMatches($cfgIp, $remote)) {
-                throw new MvnError('forbidden', 403);
+            if (!MigUtil::ipMatches($cfgIp, $remote)) {
+                throw new MigError('forbidden', 403);
             }
         }
     }
 
     public static function configuredDocroot()
     {
-        $d = MVN_CFG_DOCROOT;
+        $d = MIG_CFG_DOCROOT;
         if ($d === '' || $d === '__' . 'DOCROOT__') {
             return dirname(__FILE__);
         }
@@ -2857,11 +2857,11 @@ final class MvnAgent
     {
         self::begin();
         try {
-            self::authorize(MVN_CFG_TOKEN, MVN_CFG_EXPIRES, MVN_CFG_ALLOWED_IP, self::givenToken());
+            self::authorize(MIG_CFG_TOKEN, MIG_CFG_EXPIRES, MIG_CFG_ALLOWED_IP, self::givenToken());
             $params = array_merge(is_array($_POST) ? $_POST : array(), is_array($_GET) ? $_GET : array());
-            $agent = new MvnAgent(self::configuredDocroot(), $params, array());
+            $agent = new MigAgent(self::configuredDocroot(), $params, array());
             $agent->handle(isset($params['action']) && is_string($params['action']) ? $params['action'] : '');
-        } catch (MvnError $e) {
+        } catch (MigError $e) {
             self::respond(array_merge(array('ok' => false, 'error' => $e->getMessage()), $e->extra), $e->status);
         } catch (Exception $e) {
             self::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200);
@@ -2882,14 +2882,14 @@ final class MvnAgent
                     $params[$k] = $v;
                 }
             }
-            $docroot = getenv('MVN_DOCROOT');
+            $docroot = getenv('MIG_DOCROOT');
             if (!is_string($docroot) || $docroot === '') {
                 $docroot = self::configuredDocroot();
             }
-            $tmp = getenv('MVN_TMP');
-            $agent = new MvnAgent($docroot, $params, array('cli' => true, 'tmp' => is_string($tmp) ? $tmp : ''));
+            $tmp = getenv('MIG_TMP');
+            $agent = new MigAgent($docroot, $params, array('cli' => true, 'tmp' => is_string($tmp) ? $tmp : ''));
             $agent->handle($action);
-        } catch (MvnError $e) {
+        } catch (MigError $e) {
             self::respond(array_merge(array('ok' => false, 'error' => $e->getMessage(), 'status' => $e->status), $e->extra), $e->status, true);
         } catch (Exception $e) {
             self::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200, true);
@@ -2900,15 +2900,15 @@ final class MvnAgent
 }
 
 /**
- * Plugin mode entry point, called by mvn-migrator.php from the admin-ajax hooks.
- * Token/expiry/IP come from the option mvn_migrator_token (fallback: the constants baked
+ * Plugin mode entry point, called by mig-helper.php from the admin-ajax hooks.
+ * Token/expiry/IP come from the option mig_helper_token (fallback: the constants baked
  * into the wrapper); the docroot is ABSPATH.
  */
-function mvn_agent_plugin_request()
+function mig_agent_plugin_request()
 {
-    MvnAgent::begin();
+    MigAgent::begin();
     try {
-        $opt = function_exists('get_option') ? get_option('mvn_migrator_token') : false;
+        $opt = function_exists('get_option') ? get_option('mig_helper_token') : false;
         $token = '';
         $exp = 0;
         $ip = '';
@@ -2917,32 +2917,32 @@ function mvn_agent_plugin_request()
             $exp = isset($opt['expires']) ? (int) $opt['expires'] : 0;
             $ip = isset($opt['allowed_ip']) ? (string) $opt['allowed_ip'] : '';
         }
-        if (!preg_match('/^[0-9a-f]{32}$/i', $token) && defined('MVN_MIGRATOR_TOKEN')) {
-            $token = (string) MVN_MIGRATOR_TOKEN;
-            $exp = defined('MVN_MIGRATOR_EXPIRES') ? (int) MVN_MIGRATOR_EXPIRES : 0;
-            $ip = defined('MVN_MIGRATOR_ALLOWED_IP') ? (string) MVN_MIGRATOR_ALLOWED_IP : '';
+        if (!preg_match('/^[0-9a-f]{32}$/i', $token) && defined('MIG_HELPER_TOKEN')) {
+            $token = (string) MIG_HELPER_TOKEN;
+            $exp = defined('MIG_HELPER_EXPIRES') ? (int) MIG_HELPER_EXPIRES : 0;
+            $ip = defined('MIG_HELPER_ALLOWED_IP') ? (string) MIG_HELPER_ALLOWED_IP : '';
         }
-        MvnAgent::authorize($token, $exp, $ip, MvnAgent::givenToken());
+        MigAgent::authorize($token, $exp, $ip, MigAgent::givenToken());
         $params = array_merge(is_array($_POST) ? $_POST : array(), is_array($_GET) ? $_GET : array());
         if (function_exists('wp_unslash')) {
             $params = wp_unslash($params);
         }
         $docroot = defined('ABSPATH') ? rtrim(DIRECTORY_SEPARATOR === '\\' ? str_replace('\\', '/', ABSPATH) : ABSPATH, '/') : dirname(__FILE__);
-        $agent = new MvnAgent($docroot, $params, array('plugin' => true));
-        $agent->handle(isset($params['mvn_action']) && is_string($params['mvn_action']) ? $params['mvn_action'] : '');
-    } catch (MvnError $e) {
-        MvnAgent::respond(array_merge(array('ok' => false, 'error' => $e->getMessage()), $e->extra), $e->status);
+        $agent = new MigAgent($docroot, $params, array('plugin' => true));
+        $agent->handle(isset($params['mig_action']) && is_string($params['mig_action']) ? $params['mig_action'] : '');
+    } catch (MigError $e) {
+        MigAgent::respond(array_merge(array('ok' => false, 'error' => $e->getMessage()), $e->extra), $e->status);
     } catch (Exception $e) {
-        MvnAgent::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200);
+        MigAgent::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200);
     } catch (Throwable $e) {
-        MvnAgent::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200);
+        MigAgent::respond(array('ok' => false, 'error' => get_class($e) . ': ' . $e->getMessage()), 200);
     }
 }
 
-if (!defined('MVN_AGENT_PLUGIN_MODE')) {
+if (!defined('MIG_AGENT_PLUGIN_MODE')) {
     if (PHP_SAPI === 'cli') {
-        MvnAgent::runCli(isset($_SERVER['argv']) ? $_SERVER['argv'] : array());
+        MigAgent::runCli(isset($_SERVER['argv']) ? $_SERVER['argv'] : array());
     } else {
-        MvnAgent::runHttp();
+        MigAgent::runHttp();
     }
 }

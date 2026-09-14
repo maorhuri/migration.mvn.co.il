@@ -73,7 +73,7 @@ func openFTP(ctx context.Context, cfg *Config, logFn LogFunc) (*session, error) 
 	}
 	sess := &session{cfg: cfg, ftp: conn, ftpDocroot: docroot}
 	hc := helperConfig{Token: randHex(32), AllowedIP: publicIP(ctx), Expires: time.Now().Add(tokenTTL)}
-	sess.helperName = "mvn-" + randHex(12) + ".php"
+	sess.helperName = "mig-" + randHex(12) + ".php"
 	sess.helperPath = path.Join(docroot, sess.helperName)
 
 	data, err := renderAgent(hc)
@@ -95,7 +95,7 @@ func openFTP(ctx context.Context, cfg *Config, logFn LogFunc) (*session, error) 
 		}
 	}
 
-	var lastUnreachable error
+	var reasons []string // every candidate's failure, in order tried: the real site_url first, the FTP host as fallback (usually less useful, but kept so nothing is hidden)
 	for _, base := range cfg.siteURLCandidates() {
 		h := newHelper(base+"/"+sess.helperName, false, hc.Token, logFn)
 		raw, err := h.call(ctx, "info", nil)
@@ -123,7 +123,7 @@ func openFTP(ctx context.Context, cfg *Config, logFn LogFunc) (*session, error) 
 		var un *UnreachableError
 		if errors.As(err, &un) {
 			logFn("warn", err.Error())
-			lastUnreachable = err
+			reasons = append(reasons, err.Error())
 			continue
 		}
 		if ctx.Err() != nil {
@@ -137,10 +137,10 @@ func openFTP(ctx context.Context, cfg *Config, logFn LogFunc) (*session, error) 
 	}
 	remove()
 	conn.close()
-	if lastUnreachable == nil {
-		lastUnreachable = &UnreachableError{URL: cfg.Host, Reason: "no site URL to try"}
+	if len(reasons) == 0 {
+		reasons = []string{"no site URL to try"}
 	}
-	return nil, lastUnreachable
+	return nil, &UnreachableError{URL: cfg.SiteURL, Reason: strings.Join(reasons, "; then tried: ")}
 }
 
 func openWordPress(ctx context.Context, cfg *Config, logFn LogFunc) (*session, error) {
@@ -162,7 +162,7 @@ func openWordPress(ctx context.Context, cfg *Config, logFn LogFunc) (*session, e
 	if err := wp.installPlugin(ctx, zipData, zipPath); err != nil {
 		return nil, err
 	}
-	logFn("info", "mvn-migrator plugin installed and activated")
+	logFn("info", "migration helper plugin installed and activated")
 
 	sess := &session{cfg: cfg, wp: wp}
 	h := newHelper(wp.siteURL+"/wp-admin/admin-ajax.php", true, hc.Token, logFn)

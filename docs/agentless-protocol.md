@@ -3,7 +3,7 @@
 Three parts are built in parallel from this contract. Do not change the contract; extend the
 docs if you must add something, and say so in your report.
 
-## 1. Helper file `mvn-agent.php`
+## 1. Helper file `mvn-agent.php` (repo name; uploaded under a random generic name, see below)
 
 Location in the repo: `backend/internal/panels/agentless/assets/mvn-agent.php` (embedded into
 the Go binary with `//go:embed`). One file, PHP >= 7.2, no dependencies, must run under
@@ -18,9 +18,17 @@ Invocation:
   in the `X-MT-Token` header. Responses are JSON: `{"ok":true,...}` or `{"ok":false,"error":"..."}`
   (HTTP 200), except a bad/expired token (403) and a missing file (404). No HTML, no warnings in
   the output (`ini_set('display_errors',0)`, output buffering).
-- CLI (tests): `php mvn-agent.php <action> key=value ...`; `MVN_DOCROOT` env overrides the docroot.
+- CLI (tests): `php mvn-agent.php <action> key=value ...`; `MIG_DOCROOT` env overrides the docroot.
 
-Temp dir: `<docroot>/.mvn-tmp-<8 hex>/` created on first use, containing `.htaccess`
+Uploaded/deployed name: the helper is written to the target under a random generic name
+(`mig-<12 hex>.php` in FTP mode) that carries no identifying company name; the temp
+directory (`.mig-tmp-<8 hex>/`), the WordPress plugin (slug `mig-helper`, display name
+"Site Migration Helper", no author/URI fields), its option (`mig_helper_token`), its ajax
+action (`mig_helper`/`mig_action`) and every internal class/constant name follow the same
+"mig" convention, never "mvn". Nothing uploaded to a customer's site should name this tool
+or its operator; keep that rule for anything added later.
+
+Temp dir: `<docroot>/.mig-tmp-<8 hex>/` created on first use, containing `.htaccess`
 (`Deny from all` / `Require all denied`) and an empty `index.html`. Every state file and
 artifact lives there. Its name is returned by `info` as `tmp_dir`.
 
@@ -59,20 +67,21 @@ Actions:
 Security: constant-time token comparison, optional single allowed IP, expiry, no directory
 traversal, credentials never echoed, no `phpinfo`, every response has `Cache-Control: no-store`.
 
-## 2. WordPress plugin packaging (`mvn-migrator`)
+## 2. WordPress plugin packaging (slug `mig-helper`, generic name)
 
 Same core, wrapped as a plugin the tool uploads through wp-admin when the source is
 "WordPress login only":
-- `mvn-migrator/mvn-migrator.php` (plugin header "MVN Migrator", version 1.0.0) that `include`s
-  the same agent code with `MVN_AGENT_PLUGIN_MODE` defined; docroot = `ABSPATH`; the token and
-  expiry are stored in the option `mvn_migrator_token` (written on activation from
-  `MVN_MIGRATOR_TOKEN` constant baked into the wrapper the same way as the helper).
-- Endpoint: `admin-ajax.php?action=mvn_migrator&mvn_action=<a>&token=<t>` registered with
-  `wp_ajax_nopriv_mvn_migrator` and `wp_ajax_mvn_migrator` (token gated exactly like the file).
+- `mig-helper/mig-helper.php` (plugin header "Site Migration Helper", no author/URI, version
+  1.0.0) that `include`s the same agent code with `MIG_AGENT_PLUGIN_MODE` defined; docroot =
+  `ABSPATH`; the token and expiry are stored in the option `mig_helper_token` (written on
+  activation from the `MIG_HELPER_TOKEN` constant baked into the wrapper the same way as the
+  helper).
+- Endpoint: `admin-ajax.php?action=mig_helper&mig_action=<a>&token=<t>` registered with
+  `wp_ajax_nopriv_mig_helper` and `wp_ajax_mig_helper` (token gated exactly like the file).
 - `cleanup` in plugin mode deletes the temp dir and the option, then deactivates and deletes
   the plugin files (`delete_plugins`), so nothing stays on the customer site.
 The Go side builds the zip at runtime from the embedded files
-(`assets/mvn-agent.php` + `assets/plugin/mvn-migrator.php`).
+(`assets/mvn-agent.php` + `assets/plugin/mvn-migrator.php`; the repo source file names are internal build artifacts and are never the names written to a customer's site).
 
 ## 3. Server records (API + UI)
 
@@ -133,7 +142,7 @@ Additions the Go side relies on; they extend (not change) the contract above.
   (+ `db_name`, else taken from wp-config.php) and `mysqldump`/`mariadb-dump` on the migration
   server. Files then go through `lftp mirror --parallel=6 --use-pget-n=3`.
 - WordPress mode: blocked uploads (403 / "not allowed" / no upload form) return a message that
-  points to a manual install of `/api/v1/servers/<id>/mvn-migrator.zip` (the endpoint itself is
+  points to a manual install of `/api/v1/servers/<id>/mig-helper.zip` (the endpoint itself is
   phase 2; `agentless.BuildPluginZip` builds the archive). The plugin's `cleanup` is verified on
   plugins.php and, if the plugin is still listed, it is deactivated and deleted through
   plugins.php.
@@ -141,8 +150,8 @@ Additions the Go side relies on; they extend (not change) the contract above.
 
 ## 6. Helper behaviour notes (as built, 2026-09-14)
 
-- `info.tmp_dir` is absolute; `tmp_dir_name` is the basename `.mvn-tmp-<8 hex>` where the hex is
-  the first 8 chars of `sha256("mvn|" + token + "|" + docroot)`.
+- `info.tmp_dir` is absolute; `tmp_dir_name` is the basename `.mig-tmp-<8 hex>` where the hex is
+  the first 8 chars of `sha256("mig|" + token + "|" + docroot)`.
 - exec-mode `dump`/`archive` calls return after at most 5 s (background process polled);
   mysqli / pure-PHP calls work ~20 s. A failed call leaves the state untouched.
 - Errors are sticky until `restart=1`; a concurrent call answers `{ok:false,error:"busy",busy:true}`

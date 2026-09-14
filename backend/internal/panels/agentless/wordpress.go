@@ -81,7 +81,7 @@ func (w *wpClient) fetch(ctx context.Context, method, target string, body io.Rea
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mvn-migration-tool/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; mig-helper/1.0)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -212,7 +212,7 @@ func findPluginLink(body, action string) string {
 		if !strings.Contains(link, "action="+action) {
 			continue
 		}
-		if strings.Contains(link, "plugin=mvn-migrator%2Fmvn-migrator.php") || strings.Contains(link, "plugin=mvn-migrator/mvn-migrator.php") {
+		if strings.Contains(link, "plugin="+url.QueryEscape(pluginFile)) || strings.Contains(link, "plugin="+pluginFile) {
 			return link
 		}
 	}
@@ -295,16 +295,16 @@ func (w *wpClient) installPlugin(ctx context.Context, zipData []byte, zipPath st
 			return err
 		}
 		if !pluginListed(lp.body) {
-			return fmt.Errorf("the plugin upload did not install mvn-migrator (HTTP %d from update.php: %s)", p.status, snippet(stripTags(p.body), 300))
+			return fmt.Errorf("the plugin upload did not install the migration helper (HTTP %d from update.php: %s)", p.status, snippet(stripTags(p.body), 300))
 		}
 		if findPluginLink(lp.body, "deactivate") != "" {
-			w.logFn("info", "mvn-migrator plugin is already active")
+			w.logFn("info", "migration helper plugin is already active")
 			return nil
 		}
 		link = findPluginLink(lp.body, "activate")
 	}
 	if link == "" {
-		return fmt.Errorf("mvn-migrator is installed but no activation link was found on plugins.php")
+		return fmt.Errorf("the migration helper plugin is installed but no activation link was found on plugins.php")
 	}
 	ap, err := w.fetch(ctx, http.MethodGet, w.resolveAdminLink(link), nil, "")
 	if err != nil {
@@ -318,7 +318,7 @@ func (w *wpClient) installPlugin(ctx context.Context, zipData []byte, zipPath st
 		return err
 	}
 	if findPluginLink(lp.body, "deactivate") == "" {
-		return fmt.Errorf("mvn-migrator did not activate (no deactivate link on plugins.php): %s", snippet(stripTags(ap.body), 300))
+		return fmt.Errorf("the migration helper plugin did not activate (no deactivate link on plugins.php): %s", snippet(stripTags(ap.body), 300))
 	}
 	return nil
 }
@@ -343,7 +343,7 @@ func (w *wpClient) removePlugin(ctx context.Context) error {
 	}
 	nonce := findNonce(lp.body, "bulk-action-form")
 	if nonce == "" {
-		return fmt.Errorf("no bulk-action nonce on plugins.php; delete the mvn-migrator plugin manually")
+		return fmt.Errorf("no bulk-action nonce on plugins.php; delete the migration helper plugin manually")
 	}
 	form := url.Values{
 		"_wpnonce":      {nonce},
@@ -361,7 +361,7 @@ func (w *wpClient) removePlugin(ctx context.Context) error {
 		return err
 	}
 	if pluginListed(lp.body) {
-		return fmt.Errorf("the mvn-migrator plugin is still installed; delete it manually from Plugins")
+		return fmt.Errorf("the migration helper plugin is still installed; delete it manually from Plugins")
 	}
 	return nil
 }

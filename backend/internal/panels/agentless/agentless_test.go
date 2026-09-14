@@ -94,7 +94,7 @@ func TestBuildPluginZip(t *testing.T) {
 			t.Fatalf("%s still has __TOKEN__", f.Name)
 		}
 	}
-	want := []string{"mvn-migrator/mvn-migrator.php", "mvn-migrator/mvn-agent.php"}
+	want := []string{"mig-helper/mig-helper.php", "mig-helper/mig-agent.php"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("zip entries %v, want %v", names, want)
 	}
@@ -180,7 +180,7 @@ func TestDownloadResumesWithRange(t *testing.T) {
 	var ranges int32
 	srv := rangeServer(t, blob, 10000, &ranges)
 	defer srv.Close()
-	h := newHelper(srv.URL+"/mvn-x.php", false, "tok", noLog)
+	h := newHelper(srv.URL+"/mig-x.php", false, "tok", noLog)
 	dest := filepath.Join(t.TempDir(), "files.tar.gz")
 	var last int64
 	if err := h.download(context.Background(), "files.tar.gz", dest, int64(len(blob)), func(n int64) { last = n }); err != nil {
@@ -203,7 +203,7 @@ func TestDownloadRejectsWrongSize(t *testing.T) {
 	var ranges int32
 	srv := rangeServer(t, blob, 0, &ranges)
 	defer srv.Close()
-	h := newHelper(srv.URL+"/mvn-x.php", false, "tok", noLog)
+	h := newHelper(srv.URL+"/mig-x.php", false, "tok", noLog)
 	dest := filepath.Join(t.TempDir(), "f")
 	err := h.download(context.Background(), "f", dest, 999, nil)
 	if err == nil || !strings.Contains(err.Error(), "Content-Length") {
@@ -212,7 +212,7 @@ func TestDownloadRejectsWrongSize(t *testing.T) {
 }
 
 func TestDecodeClassification(t *testing.T) {
-	h := newHelper("https://example.com/mvn-x.php", false, "secret-token", noLog)
+	h := newHelper("https://example.com/mig-x.php", false, "secret-token", noLog)
 	cases := []struct {
 		status int
 		body   string
@@ -252,14 +252,14 @@ func TestDecodeClassification(t *testing.T) {
 }
 
 func TestHelperURL(t *testing.T) {
-	h := newHelper("https://example.com/mvn-x.php", false, "t0k", noLog)
+	h := newHelper("https://example.com/mig-x.php", false, "t0k", noLog)
 	u := h.url("get", map[string]string{"file": "a b.tar.gz"})
-	if !strings.HasPrefix(u, "https://example.com/mvn-x.php?") || !strings.Contains(u, "action=get") || !strings.Contains(u, "token=t0k") || !strings.Contains(u, "file=a+b.tar.gz") {
+	if !strings.HasPrefix(u, "https://example.com/mig-x.php?") || !strings.Contains(u, "action=get") || !strings.Contains(u, "token=t0k") || !strings.Contains(u, "file=a+b.tar.gz") {
 		t.Fatalf("url %s", u)
 	}
 	hp := newHelper("https://example.com/wp-admin/admin-ajax.php", true, "t0k", noLog)
 	u = hp.url("dump", nil)
-	if !strings.Contains(u, "action=mvn_migrator") || !strings.Contains(u, "mvn_action=dump") {
+	if !strings.Contains(u, "action=mig_helper") || !strings.Contains(u, "mig_action=dump") {
 		t.Fatalf("plugin url %s", u)
 	}
 }
@@ -303,9 +303,9 @@ func TestExtractArchiveAndStrip(t *testing.T) {
 		"./index.php":                 "<?php",
 		"./wp-content/":               "",
 		"./wp-content/uploads/a.txt":  "hello",
-		"./.mvn-tmp-deadbeef/":        "",
-		"./.mvn-tmp-deadbeef/state":   "{}",
-		"./mvn-0123456789ab.php":      "<?php // helper",
+		"./.mig-tmp-deadbeef/":        "",
+		"./.mig-tmp-deadbeef/state":   "{}",
+		"./mig-0123456789ab.php":      "<?php // helper",
 		"./wp-content/themes/x/y.css": "body{}",
 	}
 	for _, compress := range []bool{true, false} {
@@ -314,13 +314,13 @@ func TestExtractArchiveAndStrip(t *testing.T) {
 		if err := extractArchive(context.Background(), []string{archive}, dest, noLog); err != nil {
 			t.Fatalf("compress=%v: %v", compress, err)
 		}
-		stripArtifacts(dest, "mvn-0123456789ab.php", noLog)
+		stripArtifacts(dest, "mig-0123456789ab.php", noLog)
 		for _, want := range []string{"wp-config.php", "index.php", "wp-content/uploads/a.txt", "wp-content/themes/x/y.css"} {
 			if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
 				t.Fatalf("compress=%v: %s missing", compress, want)
 			}
 		}
-		for _, gone := range []string{".mvn-tmp-deadbeef", "mvn-0123456789ab.php"} {
+		for _, gone := range []string{".mig-tmp-deadbeef", "mig-0123456789ab.php"} {
 			if _, err := os.Stat(filepath.Join(dest, gone)); err == nil {
 				t.Fatalf("compress=%v: %s should have been removed", compress, gone)
 			}
@@ -377,11 +377,11 @@ func TestFindNonceAndPluginLinks(t *testing.T) {
 	if got := findNonce(`<input value="abc123" type="hidden" name="_wpnonce">`, ""); got != "abc123" {
 		t.Fatalf("reversed attribute order nonce %q", got)
 	}
-	plugins := `<tr class="inactive" data-slug="mvn-migrator" data-plugin="mvn-migrator/mvn-migrator.php">
-<a href="plugins.php?action=activate&amp;plugin=mvn-migrator%2Fmvn-migrator.php&amp;plugin_status=all&amp;paged=1&amp;s&amp;_wpnonce=0a1b2c3d4e" class="edit">Activate</a>
+	plugins := `<tr class="inactive" data-slug="mig-helper" data-plugin="mig-helper/mig-helper.php">
+<a href="plugins.php?action=activate&amp;plugin=mig-helper%2Fmig-helper.php&amp;plugin_status=all&amp;paged=1&amp;s&amp;_wpnonce=0a1b2c3d4e" class="edit">Activate</a>
 <a href="plugins.php?action=activate&amp;plugin=other%2Fother.php&amp;_wpnonce=ffff">Activate other</a>`
 	link := findPluginLink(plugins, "activate")
-	if link != "plugins.php?action=activate&plugin=mvn-migrator%2Fmvn-migrator.php&plugin_status=all&paged=1&s&_wpnonce=0a1b2c3d4e" {
+	if link != "plugins.php?action=activate&plugin=mig-helper%2Fmig-helper.php&plugin_status=all&paged=1&s&_wpnonce=0a1b2c3d4e" {
 		t.Fatalf("activate link %q", link)
 	}
 	if findPluginLink(plugins, "deactivate") != "" {
@@ -540,16 +540,16 @@ func TestExportWithHelperEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("tar"); err != nil {
 		t.Skip("tar not installed")
 	}
-	archivePath := makeTarGz(t, map[string]string{"./wp-config.php": "<?php", "./index.php": "<?php", "./.mvn-tmp-abc/": "", "./.mvn-tmp-abc/x": "1", "./mvn-abcdefabcdef.php": "<?php"}, true)
+	archivePath := makeTarGz(t, map[string]string{"./wp-config.php": "<?php", "./index.php": "<?php", "./.mig-tmp-abc/": "", "./.mig-tmp-abc/x": "1", "./mig-abcdefabcdef.php": "<?php"}, true)
 	archive, _ := os.ReadFile(archivePath)
 	fh := &fakeHelper{t: t, archive: archive, dump: []byte(strings.Repeat("INSERT INTO wp_posts VALUES (1);\n", 10)), dumpName: "db.sql"} // uncompressed: gzip missing on the source
 	srv := httptest.NewServer(http.HandlerFunc(fh.handler))
 	defer srv.Close()
 
 	cfg := &Config{Mode: common.PanelTypeFTP, Host: "ftp.example.com", Port: 21, Username: "u", Password: "p", SiteURL: "https://example.com"}
-	info, _ := parseInfo(json.RawMessage(`{"ok":true,"php_version":"8.1.27","exec":false,"wordpress":true,"db":{"name":"wp_db","user":"wp_u","host":"localhost"},"tmp_dir":"/home/u/public_html/.mvn-tmp-abc","files":{"count":5,"bytes":500,"partial":false}}`))
-	h := newHelper(srv.URL+"/mvn-abcdefabcdef.php", false, "tok", noLog)
-	sess := &session{cfg: cfg, helper: h, info: info, helperName: "mvn-abcdefabcdef.php"}
+	info, _ := parseInfo(json.RawMessage(`{"ok":true,"php_version":"8.1.27","exec":false,"wordpress":true,"db":{"name":"wp_db","user":"wp_u","host":"localhost"},"tmp_dir":"/home/u/public_html/.mig-tmp-abc","files":{"count":5,"bytes":500,"partial":false}}`))
+	h := newHelper(srv.URL+"/mig-abcdefabcdef.php", false, "tok", noLog)
+	sess := &session{cfg: cfg, helper: h, info: info, helperName: "mig-abcdefabcdef.php"}
 
 	workDir := t.TempDir()
 	progress := make(chan common.MigrationProgress, 100)
@@ -591,7 +591,7 @@ func TestExportWithHelperEndToEnd(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(docroot, "wp-config.php")); err != nil {
 		t.Fatal("files not extracted")
 	}
-	for _, gone := range []string{".mvn-tmp-abc", "mvn-abcdefabcdef.php"} {
+	for _, gone := range []string{".mig-tmp-abc", "mig-abcdefabcdef.php"} {
 		if _, err := os.Stat(filepath.Join(docroot, gone)); err == nil {
 			t.Fatalf("%s should be stripped", gone)
 		}

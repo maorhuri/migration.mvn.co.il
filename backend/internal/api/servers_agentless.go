@@ -121,6 +121,9 @@ func (h *Handler) testAgentlessConnection(c *gin.Context, server *storage.Server
 		return
 	}
 	message := "Connection successful: " + info.Summary()
+	if info.HelperUnreachable {
+		message = "Files reachable over FTP; the site does not answer over HTTP, so only what FTP itself could determine is shown below."
+	}
 	if len(info.Warnings) > 0 {
 		message += ". Warning: " + strings.Join(info.Warnings, "; ")
 	}
