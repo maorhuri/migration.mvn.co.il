@@ -111,7 +111,7 @@ export default function NewMigration() {
     target_server_id: '',
     target_cluster_server_id: '',
     new_password: '',
-    scan_malware: true,
+    scan_malware: false,
   });
 
   useEffect(() => {
@@ -581,7 +581,7 @@ export default function NewMigration() {
       target_server_id: '',
       target_cluster_server_id: '',
       new_password: '',
-      scan_malware: true,
+      scan_malware: false,
     });
   };
 

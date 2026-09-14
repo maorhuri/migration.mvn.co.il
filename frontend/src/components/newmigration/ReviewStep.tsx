@@ -78,8 +78,6 @@ export interface ReviewStepProps {
   accounts: Account[];
   /** Steps the run will go through, in order (ids starting with `export_` are the export phase). */
   plan: Pick<MigrationStepStatus, 'id' | 'name'>[];
-  newPassword: string;
-  onNewPasswordChange: (value: string) => void;
   /** Scan the staged export for malware on the middle server before uploading. */
   scanMalware: boolean;
   onScanMalwareChange: (value: boolean) => void;
@@ -119,7 +117,7 @@ function PlanColumn({ title, subtitle, steps, offset }: PlanColumnProps) {
 }
 
 /** Final confirmation before the migration starts. */
-export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, newPassword, onNewPasswordChange, scanMalware, onScanMalwareChange, starting, onStart, onBack }: ReviewStepProps) {
+export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, scanMalware, onScanMalwareChange, starting, onStart, onBack }: ReviewStepProps) {
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
 
@@ -177,21 +175,9 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
       <Card>
         <CardHeader>
           <CardTitle>Options</CardTitle>
-          <CardDescription>Everything else (files, databases, mailboxes, cron jobs, SSL) is migrated automatically.</CardDescription>
+          <CardDescription>Files, databases, mailboxes, cron jobs, SSL, WordPress registration and PHP settings are migrated automatically.</CardDescription>
         </CardHeader>
-        <div className="max-w-md">
-          <Field label="New password" labelAddon="Optional" hint="Applied to the migrated account(s) on the target. Leave empty to keep the target's default behaviour.">
-            <Input
-              type="password"
-              mono
-              autoComplete="new-password"
-              placeholder="••••••••••••"
-              value={newPassword}
-              onChange={(e) => onNewPasswordChange(e.target.value)}
-            />
-          </Field>
-        </div>
-        <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/60">
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/60">
           <input
             type="checkbox"
             className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-900"
