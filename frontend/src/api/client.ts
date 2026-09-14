@@ -143,6 +143,12 @@ export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
 };
 
+/** Re-run WordPress registration, PHP version and ownership for a completed migration. */
+export const repairMigrationWordPress = async (id: string): Promise<{ migration: Migration; summary: string[] }> => {
+  const { data } = await api.post(`/migrations/${id}/repair/wordpress`);
+  return data;
+};
+
 /** Operator decision on malware-scan findings while the migration waits: clean | skip | abort. */
 export const submitScanDecision = async (id: string, action: 'clean' | 'skip' | 'abort'): Promise<Migration> => {
   const { data } = await api.post(`/migrations/${id}/scan/decision`, { action });

@@ -678,6 +678,16 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("migration cancelled: %w", err)
 	}
+	knownDBs := make([]string, 0, len(data.Databases)+len(result.Databases))
+	for _, db := range data.Databases {
+		knownDBs = append(knownDBs, db.Name)
+	}
+	for _, r := range result.Databases {
+		knownDBs = append(knownDBs, r.Name)
+	}
+	for _, ws := range e.websites {
+		e.quarantineDeadNestedInstalls(ctx, orgID, ws, knownDBs)
+	}
 	for _, ws := range e.websites {
 		if err := e.registerWordPress(ctx, orgID, ws); err != nil {
 			e.warnf("WordPress registration for %s incomplete: %v", ws.Domain.Domain, err)
@@ -1111,8 +1121,19 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		if len(installs) == 0 {
 			problems = append(problems, "discovery found no WordPress installation")
 		} else {
-			e.logf("info", "%s: WordPress discovered by Enhance (db=%s, prefix=%s, path=%q, web server=%s)",
-				ws.Domain.Domain, installs[0].DbName, installs[0].TablePrefix, installs[0].Path, kind)
+			var descs []string
+			hasRoot := false
+			for _, in := range installs {
+				if isRootInstallPath(in.Path) {
+					hasRoot = true
+				}
+				descs = append(descs, fmt.Sprintf("path=%q db=%s prefix=%q", in.Path, in.DbName, in.TablePrefix))
+			}
+			e.logf("info", "%s: WordPress discovered by Enhance (%d install(s): %s; web server=%s)",
+				ws.Domain.Domain, len(installs), strings.Join(descs, "; "), kind)
+			if !hasRoot {
+				problems = append(problems, "Enhance registered only a WordPress install in a subfolder, not the main site at the web root (the WP login button and user list will not work); use 'Repair WordPress' on the migration page")
+			}
 		}
 	}
 
@@ -1140,6 +1161,219 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		return fmt.Errorf("%s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// isRootInstallPath reports whether a discovered WordPress path is the web root.
+func isRootInstallPath(p string) bool {
+	p = strings.Trim(p, "/")
+	return p == "" || p == "public_html" || strings.HasSuffix(p, "/public_html")
+}
+
+// FindWebsite returns the Enhance website record for a domain (used by repairs).
+func (e *Enhance) FindWebsite(ctx context.Context, domain string) (*EnhanceWebsite, error) {
+	orgID, err := e.orgID()
+	if err != nil {
+		return nil, err
+	}
+	return e.getWebsiteByDomain(ctx, orgID, domain)
+}
+
+// listWebsiteDBNames lists the MySQL databases Enhance knows for a website.
+func (e *Enhance) listWebsiteDBNames(ctx context.Context, orgID, wsID string) []string {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, wsID), nil)
+	if err != nil {
+		return nil
+	}
+	var listing struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(resp, &listing) != nil {
+		return nil
+	}
+	var names []string
+	for _, it := range listing.Items {
+		if it.Name != "" {
+			names = append(names, it.Name)
+		}
+	}
+	return names
+}
+
+type websiteApp struct {
+	ID      string `json:"id"`
+	App     string `json:"app"`
+	Path    string `json:"path"`
+	Version string `json:"version"`
+}
+
+// listApps returns the applications Enhance has registered for a website.
+func (e *Enhance) listApps(ctx context.Context, orgID, wsID string) ([]websiteApp, error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/apps", orgID, wsID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var listing struct {
+		Items []websiteApp `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
+	}
+	return listing.Items, nil
+}
+
+// quarantineDeadNestedInstalls moves WordPress installs nested below the web root whose database
+// does not exist on the target out of the docroot (to <home>/migration-leftovers). Enhance's
+// discovery otherwise registers such a leftover instead of the main site, which breaks the WP
+// login button and user list; visitors would also get a database error page there. Nested installs
+// whose database was migrated are left alone. Returns the relative paths that were moved.
+func (e *Enhance) quarantineDeadNestedInstalls(ctx context.Context, orgID string, ws *EnhanceWebsite, knownDBs []string) []string {
+	if ws.DocRoot == "" {
+		return nil
+	}
+	out, err := e.nodeRun(ctx, fmt.Sprintf(`find %s -mindepth 2 -maxdepth 4 -name wp-config.php -not -path '*/wp-content/*' 2>/dev/null`, shq(ws.DocRoot)))
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, n := range knownDBs {
+		known[strings.ToLower(n)] = true
+	}
+	for _, n := range e.listWebsiteDBNames(ctx, orgID, ws.ID) {
+		known[strings.ToLower(n)] = true
+	}
+	home := ws.HomeDir
+	if home == "" {
+		home = "/var/www/" + ws.ID
+	}
+	var moved []string
+	for _, cfg := range strings.Split(strings.TrimSpace(out), "\n") {
+		cfg = strings.TrimSpace(cfg)
+		if cfg == "" {
+			continue
+		}
+		dir := filepath.Dir(cfg)
+		rel, err := filepath.Rel(ws.DocRoot, dir)
+		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		dbName, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "define\( *['\"]DB_NAME['\"] *, *['\"][^'\"]*['\"]" %s 2>/dev/null | head -1 | sed -E "s/.*, *['\"]([^'\"]*)['\"].*/\1/"`, shq(cfg)))
+		dbName = strings.TrimSpace(dbName)
+		ver, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "\$wp_version = '[^']+'" %s 2>/dev/null | head -1 | cut -d"'" -f2`, shq(filepath.Join(dir, "wp-includes", "version.php"))))
+		ver = strings.TrimSpace(ver)
+		if dbName != "" && known[strings.ToLower(dbName)] {
+			e.logf("info", "%s: secondary WordPress install at /%s uses database %s (migrated); left in place", ws.Domain.Domain, rel, dbName)
+			continue
+		}
+		dest := filepath.Join(home, "migration-leftovers", strings.ReplaceAll(rel, "/", "__"))
+		cmd := fmt.Sprintf("mkdir -p %s && mv %s %s && chown -R %s:%s %s",
+			shq(filepath.Dir(dest)), shq(dir), shq(dest), shq(ws.UnixUser), shq(ws.UnixUser), shq(filepath.Dir(dest)))
+		if o, err := e.nodeRun(ctx, cmd); err != nil {
+			e.warnf("%s: old WordPress install at /%s (database %q does not exist on the target) could not be moved out of the web root: %v %s", ws.Domain.Domain, rel, dbName, err, o)
+			continue
+		}
+		moved = append(moved, rel)
+		e.warnf("%s: old WordPress %s install at /%s used database %q which does not exist on the target; moved out of the web root to %s so Enhance registers the main site (delete it after review)",
+			ws.Domain.Domain, ver, rel, dbName, dest)
+	}
+	return moved
+}
+
+// RepairWordPress re-runs the post-import WordPress steps for migrated domains: PHP version from
+// the source, dead nested installs out of the web root, stale app records removed, discovery and
+// rewrite again, ownership fixed. Returns summary lines of what changed.
+func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDBs []string, sourcePHP string) ([]string, error) {
+	orgID, err := e.orgID()
+	if err != nil {
+		return nil, err
+	}
+	if e.node == nil {
+		return nil, fmt.Errorf("not connected to the cluster node")
+	}
+	var summary []string
+	for _, domain := range domains {
+		ws, err := e.getWebsiteByDomain(ctx, orgID, domain)
+		if err != nil {
+			e.warnf("%s: %v", domain, err)
+			continue
+		}
+		if err := e.resolveWebsitePaths(ctx, ws); err != nil {
+			e.warnf("%s: %v", domain, err)
+			continue
+		}
+
+		// 1. PHP version as on the source
+		if sourcePHP != "" {
+			want := e.mapPHPVersion(sourcePHP)
+			if ws.PhpVersion == want {
+				e.logf("info", "%s: PHP version already %s", domain, want)
+			} else if _, err := e.apiRequest(ctx, "PATCH", fmt.Sprintf("/orgs/%s/websites/%s", orgID, ws.ID), map[string]interface{}{"phpVersion": want}); err != nil {
+				e.warnf("%s: PHP version not changed to %s: %v", domain, want, err)
+			} else {
+				e.logf("info", "%s: PHP version set to %s (was %s; the source runs PHP %s)", domain, want, ws.PhpVersion, sourcePHP)
+				summary = append(summary, fmt.Sprintf("%s: PHP %s -> %s", domain, ws.PhpVersion, want))
+				ws.PhpVersion = want
+			}
+		}
+
+		// 2. Dead nested installs out of the web root
+		for _, rel := range e.quarantineDeadNestedInstalls(ctx, orgID, ws, knownDBs) {
+			summary = append(summary, fmt.Sprintf("%s: old install /%s moved out of the web root", domain, rel))
+		}
+
+		// 3. App records whose folder no longer exists
+		apps, err := e.listApps(ctx, orgID, ws.ID)
+		if err != nil {
+			e.warnf("%s: cannot list applications: %v", domain, err)
+		}
+		for _, a := range apps {
+			if a.App != "wordpress" || strings.Trim(a.Path, "/") == "" {
+				continue
+			}
+			p := strings.Trim(a.Path, "/")
+			if _, err := e.nodeRun(ctx, "test -f "+shq(filepath.Join(ws.DocRoot, p, "wp-config.php"))); err == nil {
+				continue // still a real install
+			}
+			if _, err := e.apiRequest(ctx, "DELETE", fmt.Sprintf("/orgs/%s/websites/%s/apps/%s?backupBeforeOperation=false", orgID, ws.ID, a.ID), nil); err != nil {
+				e.warnf("%s: stale WordPress app record for /%s (folder no longer in the web root) could not be removed: %v; remove it in Enhance > Applications", domain, p, err)
+			} else {
+				e.logf("info", "%s: removed stale WordPress app record for /%s (folder no longer in the web root)", domain, p)
+				summary = append(summary, fmt.Sprintf("%s: stale app record /%s removed", domain, p))
+			}
+		}
+
+		// 4. Discovery + rewrite again
+		if err := e.registerWordPress(ctx, orgID, ws); err != nil {
+			e.warnf("%s: WordPress registration incomplete: %v", domain, err)
+		}
+		if apps, err := e.listApps(ctx, orgID, ws.ID); err == nil {
+			var descs []string
+			root := false
+			for _, a := range apps {
+				p := strings.Trim(a.Path, "/")
+				if a.App == "wordpress" && p == "" {
+					root = true
+				}
+				if p == "" {
+					p = "/"
+				}
+				descs = append(descs, a.App+" at "+p)
+			}
+			if root {
+				e.logf("info", "%s: main WordPress is registered at the web root (applications: %s)", domain, strings.Join(descs, ", "))
+				summary = append(summary, domain+": main WordPress registered")
+			} else {
+				e.warnf("%s: still no WordPress application at the web root (applications: %s)", domain, strings.Join(descs, ", "))
+			}
+		}
+
+		// 5. Ownership
+		if err := e.fixPermissions(ctx, ws); err != nil {
+			e.warnf("%v", err)
+		}
+	}
+	return summary, nil
 }
 
 // cleanupWordPress turns debug off, removes leftover backup archives and the wp-config backup,

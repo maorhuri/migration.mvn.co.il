@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, StopIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { cancelMigration, getMigration, getMigrationLogs, getServer, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogs, getServer, repairMigrationWordPress, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -46,6 +46,8 @@ export default function MigrationDetail() {
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [decisionBusy, setDecisionBusy] = useState(false);
+  const [repairOpen, setRepairOpen] = useState(false);
+  const [repairing, setRepairing] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
   const fetchData = async () => {
@@ -157,6 +159,20 @@ export default function MigrationDetail() {
     }
   };
 
+  const handleRepair = async () => {
+    setRepairing(true);
+    try {
+      const { summary } = await repairMigrationWordPress(migration.id);
+      toast.success(summary.length ? summary.join(' · ') : 'Nothing needed changing', { duration: 8000 });
+      setRepairOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, 'Repair failed'));
+    } finally {
+      setRepairing(false);
+    }
+  };
+
   const handleCancel = async () => {
     try {
       await cancelMigration(migration.id);
@@ -226,6 +242,11 @@ export default function MigrationDetail() {
             {isCompleted && sourceSuspended && (
               <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
                 Unsuspend source
+              </Button>
+            )}
+            {isCompleted && (
+              <Button variant="outline" leftIcon={<WrenchScrewdriverIcon />} onClick={() => setRepairOpen(true)} loading={repairing}>
+                Repair WordPress
               </Button>
             )}
           </>
@@ -314,6 +335,22 @@ export default function MigrationDetail() {
         }
         confirmLabel="Unsuspend"
         onConfirm={handleUnsuspendSource}
+      />
+
+      <ConfirmDialog
+        open={repairOpen}
+        onClose={() => setRepairOpen(false)}
+        tone="brand"
+        title="Repair WordPress registration?"
+        message={
+          <>
+            Re-runs the post-import steps on the target: sets the PHP version to the source's, moves old WordPress installs whose database does not exist
+            out of the web root (kept under migration-leftovers, not deleted), removes stale app records, triggers Enhance's WordPress discovery again
+            and fixes file ownership. Use it when the WP login button or user list in Enhance does not work. Progress is written to the console below.
+          </>
+        }
+        confirmLabel="Repair"
+        onConfirm={handleRepair}
       />
 
       <section className="space-y-3" aria-labelledby="migration-log-heading">

@@ -744,25 +744,39 @@ func (da *DirectAdmin) getSSLCert(ctx context.Context, username, domain string) 
 	}, nil
 }
 
-// getPHPVersion gets the PHP version for a domain
+// getPHPVersion resolves the PHP version of a domain. DirectAdmin stores php1_select=N in the
+// domain config, an index into custombuild's phpN_release list (not a version), so it is resolved
+// through options.conf; the account's OpenLiteSpeed config is the fallback.
 func (da *DirectAdmin) getPHPVersion(ctx context.Context, username, domain string) (string, error) {
-	confPath := fmt.Sprintf("/usr/local/directadmin/data/users/%s/domains/%s.conf", username, domain)
-	output, err := da.sshClient.RunCommand(ctx, fmt.Sprintf("cat %s 2>/dev/null", confPath))
+	script := fmt.Sprintf(`U=%s; D=%s
+conf=/usr/local/directadmin/data/users/$U/domains/$D.conf
+opts=/usr/local/directadmin/custombuild/options.conf
+sel=$(grep -E '^php1_select=' "$conf" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]')
+case "$sel" in ''|default|0) sel=1;; esac
+case "$sel" in *.*) echo "$sel"; exit 0;; esac
+rel=$(grep -E "^php${sel}_release=" "$opts" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '[:space:]')
+if [ -n "$rel" ] && [ "$rel" != "no" ]; then echo "$rel"; exit 0; fi
+ols=/usr/local/directadmin/data/users/$U/openlitespeed.conf
+v=$(grep -oE 'php[0-9]+' "$ols" 2>/dev/null | head -1 | sed 's/php//')
+if [ -n "$v" ]; then echo "$v" | sed 's/\(.\)/\1./;s/\.$//'; exit 0; fi
+echo default`, daShellQuote(username), daShellQuote(domain))
+	output, err := da.sshClient.RunCommand(ctx, script)
 	if err != nil {
 		return "", err
 	}
-
+	version := ""
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "php1_select=") || strings.HasPrefix(line, "php2_select=") {
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1]), nil
-			}
+		if l := strings.TrimSpace(line); l != "" {
+			version = l
 		}
 	}
-
-	return "default", nil
+	if version == "" {
+		version = "default"
+	}
+	return version, nil
 }
+
+func daShellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // exportCronJobs exports cron jobs for a user
 func (da *DirectAdmin) exportCronJobs(ctx context.Context, username string) ([]common.CronJob, error) {

@@ -763,6 +763,89 @@ func (e *Engine) SubmitScanDecision(ctx context.Context, migrationID, decision s
 	return e.GetMigrationStatus(ctx, migrationID)
 }
 
+// RepairWordPress re-runs the WordPress registration, PHP version and ownership steps for a
+// completed migration (operator action from the migration page).
+func (e *Engine) RepairWordPress(ctx context.Context, migrationID string) (*MigrationResult, []string, error) {
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "completed" {
+		return nil, nil, fmt.Errorf("only completed migrations can be repaired (status: %s)", m.Status)
+	}
+	targetServer, err := e.db.GetServer(ctx, m.TargetServerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("target server not found: %w", err)
+	}
+	if common.PanelType(targetServer.PanelType) != common.PanelTypeEnhance {
+		return nil, nil, fmt.Errorf("repair is only implemented for Enhance targets")
+	}
+	var export common.ExportData
+	if m.ExportData.Valid && len(m.ExportData.Data) > 0 {
+		_ = json.Unmarshal(m.ExportData.Data, &export)
+	}
+	var domains []string
+	for _, d := range export.Domains {
+		domains = append(domains, d.Name)
+	}
+	if len(domains) == 0 && export.Account.Domain != "" {
+		domains = []string{export.Account.Domain}
+	}
+	if len(domains) == 0 {
+		return nil, nil, fmt.Errorf("no domains are recorded for this migration")
+	}
+	var knownDBs []string
+	for _, db := range export.Databases {
+		knownDBs = append(knownDBs, db.Name)
+	}
+	sourcePHP := ""
+	if accounts, err := e.db.GetServerAccounts(ctx, m.SourceServerID); err == nil {
+		for _, a := range accounts {
+			if a.Username == m.AccountUsername && a.PHPVersion.Valid && a.PHPVersion.String != "" {
+				sourcePHP = a.PHPVersion.String
+			}
+		}
+	}
+
+	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
+	logFn("info", fmt.Sprintf("Repair WordPress started (operator action): domains %s, source PHP %q", strings.Join(domains, ", "), sourcePHP))
+
+	// The cluster node is learned from the website itself (the migration record does not store it).
+	probe := enhance.New()
+	probe.SetLogger(logFn)
+	if err := probe.ConnectAPI(ctx, e.db.ToConnectionConfig(targetServer), func() string { k, _ := e.db.GetServerAPIKey(ctx, targetServer.ID); return k }()); err != nil {
+		logFn("error", "Repair failed: "+err.Error())
+		return nil, nil, err
+	}
+	site, err := probe.FindWebsite(ctx, domains[0])
+	if err != nil {
+		logFn("error", "Repair failed: "+err.Error())
+		return nil, nil, err
+	}
+	en, err := e.connectEnhanceTarget(ctx, migrationID, targetServer, site.AppServerID, logFn)
+	if err != nil {
+		logFn("error", "Repair failed: "+err.Error())
+		return nil, nil, err
+	}
+	defer en.Disconnect()
+
+	summary, err := en.RepairWordPress(ctx, domains, knownDBs, sourcePHP)
+	if err != nil {
+		logFn("error", "Repair failed: "+err.Error())
+		return nil, nil, err
+	}
+	if len(summary) == 0 {
+		logFn("info", "Repair WordPress finished: nothing needed changing")
+	} else {
+		logFn("info", "Repair WordPress finished: "+strings.Join(summary, "; "))
+	}
+	if n := len(en.Warnings()); n > 0 {
+		logFn("warn", fmt.Sprintf("Repair finished with %d warning(s); see the lines above", n))
+	}
+	status, err := e.GetMigrationStatus(ctx, migrationID)
+	return status, summary, err
+}
+
 // RefreshAccountsCache re-reads the account list of a source server and stores it, so the
 // New Migration page shows suspended/changed accounts without a manual Refresh.
 func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int, error) {

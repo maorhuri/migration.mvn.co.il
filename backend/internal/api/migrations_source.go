@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,4 +48,19 @@ func (h *Handler) scanDecision(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// repairWordPress re-runs the WordPress registration / PHP / ownership steps for a completed migration.
+func (h *Handler) repairWordPress(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	result, summary, err := h.engine.RepairWordPress(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if summary == nil {
+		summary = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{"migration": result, "summary": summary})
 }
