@@ -138,3 +138,18 @@ Additions the Go side relies on; they extend (not change) the contract above.
   plugins.php and, if the plugin is still listed, it is deactivated and deleted through
   plugins.php.
 - The Docker image adds `lftp`, GNU `tar`, `gzip` and `mariadb-client`.
+
+## 6. Helper behaviour notes (as built, 2026-09-14)
+
+- `info.tmp_dir` is absolute; `tmp_dir_name` is the basename `.mvn-tmp-<8 hex>` where the hex is
+  the first 8 chars of `sha256("mvn|" + token + "|" + docroot)`.
+- exec-mode `dump`/`archive` calls return after at most 5 s (background process polled);
+  mysqli / pure-PHP calls work ~20 s. A failed call leaves the state untouched.
+- Errors are sticky until `restart=1`; a concurrent call answers `{ok:false,error:"busy",busy:true}`
+  and the Go side waits and retries.
+- File names in the done answer are authoritative: `db.sql.gz` or `db.sql`, `files.tar.gz` or
+  `files.tar`, split parts `files.tar.gz.aa`, `.ab`, ... (exec mode, docroot > 1 GB only).
+- PHP-written gzip is multi-member (one member per call); readers must accept that.
+- mysqldump falls back to mysqli automatically; `mode` reports which ran. mysqli dumps have no
+  triggers/routines; views are DEFINER-stripped.
+- `DB_HOST=localhost` without a PHP socket tries the usual socket paths, then TCP 127.0.0.1.
