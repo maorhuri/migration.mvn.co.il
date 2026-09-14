@@ -1514,6 +1514,10 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 			home = "/var/www/" + ws.ID
 		}
 
+		for _, f := range e.removeUserIni(ctx, ws) {
+			summary = append(summary, fmt.Sprintf("%s: removed %s", domain, f))
+		}
+
 		// 2. Dead nested installs out of the web root
 		for _, rel := range e.quarantineDeadNestedInstalls(ctx, orgID, ws, knownDBs) {
 			summary = append(summary, fmt.Sprintf("%s: old install /%s moved out of the web root", domain, rel))
@@ -1572,11 +1576,21 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 // cleanupWordPress turns debug off, removes leftover backup archives and the wp-config backup,
 // and returns a human readable summary of what existed and what was removed.
 func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (string, error) {
+	var report []string
+
+	// 0. .user.ini files carry the old server's PHP settings (a WAF auto_prepend_file at a
+	//    DirectAdmin path, limits): they break PHP on Enhance, so they go for every site.
+	if removed := e.removeUserIni(ctx, ws); len(removed) > 0 {
+		report = append(report, fmt.Sprintf("removed %d .user.ini file(s): %s", len(removed), strings.Join(removed, ", ")))
+	}
+
 	wpConfig := ws.DocRoot + "/wp-config.php"
 	if _, err := e.nodeRun(ctx, "test -f "+shq(wpConfig)); err != nil {
+		if len(report) > 0 {
+			return fmt.Sprintf("%s: %s", ws.Domain.Domain, strings.Join(report, "; ")), nil
+		}
 		return "", nil
 	}
-	var report []string
 
 	// 1. Debug flags
 	before, _ := e.nodeRun(ctx, fmt.Sprintf(`grep -oE "define\( *['\"](WP_DEBUG|WP_DEBUG_LOG|WP_DEBUG_DISPLAY|SCRIPT_DEBUG)['\"] *, *[^)]*\)" %s`, shq(wpConfig)))
@@ -1658,6 +1672,25 @@ func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (str
 	summary := fmt.Sprintf("%s: %s", ws.Domain.Domain, strings.Join(report, "; "))
 	e.logf("info", "WordPress cleanup summary for %s", summary)
 	return summary, nil
+}
+
+// removeUserIni deletes .user.ini / user.ini files under the web root and returns their paths.
+func (e *Enhance) removeUserIni(ctx context.Context, ws *EnhanceWebsite) []string {
+	if ws.DocRoot == "" {
+		return nil
+	}
+	find := fmt.Sprintf(`cd %s && find . -maxdepth 4 -type f \( -name '.user.ini' -o -name 'user.ini' \) 2>/dev/null`, shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, find)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	files := strings.Fields(out)
+	if _, err := e.nodeRun(ctx, find+" -delete"); err != nil {
+		e.warnf("%s: could not remove %s: %v", ws.Domain.Domain, strings.Join(files, ", "), err)
+		return nil
+	}
+	e.logf("info", "%s: removed %s (old server's PHP settings; they break PHP here)", ws.Domain.Domain, strings.Join(files, ", "))
+	return files
 }
 
 // importEmail creates a mailbox with a new random password
