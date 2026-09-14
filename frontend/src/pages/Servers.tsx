@@ -37,6 +37,9 @@ export default function Servers() {
   const [refreshingServer, setRefreshingServer] = useState<string | null>(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [serverToDelete, setServerToDelete] = useState<Server | null>(null);
+  // Set when a first delete attempt is blocked by migration history: the operator must confirm again to delete it too.
+  const [deleteBlockedCount, setDeleteBlockedCount] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
   // Result of the last "Test connection" per server in this session (presence chip on the card).
   const [lastTests, setLastTests] = useState<Record<string, ServerTestResult>>({});
   // Probe dialog for agentless sources: what the helper reported on the last test.
@@ -120,19 +123,31 @@ export default function Servers() {
 
   const openDeleteModal = (server: Server) => {
     setServerToDelete(server);
+    setDeleteBlockedCount(null);
     setDeleteModalOpen(true);
   };
 
   const handleDelete = async () => {
     if (!serverToDelete) return;
+    setDeleting(true);
     try {
-      await deleteServer(serverToDelete.id);
+      await deleteServer(serverToDelete.id, { cascade: deleteBlockedCount !== null });
       toast.success(t('servers.toast.deleted'));
       setDeleteModalOpen(false);
       setServerToDelete(null);
+      setDeleteBlockedCount(null);
       fetchData();
     } catch (error) {
-      toast.error(t('servers.toast.deleteFailed'));
+      const status = (error as { response?: { status?: number; data?: { migrations_count?: number } } })?.response?.status;
+      const count = (error as { response?: { data?: { migrations_count?: number } } })?.response?.data?.migrations_count;
+      if (status === 409 && typeof count === 'number') {
+        // Stay open: the dialog now asks to confirm deleting the migration history along with the server.
+        setDeleteBlockedCount(count);
+      } else {
+        toast.error(t('servers.toast.deleteFailed'));
+      }
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -390,13 +405,25 @@ export default function Servers() {
 
       <ConfirmDialog
         open={deleteModalOpen}
-        onClose={() => setDeleteModalOpen(false)}
-        title={t('servers.delete.title')}
-        message={t.rich('servers.delete.message', {
-          name: <Mono className="font-medium text-slate-900 dark:text-slate-100">{serverToDelete?.name}</Mono>,
-        })}
-        confirmLabel={t('servers.delete.confirm')}
+        onClose={() => {
+          setDeleteModalOpen(false);
+          setDeleteBlockedCount(null);
+        }}
+        title={deleteBlockedCount !== null ? t('servers.delete.blocked.title') : t('servers.delete.title')}
+        message={
+          deleteBlockedCount !== null
+            ? t.rich('servers.delete.blocked.message', {
+                name: <Mono className="font-medium text-slate-900 dark:text-slate-100">{serverToDelete?.name}</Mono>,
+                count: deleteBlockedCount,
+              })
+            : t.rich('servers.delete.message', {
+                name: <Mono className="font-medium text-slate-900 dark:text-slate-100">{serverToDelete?.name}</Mono>,
+              })
+        }
+        tone={deleteBlockedCount !== null ? 'danger' : undefined}
+        confirmLabel={deleteBlockedCount !== null ? t('servers.delete.blocked.confirm') : t('servers.delete.confirm')}
         confirmText={serverToDelete?.name}
+        loading={deleting}
         onConfirm={handleDelete}
       />
     </div>

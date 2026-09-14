@@ -35,8 +35,8 @@ export const updateServer = async (id: string, server: ServerPayload): Promise<S
   return data;
 };
 
-export const deleteServer = async (id: string): Promise<void> => {
-  await api.delete(`/servers/${id}`);
+export const deleteServer = async (id: string, opts: { cascade?: boolean } = {}): Promise<void> => {
+  await api.delete(`/servers/${id}`, { params: opts.cascade ? { cascade: 'true' } : undefined });
 };
 
 /** Connection test. For ftp / wordpress sources the backend also runs the helper probe and returns its `info`. */

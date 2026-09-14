@@ -449,6 +449,32 @@ func (d *Database) DeleteServer(ctx context.Context, id string) error {
 	return err
 }
 
+// CountMigrationsForServer counts migrations that reference this server as source or target
+// (what blocks a plain DeleteServer, and what DeleteServerCascade would remove).
+func (d *Database) CountMigrationsForServer(ctx context.Context, id string) (int, error) {
+	var n int
+	err := d.db.GetContext(ctx, &n, "SELECT count(*) FROM migrations WHERE source_server_id = $1 OR target_server_id = $1", id)
+	return n, err
+}
+
+// DeleteServerCascade deletes every migration (and its logs, which cascade) that references
+// this server as source or target, then the server itself, in one transaction. Used when the
+// operator explicitly confirms deleting the server's migration history along with it.
+func (d *Database) DeleteServerCascade(ctx context.Context, id string) error {
+	tx, err := d.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM migrations WHERE source_server_id = $1 OR target_server_id = $1", id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM servers WHERE id = $1", id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // GetServerPassword retrieves and decrypts the server password
 func (d *Database) GetServerPassword(ctx context.Context, id string) (string, error) {
 	var encrypted sql.NullString

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/lib/pq"
 	"net/http"
 	"strconv"
 	"strings"
@@ -247,13 +248,43 @@ func (h *Handler) updateServer(c *gin.Context) {
 
 func (h *Handler) deleteServer(c *gin.Context) {
 	id := c.Param("id")
+	ctx := c.Request.Context()
 
-	if err := h.db.DeleteServer(c.Request.Context(), id); err != nil {
+	if c.Query("cascade") == "true" {
+		if err := h.db.DeleteServerCascade(ctx, id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusNoContent, nil)
+		return
+	}
+
+	if err := h.db.DeleteServer(ctx, id); err != nil {
+		if isForeignKeyViolation(err) {
+			n, cerr := h.db.CountMigrationsForServer(ctx, id)
+			if cerr != nil {
+				n = 0
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"error":            "this server has migration history and cannot be deleted while it exists",
+				"migrations_count": n,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusNoContent, nil)
+}
+
+// isForeignKeyViolation reports whether err is a Postgres foreign-key-violation (23503).
+func isForeignKeyViolation(err error) bool {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23503"
+	}
+	return strings.Contains(err.Error(), "foreign key constraint")
 }
 
 func (h *Handler) testServerConnection(c *gin.Context) {

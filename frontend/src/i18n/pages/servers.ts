@@ -124,6 +124,9 @@ export const servers: PageDict = {
     'servers.delete.title': 'למחוק את השרת?',
     'servers.delete.message': 'הפעולה מסירה את {name} ואת פרטי ההתחברות השמורים שלו. אי אפשר לבטל אותה.',
     'servers.delete.confirm': 'מחק שרת',
+    'servers.delete.blocked.title': 'למחוק גם את היסטוריית המיגרציות?',
+    'servers.delete.blocked.message': 'אי אפשר למחוק את {name} כי יש {count} מיגרציות שמפנות אליו. אם תמשיך, הן יימחקו לצמיתות יחד עם השרת. אי אפשר לבטל את זה.',
+    'servers.delete.blocked.confirm': 'מחק שרת והיסטוריה',
 
     // Form modal
     'servers.form.title.create': 'הוספת יעד',
@@ -320,6 +323,9 @@ export const servers: PageDict = {
     'servers.delete.title': 'Delete server?',
     'servers.delete.message': 'This removes {name} and its stored credentials. It cannot be undone.',
     'servers.delete.confirm': 'Delete server',
+    'servers.delete.blocked.title': 'Delete the migration history too?',
+    'servers.delete.blocked.message': '{name} cannot be deleted: {count} migration(s) still reference it. Continuing deletes them permanently along with the server. This cannot be undone.',
+    'servers.delete.blocked.confirm': 'Delete server and history',
 
     // Form modal
     'servers.form.title.create': 'Add target',
