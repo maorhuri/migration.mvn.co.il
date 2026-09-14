@@ -77,6 +77,12 @@ export const getClusterServers = async (id: string): Promise<ClusterServer[]> =>
   return data.items || [];
 };
 
+/** Domains already hosted on this (Enhance) target, optionally scoped to one cluster server. */
+export const getExistingDomains = async (id: string, clusterServerId?: string): Promise<string[]> => {
+  const { data } = await api.get(`/servers/${id}/existing-domains`, { params: clusterServerId ? { cluster_server_id: clusterServerId } : undefined });
+  return data.domains || [];
+};
+
 // Refresh server accounts (force reload from server)
 export const refreshServerAccounts = async (id: string): Promise<{ accounts: Account[]; total: number }> => {
   const { data } = await api.post(`/servers/${id}/accounts/refresh`);

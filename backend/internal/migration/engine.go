@@ -1236,6 +1236,25 @@ func (e *Engine) GetEnhanceClusterServers(ctx context.Context, server *storage.S
 }
 
 // GetServerAccounts gets all accounts from a server
+// ListTargetDomains returns every domain already hosted on an Enhance target, optionally
+// scoped to one cluster/app server. Used by the New Migration wizard to hide source accounts
+// that have already been migrated there.
+func (e *Engine) ListTargetDomains(ctx context.Context, targetServerID, clusterServerID string) ([]string, error) {
+	server, err := e.db.GetServer(ctx, targetServerID)
+	if err != nil {
+		return nil, fmt.Errorf("target server not found: %w", err)
+	}
+	if common.PanelType(server.PanelType) != common.PanelTypeEnhance {
+		return nil, nil
+	}
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	en := enhance.New()
+	if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
+		return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
+	}
+	return en.ListWebsiteDomains(ctx, clusterServerID)
+}
+
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:

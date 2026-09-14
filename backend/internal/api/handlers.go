@@ -58,6 +58,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.POST("/:id/accounts/refresh", h.refreshServerAccounts)
 			servers.GET("/:id/info", h.getServerInfo)
 			servers.GET("/:id/cluster-servers", h.listClusterServers)
+			servers.GET("/:id/existing-domains", h.listExistingDomains)
 		}
 
 		// SSH Keys
@@ -577,6 +578,22 @@ func (h *Handler) getServerInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, info)
+}
+
+// listExistingDomains returns domains already hosted on this (Enhance) target, optionally
+// scoped to one cluster server via ?cluster_server_id=, so the wizard can hide source accounts
+// that were already migrated there.
+func (h *Handler) listExistingDomains(c *gin.Context) {
+	id := c.Param("id")
+	domains, err := h.engine.ListTargetDomains(c.Request.Context(), id, c.Query("cluster_server_id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if domains == nil {
+		domains = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{"domains": domains})
 }
 
 func (h *Handler) listClusterServers(c *gin.Context) {

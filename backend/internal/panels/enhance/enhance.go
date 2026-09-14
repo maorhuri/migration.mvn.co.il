@@ -418,6 +418,45 @@ func (e *Enhance) GetWebsiteInfo(ctx context.Context, orgID string, websiteID st
 	return &website, nil
 }
 
+// ListWebsiteDomains returns every domain (primary + aliases) already hosted in the org,
+// optionally restricted to one cluster/app server. Used by the wizard to hide source accounts
+// that already have a website on the chosen target, so a repeat migration run does not list
+// sites that were already moved.
+func (e *Enhance) ListWebsiteDomains(ctx context.Context, appServerID string) ([]string, error) {
+	if !e.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+	orgID, err := e.orgID()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000", orgID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var listing struct {
+		Items []EnhanceWebsite `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
+	}
+	var domains []string
+	for _, ws := range listing.Items {
+		if appServerID != "" && ws.AppServerID != appServerID {
+			continue
+		}
+		if ws.Domain.Domain != "" {
+			domains = append(domains, ws.Domain.Domain)
+		}
+		for _, a := range ws.Aliases {
+			if a.Domain != "" {
+				domains = append(domains, a.Domain)
+			}
+		}
+	}
+	return domains, nil
+}
+
 // getWebsiteByDomain finds a website of the org by primary domain and returns its full details
 func (e *Enhance) getWebsiteByDomain(ctx context.Context, orgID, domain string) (*EnhanceWebsite, error) {
 	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000", orgID), nil)
