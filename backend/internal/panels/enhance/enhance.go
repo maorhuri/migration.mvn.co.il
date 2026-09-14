@@ -465,8 +465,8 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 			return nil, fmt.Errorf("website %s already exists on a different server (appServerId=%s, selected=%s); move or delete it in Enhance first",
 				domain.Name, existing.AppServerID, target)
 		}
-		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s); reusing it",
-			domain.Name, existing.ID, existing.UnixUser)
+		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s, dbServer=%s ips=%s); reusing it",
+			domain.Name, existing.ID, existing.UnixUser, existing.DbServerID, serverIPs(existing.DbServerIps))
 		return existing, nil
 	}
 
@@ -978,10 +978,24 @@ func lastInt(out string) int {
 	return 0
 }
 
+func serverIPs(ips []ServerIP) string {
+	var out []string
+	for _, ip := range ips {
+		if ip.IP != "" {
+			out = append(out, ip.IP)
+		}
+	}
+	if len(out) == 0 {
+		return "-"
+	}
+	return strings.Join(out, ",")
+}
+
 // waitForDatabase polls until the database accepts the user (socket first, then the website's DB
 // server IPs and 127.0.0.1). Enhance's appcd sometimes fails to apply what the API recorded
 // ("Local .my.cnf not valid ... PermissionDenied" on the node); after a while the user and grants
-// are re-sent through the API, and as a last resort the objects are created directly on the node.
+// are re-sent through the API. Nothing is ever created outside Enhance: if it still does not
+// work the import fails and says so.
 func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userEndpoint, privEndpoint, db, user, password string, wait time.Duration) (string, error) {
 	hosts := []string{""}
 	for _, ip := range ws.DbServerIps {
@@ -1018,7 +1032,7 @@ func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userE
 		}
 		attempt++
 		if attempt == 1 {
-			e.logf("info", "Database %s is not usable on the node yet (%s); waiting for Enhance to apply it", db, lastErr)
+			e.logf("info", "Database %s is not usable on the node yet (%s; website dbServer=%s ips=%s); waiting for Enhance to apply it", db, lastErr, ws.DbServerID, serverIPs(ws.DbServerIps))
 		}
 		if attempt == 4 && !nudged {
 			nudged = true
@@ -1027,15 +1041,7 @@ func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userE
 			e.apiRequest(ctx, "PUT", privEndpoint, map[string]interface{}{"dbName": db, "grants": []string{"all"}})
 		}
 		if time.Now().After(deadline) {
-			e.warnf("Enhance reports database %s and user %s as created, but MariaDB on node %s does not accept them after %s (%s); creating them directly on the node. Check Enhance's appcd on the node ('Local .my.cnf not valid ... attempting repair')", db, user, e.nodeHost, wait.Round(time.Second), lastErr)
-			if err := e.createDatabaseDirectly(ctx, db, user, password); err != nil {
-				return "", fmt.Errorf("database %s is not usable on node %s (%s) and direct creation failed: %v; retry the migration or check appcd/MariaDB on the node", db, e.nodeHost, lastErr, err)
-			}
-			h, lastErr := probe()
-			if lastErr != "" {
-				return "", fmt.Errorf("database %s still not usable on node %s after direct creation: %s", db, e.nodeHost, lastErr)
-			}
-			return h, nil
+			return "", fmt.Errorf("Enhance reports database %s and user %s as created, but MariaDB on node %s does not accept them after %s (%s). Enhance's appcd on the node did not provision them (its log shows 'Local .my.cnf not valid ... attempting repair' for this website); nothing was created outside Enhance. Check the website's database in Enhance and run the migration again", db, user, e.nodeHost, wait.Round(time.Second), lastErr)
 		}
 		select {
 		case <-ctx.Done():
@@ -1043,28 +1049,6 @@ func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userE
 		case <-time.After(10 * time.Second):
 		}
 	}
-}
-
-// createDatabaseDirectly creates the database, user and grants through the node's root socket,
-// mirroring what Enhance's appcd would have done (user@localhost for the socket, user@10.% for
-// the website's PHP container on the node's private network).
-func (e *Enhance) createDatabaseDirectly(ctx context.Context, db, user, password string) error {
-	pw := strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(password)
-	stmts := []string{fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db)}
-	for _, h := range []string{"localhost", "10.%"} {
-		stmts = append(stmts,
-			fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s'", user, h, pw),
-			fmt.Sprintf("ALTER USER '%s'@'%s' IDENTIFIED BY '%s'", user, h, pw),
-			fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s'", db, user, h),
-		)
-	}
-	stmts = append(stmts, "FLUSH PRIVILEGES")
-	out, err := e.nodeRun(ctx, "mysql -u root -e "+shq(strings.Join(stmts, "; "))+" 2>&1")
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, lastLines(out, 2))
-	}
-	e.logf("info", "Database %s and user %s created directly on node %s (grants for localhost and 10.%%)", db, user, e.nodeHost)
-	return nil
 }
 
 // lastLines returns the last n meaningful lines of a command output, joined with " | ".
