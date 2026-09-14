@@ -24,14 +24,18 @@ type Handler struct {
 	db     *storage.Database
 	engine *migration.Engine
 	logger *logger.Logger
+	gitSHA string
 }
 
-// NewHandler creates a new API handler
-func NewHandler(db *storage.Database, engine *migration.Engine, log *logger.Logger) *Handler {
+// NewHandler creates a new API handler. gitSHA is the commit this binary was built from
+// (see cmd/server/main.go), exposed on /api/v1/health so a deploy can verify from the
+// outside which commit is actually serving, not just which one Docker thinks it built.
+func NewHandler(db *storage.Database, engine *migration.Engine, log *logger.Logger, gitSHA string) *Handler {
 	return &Handler{
 		db:     db,
 		engine: engine,
 		logger: log,
+		gitSHA: gitSHA,
 	}
 }
 
@@ -111,7 +115,8 @@ func corsMiddleware() gin.HandlerFunc {
 // Health check
 func (h *Handler) healthCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"status": "healthy",
+		"status":  "healthy",
+		"git_sha": h.gitSHA,
 	})
 }
 

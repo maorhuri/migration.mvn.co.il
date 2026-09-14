@@ -83,7 +83,7 @@ func main() {
 	}
 
 	// Initialize API handler
-	handler := api.NewHandler(db, engine, log)
+	handler := api.NewHandler(db, engine, log, GitSHA)
 
 	// Setup Gin
 	if cfg.Environment == "production" {

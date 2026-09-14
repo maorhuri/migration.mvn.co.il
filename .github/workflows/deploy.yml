@@ -38,8 +38,9 @@ jobs:
             git reset --hard origin/main
             git log -1 --oneline
             cd docker
+            DEPLOY_SHA=$(git rev-parse HEAD)
             echo "== docker compose build =="
-            docker compose --env-file ../.env build --quiet
+            docker compose --env-file ../.env build --quiet --build-arg GIT_SHA="$DEPLOY_SHA"
             # `docker compose images -q` has been seen returning a stale id right after a build
             # in this environment, silently masking a real code change; ask Docker directly for
             # the tag's current id instead, which always reflects the build that just ran.
@@ -67,6 +68,20 @@ jobs:
               exit 1
             fi
             echo "confirmed: the running container matches this deploy's build"
+            echo "== verifying the app itself reports this commit (the strongest check: what it says about itself, not what Docker says about it) =="
+            SERVED_SHA=""
+            for i in $(seq 1 12); do
+              SERVED_SHA=$(curl -fsS http://127.0.0.1:8080/api/v1/health 2>/dev/null | grep -o '"git_sha":"[^"]*"' | cut -d'"' -f4 || true)
+              [ -n "$SERVED_SHA" ] && break
+              sleep 5
+            done
+            echo "deployed commit: $DEPLOY_SHA"
+            echo "served git_sha:  $SERVED_SHA"
+            if [ "$SERVED_SHA" != "$DEPLOY_SHA" ]; then
+              echo "FATAL: the running app reports git_sha=$SERVED_SHA, not $DEPLOY_SHA -- this deploy did not really take effect"
+              exit 1
+            fi
+            echo "confirmed: the running app itself reports the deployed commit"
           REMOTE
 
       - name: Health check

@@ -13,8 +13,15 @@ RUN go mod download
 # Copy source code
 COPY backend/ ./
 
+# Baked into the binary and exposed on /api/v1/health, so a deploy can verify from the outside
+# which commit is actually running rather than trusting Docker's own build/image bookkeeping
+# (which has proven unreliable to query right after a build in this environment). Referencing
+# the ARG in a RUN instruction also means a changed commit always invalidates the build cache
+# from here on, so this step can never silently reuse an older binary.
+ARG GIT_SHA=unknown
+
 # Build the server
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-X main.GitSHA=${GIT_SHA}" -o server ./cmd/server
 
 # Build the CLI
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o migration-cli ./cmd/cli
