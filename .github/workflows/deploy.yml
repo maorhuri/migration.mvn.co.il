@@ -40,6 +40,8 @@ jobs:
             cd docker
             echo "== docker compose build =="
             docker compose --env-file ../.env build --quiet
+            BUILT_IMAGE=$(docker compose --env-file ../.env images -q app)
+            echo "built image: $BUILT_IMAGE"
             echo "== waiting for in-flight migrations (restart would kill them) =="
             for i in $(seq 1 360); do
               n=$(docker compose --env-file ../.env exec -T postgres psql -U migration -d migration -At -c "select count(*) from migrations where status in ('running','pending','awaiting_review')" 2>/dev/null | tr -d '[:space:]')
@@ -47,9 +49,19 @@ jobs:
               echo "  $n migration(s) in progress; waiting 30s ($i/360)"
               sleep 30
             done
-            echo "== docker compose up =="
+            echo "== docker compose up (--force-recreate: a rebuilt image alone does not always make compose recreate a running container) =="
+            docker compose --env-file ../.env up -d --force-recreate app
             docker compose --env-file ../.env up -d
             docker compose --env-file ../.env ps
+            echo "== verifying the running container actually uses the image just built =="
+            RUNNING_IMAGE=$(docker inspect -f '{{.Image}}' docker-app-1)
+            echo "built image: $BUILT_IMAGE"
+            echo "running image: $RUNNING_IMAGE"
+            if [ "$RUNNING_IMAGE" != "$BUILT_IMAGE" ]; then
+              echo "FATAL: the running container is NOT using the image just built (deploy did not take effect)"
+              exit 1
+            fi
+            echo "confirmed: the running container matches this deploy's build"
           REMOTE
 
       - name: Health check
