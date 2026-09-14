@@ -21,6 +21,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -510,7 +512,21 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 		}
 	}
 	if len(counts) == 0 {
-		e.logf("info", "No existing customer org found for this node; new websites will use the configured org")
+		// No website placed us on this node yet: a customer may still be dedicated to it (a
+		// new account, or one whose sites were all removed). Fall back to the authoritative
+		// source -- each customer's subscription records which node it owns -- since guessing
+		// from websites alone would miss this and wrongly use the top-level org.
+		orgID, orgName, err := e.findOrgBySubscribedServer(ctx, topOrg, appServerID)
+		if err != nil {
+			e.logf("warn", fmt.Sprintf("Could not check customer subscriptions for this node (%v); new websites will use the configured org", err))
+			return nil
+		}
+		if orgID == "" {
+			e.logf("info", "No existing customer org found for this node; new websites will use the configured org")
+			return nil
+		}
+		e.orgOverride = orgID
+		e.logf("info", "Using existing customer org %q (%s) for this node: its subscription dedicates this server, even though it has no websites yet", orgName, orgID)
 		return nil
 	}
 	best, bestN := "", 0
@@ -525,6 +541,73 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 	e.orgOverride = best
 	e.logf("info", "Using existing customer org %q (%s) for this node: %d website(s) already there", names[best], best, bestN)
 	return nil
+}
+
+// findOrgBySubscribedServer scans every customer org under topOrg (recursively) for one whose
+// subscription dedicates appServerID to it (Enhance's own "service locations": the app/db/
+// email/backup/postgresql server a plan pins a customer to). There is no single endpoint for
+// this, so it lists customers once and checks each one's subscription, capped and bounded in
+// parallel to keep this usable even with a large customer base.
+func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServerID string) (orgID, orgName string, err error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/customers?recursive=true&limit=1000", topOrg), nil)
+	if err != nil {
+		return "", "", err
+	}
+	var listing struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return "", "", err
+	}
+	type result struct{ id, name string }
+	found := make(chan result, 1)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10) // bounded concurrency: one org's subscriptions is a small, cheap call, but there can be many orgs
+	checked := int32(0)
+	for _, cust := range listing.Items {
+		wg.Add(1)
+		go func(id, name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			atomic.AddInt32(&checked, 1)
+			subResp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/subscriptions", id), nil)
+			if err != nil {
+				return
+			}
+			var subs struct {
+				Items []struct {
+					DedicatedServers struct {
+						AppServer *struct {
+							ID string `json:"id"`
+						} `json:"appServer"`
+					} `json:"dedicatedServers"`
+				} `json:"items"`
+			}
+			if json.Unmarshal(subResp, &subs) != nil {
+				return
+			}
+			for _, sub := range subs.Items {
+				if sub.DedicatedServers.AppServer != nil && sub.DedicatedServers.AppServer.ID == appServerID {
+					select {
+					case found <- result{id, name}:
+					default:
+					}
+					return
+				}
+			}
+		}(cust.ID, cust.Name)
+	}
+	go func() { wg.Wait(); close(found) }()
+	r, ok := <-found
+	e.logf("info", fmt.Sprintf("Checked %d customer(s) for a subscription dedicating this node (of %d total)", atomic.LoadInt32(&checked), len(listing.Items)))
+	if !ok {
+		return "", "", nil
+	}
+	return r.id, r.name, nil
 }
 
 // getWebsiteByDomain finds a website of the org by primary domain and returns its full details
