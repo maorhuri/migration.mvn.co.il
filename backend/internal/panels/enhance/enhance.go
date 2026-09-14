@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1106,8 +1107,21 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		kind = strings.Trim(strings.TrimSpace(string(resp)), `"`)
 	}
 
-	// Discovery: orchd scans the website and records the WP installation (db name, prefix, path)
 	var problems []string
+
+	// Enhance's discovery runs `wp-cli config get DB_NAME` as the site user; a wp-config.php it cannot
+	// parse (for example a relative require('wp-salt.php')) makes it skip the install silently.
+	if out, err := e.probeWPConfig(ctx, ws); err != nil {
+		e.logf("info", "%s: wp-config.php is not readable by WP-CLI's config parser (%s); fixing relative includes", ws.Domain.Domain, firstLine(out))
+		e.makeWPConfigParseable(ctx, ws)
+		if out2, err2 := e.probeWPConfig(ctx, ws); err2 != nil {
+			problems = append(problems, fmt.Sprintf("wp-config.php cannot be parsed by WP-CLI, so Enhance's discovery skips this install: %s", firstLine(out2)))
+		} else {
+			e.logf("info", "%s: wp-config.php parses now (DB_NAME=%s)", ws.Domain.Domain, out2)
+		}
+	}
+
+	// Discovery: orchd scans the website and records the WP installation (db name, prefix, path)
 	if resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/apps/wordpress", orgID, ws.ID), nil); err != nil {
 		problems = append(problems, fmt.Sprintf("discovery: %v", err))
 	} else {
@@ -1161,6 +1175,135 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		return fmt.Errorf("%s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// probeWPConfig runs the same check Enhance's discovery uses (wp-cli config get DB_NAME as the
+// site user) and returns the DB name, or the error output.
+func (e *Enhance) probeWPConfig(ctx context.Context, ws *EnhanceWebsite) (string, error) {
+	if _, err := e.nodeRun(ctx, "test -x /usr/bin/wp-cli"); err != nil {
+		return "", nil // no WP-CLI on this node: nothing to check
+	}
+	cmd := fmt.Sprintf("cd %s && sudo -u %s -H /usr/bin/wp-cli config get DB_NAME --path=%s --skip-plugins --skip-themes --skip-packages --quiet 2>&1",
+		shq(ws.HomeDir), shq(ws.UnixUser), shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, cmd)
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "unable to resolve host") || strings.TrimSpace(l) == "" {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	out = strings.Join(lines, "\n")
+	if err != nil {
+		return out, err
+	}
+	if strings.Contains(out, "Error") || strings.Contains(out, "Fatal error") || out == "" {
+		return out, fmt.Errorf("config get failed")
+	}
+	return out, nil
+}
+
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		l = strings.TrimSpace(l)
+		if l != "" && !strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "Stack trace") {
+			if len(l) > 200 {
+				l = l[:200] + "..."
+			}
+			return l
+		}
+	}
+	return s
+}
+
+var wpConfigIncludeRe = regexp.MustCompile(`(?m)^[ \t]*(require_once|require|include_once|include)[ \t]*\(?[ \t]*['"]([^'"/\\][^'"]*)['"][ \t]*\)?[ \t]*;[^\n]*$`)
+
+// makeWPConfigParseable rewrites relative require/include statements in wp-config.php so WP-CLI's
+// config parser (and therefore Enhance's discovery) can read it: files that only define constants
+// (wp-salt.php and friends) are inlined, anything else gets an absolute path.
+func (e *Enhance) makeWPConfigParseable(ctx context.Context, ws *EnhanceWebsite) {
+	cfg := ws.DocRoot + "/wp-config.php"
+	raw, err := e.nodeRun(ctx, "base64 -w0 "+shq(cfg))
+	if err != nil || raw == "" {
+		return
+	}
+	content, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return
+	}
+	text := string(content)
+	changed := false
+	var notes []string
+	text = wpConfigIncludeRe.ReplaceAllStringFunc(text, func(line string) string {
+		m := wpConfigIncludeRe.FindStringSubmatch(line)
+		if m == nil {
+			return line
+		}
+		keyword, rel := m[1], m[2]
+		if strings.Contains(rel, "wp-settings.php") {
+			return line
+		}
+		abs := filepath.Join(ws.DocRoot, rel)
+		if _, err := e.nodeRun(ctx, "test -f "+shq(abs)); err != nil {
+			return line // conditional/optional include of a missing file: leave it
+		}
+		body, err := e.nodeRun(ctx, "base64 -w0 "+shq(abs))
+		if err != nil {
+			return line
+		}
+		decoded, _ := base64.StdEncoding.DecodeString(body)
+		if onlyDefines(string(decoded)) {
+			inner := strings.TrimSpace(string(decoded))
+			inner = strings.TrimPrefix(inner, "<?php")
+			inner = strings.TrimSuffix(strings.TrimSpace(inner), "?>")
+			changed = true
+			notes = append(notes, rel+" inlined")
+			return "// " + rel + " inlined by the migration tool (relative includes break WP-CLI/Enhance discovery)\n" + strings.TrimSpace(inner)
+		}
+		changed = true
+		notes = append(notes, rel+" -> absolute path")
+		return fmt.Sprintf("%s '%s'; // path made absolute by the migration tool", keyword, abs)
+	})
+	if !changed {
+		return
+	}
+	enc := base64.StdEncoding.EncodeToString([]byte(text))
+	cmd := fmt.Sprintf("cp -p %s %s.pre-include-fix && echo %s | base64 -d > %s", shq(cfg), shq(cfg), enc, shq(cfg))
+	if out, err := e.nodeRun(ctx, cmd); err != nil {
+		e.warnf("%s: wp-config.php include fix failed: %v %s", ws.Domain.Domain, err, out)
+		return
+	}
+	e.logf("info", "%s: wp-config.php includes rewritten (%s); original kept as wp-config.php.pre-include-fix", ws.Domain.Domain, strings.Join(notes, ", "))
+}
+
+// onlyDefines reports whether a PHP file contains nothing but define() statements and comments.
+func onlyDefines(src string) bool {
+	src = strings.TrimSpace(src)
+	src = strings.TrimPrefix(src, "<?php")
+	src = strings.TrimSuffix(strings.TrimSpace(src), "?>")
+	inBlock := false
+	for _, l := range strings.Split(src, "\n") {
+		l = strings.TrimSpace(l)
+		if inBlock {
+			if strings.Contains(l, "*/") {
+				inBlock = false
+			}
+			continue
+		}
+		if l == "" || strings.HasPrefix(l, "//") || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if strings.HasPrefix(l, "/*") {
+			if !strings.Contains(l, "*/") {
+				inBlock = true
+			}
+			continue
+		}
+		if !strings.HasPrefix(l, "define") {
+			return false
+		}
+	}
+	return true
 }
 
 // isRootInstallPath reports whether a discovered WordPress path is the web root.
@@ -1267,8 +1410,8 @@ func (e *Enhance) quarantineDeadNestedInstalls(ctx context.Context, orgID string
 			continue
 		}
 		dest := filepath.Join(home, "migration-leftovers", strings.ReplaceAll(rel, "/", "__"))
-		cmd := fmt.Sprintf("mkdir -p %s && mv %s %s && chown -R %s:%s %s",
-			shq(filepath.Dir(dest)), shq(dir), shq(dest), shq(ws.UnixUser), shq(ws.UnixUser), shq(filepath.Dir(dest)))
+		cmd := fmt.Sprintf("mkdir -p %s && mv %s %s && chown -R %s:%s %s && find %s -name wp-config.php -exec mv {} {}.leftover \\;",
+			shq(filepath.Dir(dest)), shq(dir), shq(dest), shq(ws.UnixUser), shq(ws.UnixUser), shq(filepath.Dir(dest)), shq(dest))
 		if o, err := e.nodeRun(ctx, cmd); err != nil {
 			e.warnf("%s: old WordPress install at /%s (database %q does not exist on the target) could not be moved out of the web root: %v %s", ws.Domain.Domain, rel, dbName, err, o)
 			continue
@@ -1317,29 +1460,30 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 			}
 		}
 
+		home := ws.HomeDir
+		if home == "" {
+			home = "/var/www/" + ws.ID
+		}
+
 		// 2. Dead nested installs out of the web root
 		for _, rel := range e.quarantineDeadNestedInstalls(ctx, orgID, ws, knownDBs) {
 			summary = append(summary, fmt.Sprintf("%s: old install /%s moved out of the web root", domain, rel))
 		}
 
-		// 3. App records whose folder no longer exists
-		apps, err := e.listApps(ctx, orgID, ws.ID)
-		if err != nil {
-			e.warnf("%s: cannot list applications: %v", domain, err)
-		}
-		for _, a := range apps {
-			if a.App != "wordpress" || strings.Trim(a.Path, "/") == "" {
-				continue
-			}
-			p := strings.Trim(a.Path, "/")
-			if _, err := e.nodeRun(ctx, "test -f "+shq(filepath.Join(ws.DocRoot, p, "wp-config.php"))); err == nil {
-				continue // still a real install
-			}
-			if _, err := e.apiRequest(ctx, "DELETE", fmt.Sprintf("/orgs/%s/websites/%s/apps/%s?backupBeforeOperation=false", orgID, ws.ID, a.ID), nil); err != nil {
-				e.warnf("%s: stale WordPress app record for /%s (folder no longer in the web root) could not be removed: %v; remove it in Enhance > Applications", domain, p, err)
-			} else {
-				e.logf("info", "%s: removed stale WordPress app record for /%s (folder no longer in the web root)", domain, p)
-				summary = append(summary, fmt.Sprintf("%s: stale app record /%s removed", domain, p))
+		// 3. Leftovers from earlier repairs must not look like installs to discovery
+		e.nodeRun(ctx, fmt.Sprintf("[ -d %s ] && find %s -name wp-config.php -exec mv {} {}.leftover \\; || true", shq(home+"/migration-leftovers"), shq(home+"/migration-leftovers")))
+
+		// App records whose folder is gone are only reported: deleting an app makes Enhance remove
+		// that folder's files, so it is never done from here.
+		if apps, err := e.listApps(ctx, orgID, ws.ID); err == nil {
+			for _, a := range apps {
+				p := strings.Trim(a.Path, "/")
+				if a.App != "wordpress" || p == "" || p == "public_html" {
+					continue
+				}
+				if _, err := e.nodeRun(ctx, "test -f "+shq(filepath.Join(home, p, "wp-config.php"))); err != nil {
+					e.warnf("%s: Enhance still lists a WordPress app at /%s although that folder is gone; remove it in Enhance > Applications if it bothers you", domain, p)
+				}
 			}
 		}
 
@@ -1352,7 +1496,7 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 			root := false
 			for _, a := range apps {
 				p := strings.Trim(a.Path, "/")
-				if a.App == "wordpress" && p == "" {
+				if a.App == "wordpress" && (p == "" || p == "public_html") {
 					root = true
 				}
 				if p == "" {
