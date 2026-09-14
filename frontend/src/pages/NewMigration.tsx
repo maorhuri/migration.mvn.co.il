@@ -75,6 +75,8 @@ export default function NewMigration() {
 
   const [currentStep, setCurrentStep] = useState<MigrationStep>('select_source');
   const [searchTerm, setSearchTerm] = useState('');
+  // Suspended source accounts were already migrated (the operator suspends after the IP switch): hidden by default.
+  const [showSuspended, setShowSuspended] = useState(false);
   const [sourceSearchTerm, setSourceSearchTerm] = useState('');
   const [sourceFilterType, setSourceFilterType] = useState<string>('all');
   const [targetSearchTerm, setTargetSearchTerm] = useState('');
@@ -508,7 +510,9 @@ export default function NewMigration() {
     }
   };
 
+  const suspendedCount = accounts.filter((acc: Account) => acc.suspended).length;
   const filteredAccounts = accounts
+    .filter((acc: Account) => showSuspended || !acc.suspended)
     .filter((acc: Account) =>
       acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
@@ -770,6 +774,15 @@ export default function NewMigration() {
                 <span className="text-slate-500 dark:text-slate-400">
                   of {filteredAccounts.length} shown{filteredAccounts.length !== accounts.length ? ` (${accounts.length} total)` : ''}
                 </span>
+                {suspendedCount > 0 && (
+                  <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                    · {suspendedCount} suspended {showSuspended ? 'shown' : 'hidden'}
+                    <span className="hidden sm:inline">(already migrated)</span>
+                    <Button size="sm" variant="ghost" onClick={() => setShowSuspended((v) => !v)}>
+                      {showSuspended ? 'Hide' : 'Show'}
+                    </Button>
+                  </span>
+                )}
                 <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
                   {allFilteredSelected ? 'Deselect all' : 'Select all'}
                 </Button>
