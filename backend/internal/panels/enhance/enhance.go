@@ -926,36 +926,25 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	if strings.HasSuffix(remoteDump, ".gz") {
 		reader = "zcat " + shq(remoteDump)
 	}
-	hosts := []string{"", "127.0.0.1"}
-	for _, ip := range ws.DbServerIps {
-		hosts = append(hosts, ip.IP)
+	// Enhance provisions the MySQL objects through appcd on the node, asynchronously and not always
+	// successfully; make sure they really exist and learn which host accepts the user before
+	// streaming the dump.
+	host, err := e.waitForDatabase(ctx, ws, userEndpoint, privEndpoint, actualDB, actualUser, password, 2*time.Minute)
+	if err != nil {
+		return nil, err
 	}
-	imported := false
-	var importErr error
-	for _, host := range hosts {
-		hostFlag := ""
-		if host != "" {
-			hostFlag = " -h " + shq(host)
-		}
-		cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | mysql%s -u %s -p%s %s 2>&1",
-			reader, hostFlag, shq(actualUser), shq(password), shq(actualDB))
-		out, err := e.nodeRun(ctx, cmd)
-		if err == nil {
-			imported = true
-			if host == "" {
-				res.Host = "localhost"
-			} else {
-				res.Host = host
-			}
-			break
-		}
-		importErr = fmt.Errorf("%v", out)
-		if !strings.Contains(out, "Can't connect") && !strings.Contains(out, "Access denied") {
-			break // real SQL error: no point trying other hosts
-		}
+	hostFlag := ""
+	res.Host = "localhost"
+	if host != "" {
+		hostFlag = " -h " + shq(host)
+		res.Host = host
 	}
-	if !imported {
-		return nil, fmt.Errorf("mysql import of %s failed on node: %v", actualDB, importErr)
+	// DEFINER clauses need SUPER when the definer user does not exist here; CREATE DATABASE/USE
+	// lines in the dump would target the source database name.
+	filter := "sed -E -e '/^(CREATE DATABASE|USE )/d' -e 's/DEFINER=`[^`]*`@`[^`]*`//g'"
+	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
+	if out, err := e.nodeRun(ctx, cmd); err != nil {
+		return nil, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, res.Host, lastLines(out, 3))
 	}
 
 	// Verify with the same host that worked for the import; MariaDB's client prints a
@@ -987,6 +976,111 @@ func lastInt(out string) int {
 		}
 	}
 	return 0
+}
+
+// waitForDatabase polls until the database accepts the user (socket first, then the website's DB
+// server IPs and 127.0.0.1). Enhance's appcd sometimes fails to apply what the API recorded
+// ("Local .my.cnf not valid ... PermissionDenied" on the node); after a while the user and grants
+// are re-sent through the API, and as a last resort the objects are created directly on the node.
+func (e *Enhance) waitForDatabase(ctx context.Context, ws *EnhanceWebsite, userEndpoint, privEndpoint, db, user, password string, wait time.Duration) (string, error) {
+	hosts := []string{""}
+	for _, ip := range ws.DbServerIps {
+		if ip.IP != "" && ip.IP != "127.0.0.1" {
+			hosts = append(hosts, ip.IP)
+		}
+	}
+	hosts = append(hosts, "127.0.0.1")
+	probe := func() (string, string) {
+		lastErr := ""
+		for _, h := range hosts {
+			flag := ""
+			if h != "" {
+				flag = " -h " + shq(h)
+			}
+			out, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e 'SELECT 1' %s 2>&1", flag, shq(user), shq(password), shq(db)))
+			if err == nil && lastInt(out) == 1 {
+				return h, ""
+			}
+			lastErr = lastLines(out, 1)
+		}
+		return "", lastErr
+	}
+	deadline := time.Now().Add(wait)
+	nudged := false
+	attempt := 0
+	for {
+		h, lastErr := probe()
+		if lastErr == "" {
+			if attempt > 0 {
+				e.logf("info", "Database %s became usable after %d attempt(s)", db, attempt+1)
+			}
+			return h, nil
+		}
+		attempt++
+		if attempt == 1 {
+			e.logf("info", "Database %s is not usable on the node yet (%s); waiting for Enhance to apply it", db, lastErr)
+		}
+		if attempt == 4 && !nudged {
+			nudged = true
+			e.logf("info", "Database %s still not usable; asking Enhance to re-apply the user and grants", db)
+			e.apiRequest(ctx, "PUT", fmt.Sprintf("%s/%s", userEndpoint, user), map[string]interface{}{"password": password})
+			e.apiRequest(ctx, "PUT", privEndpoint, map[string]interface{}{"dbName": db, "grants": []string{"all"}})
+		}
+		if time.Now().After(deadline) {
+			e.warnf("Enhance reports database %s and user %s as created, but MariaDB on node %s does not accept them after %s (%s); creating them directly on the node. Check Enhance's appcd on the node ('Local .my.cnf not valid ... attempting repair')", db, user, e.nodeHost, wait.Round(time.Second), lastErr)
+			if err := e.createDatabaseDirectly(ctx, db, user, password); err != nil {
+				return "", fmt.Errorf("database %s is not usable on node %s (%s) and direct creation failed: %v; retry the migration or check appcd/MariaDB on the node", db, e.nodeHost, lastErr, err)
+			}
+			h, lastErr := probe()
+			if lastErr != "" {
+				return "", fmt.Errorf("database %s still not usable on node %s after direct creation: %s", db, e.nodeHost, lastErr)
+			}
+			return h, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+// createDatabaseDirectly creates the database, user and grants through the node's root socket,
+// mirroring what Enhance's appcd would have done (user@localhost for the socket, user@10.% for
+// the website's PHP container on the node's private network).
+func (e *Enhance) createDatabaseDirectly(ctx context.Context, db, user, password string) error {
+	pw := strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(password)
+	stmts := []string{fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci", db)}
+	for _, h := range []string{"localhost", "10.%"} {
+		stmts = append(stmts,
+			fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%s' IDENTIFIED BY '%s'", user, h, pw),
+			fmt.Sprintf("ALTER USER '%s'@'%s' IDENTIFIED BY '%s'", user, h, pw),
+			fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%s'", db, user, h),
+		)
+	}
+	stmts = append(stmts, "FLUSH PRIVILEGES")
+	out, err := e.nodeRun(ctx, "mysql -u root -e "+shq(strings.Join(stmts, "; "))+" 2>&1")
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, lastLines(out, 2))
+	}
+	e.logf("info", "Database %s and user %s created directly on node %s (grants for localhost and 10.%%)", db, user, e.nodeHost)
+	return nil
+}
+
+// lastLines returns the last n meaningful lines of a command output, joined with " | ".
+func lastLines(s string, n int) string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.Contains(l, "Deprecated program name") {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 // findMySQLName lists mysql-dbs or mysql-users and returns the actual (possibly prefixed) name
@@ -1055,7 +1149,11 @@ func (e *Enhance) updateWPConfigs(ctx context.Context, dbs []DBResult) error {
 			}
 		}
 		e.nodeRun(ctx, fmt.Sprintf("cp -a %s %s.pre-migration", shq(wpConfig), shq(wpConfig)))
-		for key, val := range map[string]string{"DB_NAME": match.Name, "DB_USER": match.User, "DB_PASSWORD": match.Password, "DB_HOST": dbHost} {
+		wpHost := dbHost
+		if match.Host != "" && match.Host != "localhost" {
+			wpHost = match.Host // the socket did not accept the user; the PHP container must use the same host
+		}
+		for key, val := range map[string]string{"DB_NAME": match.Name, "DB_USER": match.User, "DB_PASSWORD": match.Password, "DB_HOST": wpHost} {
 			cmd := fmt.Sprintf(`sed -i -E "s|define\( *['\"]%s['\"] *, *['\"][^'\"]*['\"] *\)|define('%s', '%s')|" %s`, key, key, val, shq(wpConfig))
 			if out, err := e.nodeRun(ctx, cmd); err != nil {
 				return fmt.Errorf("update %s in wp-config.php of %s: %v %s", key, ws.Domain.Domain, err, out)
@@ -1066,7 +1164,7 @@ func (e *Enhance) updateWPConfigs(ctx context.Context, dbs []DBResult) error {
 			return fmt.Errorf("wp-config.php of %s still does not reference database %s after update", ws.Domain.Domain, match.Name)
 		}
 		match.WPConfig = true
-		match.Host = dbHost
+		match.Host = wpHost
 		e.nodeRun(ctx, fmt.Sprintf("chown %s:%s %s.pre-migration && chmod 600 %s.pre-migration", shq(ws.UnixUser), shq(ws.UnixUser), shq(wpConfig), shq(wpConfig)))
 		e.logf("info", "wp-config.php of %s updated: DB_NAME=%s DB_USER=%s DB_HOST=%s (backup: wp-config.php.pre-migration)", ws.Domain.Domain, match.Name, match.User, dbHost)
 	}
