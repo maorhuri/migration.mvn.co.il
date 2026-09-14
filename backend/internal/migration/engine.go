@@ -780,6 +780,30 @@ func (e *Engine) SubmitScanDecision(ctx context.Context, migrationID, decision s
 	return e.GetMigrationStatus(ctx, migrationID)
 }
 
+// RecoverInterrupted marks migrations that were in flight when the service last stopped
+// (deploy, restart, crash) as failed: their workers live only in memory. Returns the count.
+func (e *Engine) RecoverInterrupted(ctx context.Context) int {
+	rows, err := e.db.ListMigrations(ctx)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for i := range rows {
+		m := &rows[i]
+		if m.Status != "running" && m.Status != "pending" && m.Status != "awaiting_review" {
+			continue
+		}
+		step := m.CurrentStep.String
+		if step == "" {
+			step = "unknown step"
+		}
+		msg := fmt.Sprintf("Interrupted by a service restart (deployment) during \"%s\". Nothing was rolled back: use Run again; the website on the node is reused and files already copied are skipped.", step)
+		e.failMigration(ctx, m.ID, msg)
+		n++
+	}
+	return n
+}
+
 // RerunMigration starts a new migration with the same source, target, node and options as a
 // failed or cancelled one.
 func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*MigrationResult, error) {

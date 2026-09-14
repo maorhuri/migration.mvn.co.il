@@ -71,6 +71,9 @@ func main() {
 
 	// Initialize migration engine
 	engine := migration.NewEngine(db, log, workDir)
+	if n := engine.RecoverInterrupted(context.Background()); n > 0 {
+		log.Warn("Migrations interrupted by the restart were marked failed", map[string]interface{}{"count": n})
+	}
 
 	// Initialize API handler
 	handler := api.NewHandler(db, engine, log)
