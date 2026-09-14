@@ -430,7 +430,10 @@ func (e *Enhance) ListWebsiteDomains(ctx context.Context, appServerID string) ([
 	if err != nil {
 		return nil, err
 	}
-	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000", orgID), nil)
+	// recursion=infinite: Maor's org has reseller/customer sub-orgs and most real websites
+	// live under those, not directly in the configured org; without it this silently misses
+	// them (only the org's own direct/infra sites come back).
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000&recursion=infinite", orgID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +462,10 @@ func (e *Enhance) ListWebsiteDomains(ctx context.Context, appServerID string) ([
 
 // getWebsiteByDomain finds a website of the org by primary domain and returns its full details
 func (e *Enhance) getWebsiteByDomain(ctx context.Context, orgID, domain string) (*EnhanceWebsite, error) {
-	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000", orgID), nil)
+	// recursion=infinite: Maor's org has reseller/customer sub-orgs and most real websites
+	// live under those, not directly in the configured org; without it this silently misses
+	// them (only the org's own direct/infra sites come back).
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000&recursion=infinite", orgID), nil)
 	if err != nil {
 		return nil, err
 	}

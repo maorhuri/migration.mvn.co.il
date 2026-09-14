@@ -19,6 +19,12 @@ import (
 	"github.com/migration-tool/backend/pkg/logger"
 )
 
+// GitSHA is the commit this binary was built from, set via -ldflags "-X main.GitSHA=..."
+// at build time (see docker/Dockerfile). Exposed on /api/v1/health so a deploy can verify,
+// from the outside, that the running server really is the commit it just pushed -- image-id
+// comparisons on the Docker side have proven unreliable in this environment.
+var GitSHA = "unknown"
+
 func main() {
 	// Load configuration
 	cfg, err := config.Load()
@@ -35,6 +41,7 @@ func main() {
 
 	log.Info("Starting Migration Tool Server", map[string]interface{}{
 		"version": "1.0.0",
+		"git_sha": GitSHA,
 		"port":    cfg.Port,
 	})
 
