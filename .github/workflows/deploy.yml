@@ -40,7 +40,12 @@ jobs:
             cd docker
             echo "== docker compose build =="
             docker compose --env-file ../.env build --quiet
-            BUILT_IMAGE=$(docker compose --env-file ../.env images -q app)
+            # `docker compose images -q` has been seen returning a stale id right after a build
+            # in this environment, silently masking a real code change; ask Docker directly for
+            # the tag's current id instead, which always reflects the build that just ran.
+            APP_IMAGE_TAG=$(docker compose --env-file ../.env config --images | grep -v '^postgres' | head -1)
+            BUILT_IMAGE=$(docker inspect -f '{{.Id}}' "$APP_IMAGE_TAG")
+            echo "app image tag: $APP_IMAGE_TAG"
             echo "built image: $BUILT_IMAGE"
             echo "== waiting for in-flight migrations (restart would kill them) =="
             for i in $(seq 1 360); do
