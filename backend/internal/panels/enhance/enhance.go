@@ -940,7 +940,11 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 		res.Host = host
 	}
 	// DEFINER clauses need SUPER when the definer user does not exist here; CREATE DATABASE/USE
-	// lines in the dump would target the source database name.
+	// lines in the dump would target the source database name. Both fail with "Access denied"
+	// part-way through the import, so they are stripped and counted for the log.
+	if counts, err := e.nodeRun(ctx, fmt.Sprintf("%s | grep -aEc 'DEFINER=`|^(CREATE DATABASE|USE )' || true", reader)); err == nil && lastInt(counts) > 0 {
+		e.logf("info", "Dump of %s contains %d DEFINER / CREATE DATABASE / USE line(s); stripped before import", db.Name, lastInt(counts))
+	}
 	filter := "sed -E -e '/^(CREATE DATABASE|USE )/d' -e 's/DEFINER=`[^`]*`@`[^`]*`//g'"
 	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
 	if out, err := e.nodeRun(ctx, cmd); err != nil {
