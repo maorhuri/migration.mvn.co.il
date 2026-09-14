@@ -110,7 +110,6 @@ export default function NewMigration() {
     source_server_id: '',
     target_server_id: '',
     target_cluster_server_id: '',
-    new_password: '',
     scan_malware: false,
   });
 
@@ -267,7 +266,6 @@ export default function NewMigration() {
           target_server_id: formData.target_server_id,
           target_cluster_server_id: formData.target_cluster_server_id || undefined,
           username: account.username,
-          new_password: formData.new_password || undefined,
           scan_malware: formData.scan_malware,
         });
         setActiveMigrationId(migration.id);
@@ -580,7 +578,6 @@ export default function NewMigration() {
       source_server_id: '',
       target_server_id: '',
       target_cluster_server_id: '',
-      new_password: '',
       scan_malware: false,
     });
   };
@@ -863,8 +860,6 @@ export default function NewMigration() {
           targetNode={targetClusterNode}
           accounts={selectedAccounts}
           plan={buildSteps(formData.scan_malware)}
-          newPassword={formData.new_password}
-          onNewPasswordChange={(value) => setFormData({ ...formData, new_password: value })}
           scanMalware={formData.scan_malware}
           onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
           starting={starting}

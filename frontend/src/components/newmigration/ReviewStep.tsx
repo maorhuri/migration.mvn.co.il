@@ -6,8 +6,6 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-  Field,
-  Input,
   KeyValue,
   PanelBadge,
   Table,
