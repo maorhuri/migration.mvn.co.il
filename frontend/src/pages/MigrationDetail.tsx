@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { cancelMigration, getMigration, getMigrationLogs, getServer, repairMigrationWordPress, rerunMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogsPage, getServer, repairMigrationWordPress, rerunMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -73,15 +73,34 @@ export default function MigrationDetail() {
   const deepLinkedRef = useRef(false);
   const consoleRef = useRef<HTMLElement | null>(null);
 
-  const fetchData = async () => {
+  const [logsTotal, setLogsTotal] = useState(0);
+  const [logsTruncated, setLogsTruncated] = useState(false);
+  const lastLogAtRef = useRef<string | null>(null);
+
+  /** full = reload the last page of the log; otherwise only lines newer than the last one seen are appended. */
+  const fetchData = async (full = true) => {
     if (!id) return;
     try {
-      const [migrationData, logsData] = await Promise.all([
+      const after = !full && lastLogAtRef.current ? lastLogAtRef.current : undefined;
+      const [migrationData, page] = await Promise.all([
         getMigration(id),
-        getMigrationLogs(id),
+        getMigrationLogsPage(id, after ? { after } : { limit: 1000 }),
       ]);
       setMigration(migrationData);
-      setLogs(logsData);
+      if (after) {
+        if (page.items.length > 0) {
+          setLogs((prev) => {
+            const seen = new Set(prev.map((l) => l.id));
+            return [...prev, ...page.items.filter((l) => !seen.has(l.id))];
+          });
+        }
+      } else {
+        setLogs(page.items);
+        setLogsTruncated(page.truncated);
+      }
+      setLogsTotal(page.total);
+      const newest = page.items.length > 0 ? page.items[page.items.length - 1].created_at : null;
+      if (newest) lastLogAtRef.current = newest;
       setLoadError(false);
 
       // Fetch server details
@@ -107,7 +126,7 @@ export default function MigrationDetail() {
     // Auto-refresh for running migrations
     const interval = setInterval(() => {
       if (migration?.status === 'running' || migration?.status === 'awaiting_review' || migration?.status === 'pending') {
-        fetchData();
+        fetchData(false);
       }
     }, 5000);
 
@@ -396,6 +415,11 @@ export default function MigrationDetail() {
               {loadError && (
                 <p className="text-xs text-rose-600 dark:text-rose-400" role="status">
                   {t('migrationdetail.log.refreshFailed')}
+                </p>
+              )}
+              {logsTruncated && (
+                <p className="text-xs text-slate-500 dark:text-slate-400" role="status">
+                  {t('migrationdetail.log.truncated', { shown: logs.length, total: logsTotal })}
                 </p>
               )}
             </div>

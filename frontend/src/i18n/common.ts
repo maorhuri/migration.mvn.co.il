@@ -14,6 +14,8 @@ import type { PageDict } from './types';
  */
 export const common: PageDict = {
   he: {
+    'console.showFull': 'הצג הכול ({chars} תווים)',
+    'console.showLess': 'הצג פחות',
     'brand.name': 'MVNMigrate',
     'brand.env': 'פרודקשן',
     'brand.version': 'MVNMigrate v{version}',
@@ -243,6 +245,8 @@ export const common: PageDict = {
     'timeline.jumpToLog': 'קפוץ לשלב הזה ביומן',
   },
   en: {
+    'console.showFull': 'Show all ({chars} characters)',
+    'console.showLess': 'Show less',
     'brand.name': 'MVNMigrate',
     'brand.env': 'Production',
     'brand.version': 'MVNMigrate v{version}',

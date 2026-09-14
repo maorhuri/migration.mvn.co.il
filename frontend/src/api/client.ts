@@ -130,9 +130,23 @@ export const startMigration = async (params: {
   return data;
 };
 
+export interface LogPage {
+  items: MigrationLog[];
+  /** Total lines stored for this migration. */
+  total: number;
+  /** True when only the last `limit` lines were returned. */
+  truncated: boolean;
+}
+
+/** Log lines: the last `limit` (default 1000) or, with `after` (ISO time), only newer lines. */
+export const getMigrationLogsPage = async (id: string, opts: { after?: string; limit?: number } = {}): Promise<LogPage> => {
+  const { data } = await api.get(`/migrations/${id}/logs`, { params: { after: opts.after || undefined, limit: opts.limit || undefined } });
+  return { items: data.items || [], total: data.total ?? (data.items || []).length, truncated: !!data.truncated };
+};
+
 export const getMigrationLogs = async (id: string): Promise<MigrationLog[]> => {
-  const { data } = await api.get(`/migrations/${id}/logs`);
-  return data.items || [];
+  const page = await getMigrationLogsPage(id);
+  return page.items;
 };
 
 export const cancelMigration = async (id: string): Promise<void> => {

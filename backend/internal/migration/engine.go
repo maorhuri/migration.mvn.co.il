@@ -706,6 +706,15 @@ func (e *Engine) GetMigrationLogs(ctx context.Context, migrationID string) ([]st
 	return e.db.GetMigrationLogs(ctx, migrationID)
 }
 
+// GetMigrationLogsPage returns the last `limit` lines, or the lines after a timestamp.
+func (e *Engine) GetMigrationLogsPage(ctx context.Context, migrationID, after string, limit int) ([]storage.MigrationLog, int, error) {
+	logs, total, err := e.db.GetMigrationLogsPage(ctx, migrationID, after, limit)
+	for i := range logs {
+		logs[i].Message = capText(logs[i].Message, 3000, 2000) // old rows may still carry huge command output
+	}
+	return logs, total, err
+}
+
 // CancelMigration marks a running or pending migration as cancelled
 func (e *Engine) CancelMigration(ctx context.Context, migrationID string) error {
 	migration, err := e.db.GetMigration(ctx, migrationID)

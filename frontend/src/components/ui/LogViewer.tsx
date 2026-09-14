@@ -257,7 +257,7 @@ export function LogViewer({
                     >
                       <span className="shrink-0 tabular text-slate-500">{formatTime(it.created_at)}</span>
                       <span className={cn('w-10 shrink-0 border-s-2 ps-2 text-2xs uppercase leading-5', lv.badge, lv.border)}>{norm(it.level)}</span>
-                      <span className={cn('min-w-0 whitespace-pre-wrap break-words', lv.text)}>{it.message}</span>
+                      <LongMessage className={cn('min-w-0 whitespace-pre-wrap break-words', lv.text)} text={it.message} />
                     </div>
                   </li>
                 );
@@ -287,3 +287,26 @@ export function LogViewer({
 }
 
 export default LogViewer;
+
+const LONG_LINE = 1500;
+
+/** Command output can run to thousands of characters; show the head and let the reader expand. */
+function LongMessage({ text, className }: { text: string; className?: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (text.length <= LONG_LINE) {
+    return <span className={className}>{text}</span>;
+  }
+  return (
+    <span className={className}>
+      {open ? text : text.slice(0, LONG_LINE) + '\u2026'}{' '}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-sm text-2xs text-brand-300 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+      >
+        {open ? t('console.showLess') : t('console.showFull', { chars: text.length })}
+      </button>
+    </span>
+  );
+}

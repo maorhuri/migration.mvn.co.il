@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -723,13 +724,20 @@ func (h *Handler) getMigration(c *gin.Context) {
 func (h *Handler) getMigrationLogs(c *gin.Context) {
 	id := c.Param("id")
 
-	logs, err := h.engine.GetMigrationLogs(c.Request.Context(), id)
+	limit := 1000
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	after := c.Query("after")
+	logs, total, err := h.engine.GetMigrationLogsPage(c.Request.Context(), id, after, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"items": logs})
+	if logs == nil {
+		logs = []storage.MigrationLog{}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": logs, "total": total, "truncated": after == "" && total > len(logs)})
 }
 
 func (h *Handler) cancelMigration(c *gin.Context) {

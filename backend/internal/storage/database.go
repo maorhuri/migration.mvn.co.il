@@ -766,6 +766,27 @@ func (d *Database) GetMigrationLogs(ctx context.Context, migrationID string) ([]
 	return logs, err
 }
 
+// GetMigrationLogsPage returns log lines in chronological order: the ones created after
+// `after` (RFC3339) when given, otherwise the last `limit` lines. total is the full count.
+func (d *Database) GetMigrationLogsPage(ctx context.Context, migrationID, after string, limit int) ([]MigrationLog, int, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+	var total int
+	if err := d.db.GetContext(ctx, &total, "SELECT count(*) FROM migration_logs WHERE migration_id = $1", migrationID); err != nil {
+		return nil, 0, err
+	}
+	var logs []MigrationLog
+	if after != "" {
+		err := d.db.SelectContext(ctx, &logs,
+			"SELECT * FROM migration_logs WHERE migration_id = $1 AND created_at > $2 ORDER BY created_at LIMIT $3", migrationID, after, limit)
+		return logs, total, err
+	}
+	err := d.db.SelectContext(ctx, &logs,
+		"SELECT * FROM (SELECT * FROM migration_logs WHERE migration_id = $1 ORDER BY created_at DESC LIMIT $2) t ORDER BY created_at", migrationID, limit)
+	return logs, total, err
+}
+
 // DeleteMigration deletes a migration and its logs
 func (d *Database) DeleteMigration(ctx context.Context, id string) error {
 	// Logs are deleted automatically via CASCADE

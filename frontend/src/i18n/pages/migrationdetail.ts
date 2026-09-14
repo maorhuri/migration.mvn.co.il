@@ -8,6 +8,7 @@ import type { PageDict } from '../types';
  */
 export const migrationdetail: PageDict = {
   he: {
+    'migrationdetail.log.truncated': 'מוצגות {shown} השורות האחרונות מתוך {total}',
     'migrationdetail.eyebrow': 'מיגרציה',
     'migrationdetail.description': 'משרת {source} לשרת {target} · נוצרה {created}',
     'migrationdetail.unknownSource': 'מקור לא ידוע',
@@ -133,6 +134,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.log.refreshFailed': 'הרענון האחרון נכשל; מוצגים הנתונים האחרונים שהתקבלו.',
   },
   en: {
+    'migrationdetail.log.truncated': 'Showing the last {shown} of {total} lines',
     'migrationdetail.eyebrow': 'Migration',
     'migrationdetail.description': 'From {source} to {target} · created {created}',
     'migrationdetail.unknownSource': 'Unknown source',
