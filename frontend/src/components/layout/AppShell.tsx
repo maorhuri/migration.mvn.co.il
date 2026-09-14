@@ -3,39 +3,45 @@ import { Link, NavLink, useLocation } from 'react-router-dom';
 import { ChevronRightIcon, MagnifyingGlassIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, KeyIcon, PlusIcon, ServerStackIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { cn } from '../../lib/cn';
+import { useT, type T } from '../../lib/i18n';
+import { buttonBaseClasses, buttonSizeClasses, buttonVariantClasses } from '../ui/Button';
 import { Kbd } from '../ui/Kbd';
+import { Logo } from '../ui/Logo';
+import { Mono } from '../ui/Mono';
 import { Tooltip } from '../ui/Tooltip';
 import { CommandPalette } from './CommandPalette';
+import { LanguageToggle } from './LanguageToggle';
 import { ThemeToggle } from './ThemeToggle';
 
 const APP_VERSION = '1.0.0';
 const ENVIRONMENT = 'migration.mvn.co.il';
 
 interface NavItem {
-  name: string;
+  /** Translation key under nav.* */
+  key: string;
   href: string;
   icon: typeof ServerStackIcon;
   end?: boolean;
 }
 
-const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
-  { title: 'Overview', items: [{ name: 'Dashboard', href: '/', icon: Squares2X2Icon, end: true }] },
+const NAV_GROUPS: { key: string; items: NavItem[] }[] = [
+  { key: 'nav.overview', items: [{ key: 'nav.dashboard', href: '/', icon: Squares2X2Icon, end: true }] },
   {
-    title: 'Infrastructure',
+    key: 'nav.infrastructure',
     items: [
-      { name: 'Servers', href: '/servers', icon: ServerStackIcon },
-      { name: 'SSH Keys', href: '/ssh-keys', icon: KeyIcon },
+      { key: 'nav.servers', href: '/servers', icon: ServerStackIcon },
+      { key: 'nav.sshKeys', href: '/ssh-keys', icon: KeyIcon },
     ],
   },
-  { title: 'Operations', items: [{ name: 'Migrations', href: '/migrations', icon: ArrowsRightLeftIcon }] },
+  { key: 'nav.operations', items: [{ key: 'nav.migrations', href: '/migrations', icon: ArrowsRightLeftIcon }] },
 ];
 
-const ROUTE_LABELS: Record<string, string> = {
-  '': 'Dashboard',
-  servers: 'Servers',
-  migrations: 'Migrations',
-  'ssh-keys': 'SSH Keys',
-  new: 'New',
+const ROUTE_KEYS: Record<string, string> = {
+  '': 'nav.dashboard',
+  servers: 'nav.servers',
+  migrations: 'nav.migrations',
+  'ssh-keys': 'nav.sshKeys',
+  new: 'nav.newMigration',
 };
 
 export interface BreadcrumbItem {
@@ -43,46 +49,35 @@ export interface BreadcrumbItem {
   to?: string;
 }
 
-/** Derive breadcrumb items from a pathname: /servers/abc -> Servers / Detail. */
-export function breadcrumbFromPath(pathname: string): BreadcrumbItem[] {
+/**
+ * Derive breadcrumb items from a pathname: /servers/abc -> Servers. Unknown segments after the
+ * first (ids) are dropped; the page header carries the entity name.
+ */
+export function breadcrumbFromPath(pathname: string, t: T): BreadcrumbItem[] {
   const segments = pathname.split('/').filter(Boolean);
-  if (segments.length === 0) return [{ label: 'Dashboard' }];
+  if (segments.length === 0) return [{ label: t('nav.dashboard') }];
   const crumbs: BreadcrumbItem[] = [];
   let acc = '';
   segments.forEach((seg, i) => {
     acc += `/${seg}`;
-    const last = i === segments.length - 1;
-    const known = ROUTE_LABELS[seg];
-    const label = known ?? (i > 0 ? 'Detail' : seg);
-    crumbs.push({ label, to: last ? undefined : acc });
+    const key = ROUTE_KEYS[seg];
+    if (!key && i > 0) return;
+    crumbs.push({ label: key ? t(key) : seg, to: acc });
   });
+  if (crumbs.length > 0) crumbs[crumbs.length - 1].to = undefined;
   return crumbs;
 }
 
-function LogoMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 64 64" className={cn('h-8 w-8 shrink-0', className)} aria-hidden="true">
-      <defs>
-        <linearGradient id="mt-logo-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#6366f1" />
-          <stop offset="1" stopColor="#8b5cf6" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="16" fill="url(#mt-logo-g)" />
-      <path d="M17 24h24l-6-6" fill="none" stroke="#fff" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M47 40H23l6 6" fill="none" stroke="#fff" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
-    </svg>
-  );
-}
-
 /**
- * Application chrome: fixed 264px sidebar (icon rail under `lg`), slim top bar with route
- * breadcrumb, Cmd+K trigger and theme toggle. Children render in the main area with 24px padding.
+ * Application chrome: fixed 264px sidebar (icon rail under `lg`) with the brand, the pinned
+ * environment card, the primary action and grouped navigation; slim top bar with route
+ * breadcrumb, Cmd+K trigger, language and theme toggles. Children render in the main area with 24px padding.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const t = useT();
   const location = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const crumbs = useMemo(() => breadcrumbFromPath(location.pathname), [location.pathname]);
+  const crumbs = useMemo(() => breadcrumbFromPath(location.pathname, t), [location.pathname, t]);
   const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
   const onKeyDown = useCallback((e: KeyboardEvent) => {
@@ -97,68 +92,86 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onKeyDown]);
 
+  const primaryLink = cn(buttonBaseClasses, buttonVariantClasses.primary, buttonSizeClasses.md, 'w-full');
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       {/* Sidebar */}
       <aside
-        className="fixed inset-y-0 left-0 z-30 flex w-16 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:w-[264px]"
-        aria-label="Sidebar"
+        className="fixed inset-y-0 start-0 z-30 flex w-16 flex-col border-e border-slate-200 bg-white dark:border-white/[0.06] dark:bg-slate-950 lg:w-[264px]"
+        aria-label={t('a11y.sidebar')}
       >
-        <div className="flex h-14 items-center gap-2.5 border-b border-slate-200 px-3 dark:border-slate-800 lg:px-5">
-          <Link to="/" className="flex items-center gap-2.5 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900" aria-label="Migration Tool home">
-            <LogoMark />
-            <span className="hidden text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-50 lg:block">Migration Tool</span>
+        <div className="flex h-14 items-center px-3 lg:px-5">
+          <Link
+            to="/"
+            className="flex items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900"
+            aria-label={t('a11y.home')}
+          >
+            <Logo wordmark={false} className="lg:hidden" />
+            <Logo className="hidden lg:inline-flex" />
           </Link>
         </div>
 
-        <div className="px-2 pt-4 lg:px-4">
-          <Tooltip content="New migration" side="right" className="w-full lg:hidden">
-            <Link
-              to="/migrations/new"
-              aria-label="New migration"
-              className="flex h-10 w-full items-center justify-center rounded-lg bg-indigo-600 text-white shadow-sm transition-colors hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:ring-offset-slate-900"
-            >
+        {/* Pinned context: which environment this console controls. */}
+        <div className="mx-3 mt-3 hidden items-center gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-white/[0.06] dark:bg-white/[0.03] lg:mx-4 lg:flex">
+          <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 motion-reduce:hidden" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="min-w-0">
+            <span className="eyebrow block">{t('brand.env')}</span>
+            <Mono className="block text-xs text-slate-700 dark:text-slate-200">{ENVIRONMENT}</Mono>
+          </span>
+        </div>
+        <div className="mt-3 flex justify-center lg:hidden">
+          <Tooltip content={`${t('brand.env')} · ${ENVIRONMENT}`} side="end">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 dark:border-white/[0.06] dark:bg-white/[0.03]" aria-label={`${t('brand.env')} ${ENVIRONMENT}`} role="img">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+          </Tooltip>
+        </div>
+
+        <div className="px-2 pt-3 lg:px-4">
+          <Tooltip content={t('nav.newMigration')} side="end" className="w-full lg:hidden">
+            <Link to="/migrations/new" aria-label={t('nav.newMigration')} className={cn(primaryLink, 'h-10 px-0')}>
               <PlusIcon className="h-5 w-5" aria-hidden="true" />
             </Link>
           </Tooltip>
-          <Link
-            to="/migrations/new"
-            className="hidden h-9 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white shadow-sm transition-colors hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:ring-offset-slate-900 lg:flex"
-          >
+          <Link to="/migrations/new" className={cn(primaryLink, 'hidden lg:inline-flex')}>
             <PlusIcon className="h-4 w-4" aria-hidden="true" />
-            New migration
+            {t('nav.newMigration')}
           </Link>
         </div>
 
-        <nav className="flex-1 overflow-y-auto px-2 py-4 lg:px-4" aria-label="Main">
+        <nav className="flex-1 overflow-y-auto px-2 py-4 lg:px-4" aria-label={t('a11y.mainNav')}>
           {NAV_GROUPS.map((group) => (
-            <div key={group.title} className="mb-5">
-              <div className="mb-1.5 hidden px-2 text-2xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 lg:block">{group.title}</div>
+            <div key={group.key} className="mb-5">
+              <div className="eyebrow mb-1.5 hidden px-2.5 lg:block">{t(group.key)}</div>
               <ul className="space-y-0.5">
                 {group.items.map((item) => (
                   <li key={item.href}>
                     <NavLink
                       to={item.href}
                       end={item.end}
-                      title={item.name}
+                      title={t(item.key)}
                       className={({ isActive }) =>
                         cn(
-                          'group flex items-center gap-3 rounded-lg px-2 py-2 text-sm font-medium transition-colors lg:px-2.5',
+                          'group relative flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors',
                           'justify-center lg:justify-start',
-                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900',
                           isActive
-                            ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-200'
-                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100',
+                            ? 'bg-brand-50 text-brand-800 dark:bg-brand-500/15 dark:text-brand-200 before:absolute before:start-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-brand-600 before:content-[""] dark:before:bg-brand-400'
+                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/[0.05] dark:hover:text-slate-100',
                         )
                       }
                     >
                       {({ isActive }) => (
                         <>
                           <item.icon
-                            className={cn('h-5 w-5 shrink-0', isActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-400 group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300')}
+                            className={cn('h-[18px] w-[18px] shrink-0', isActive ? 'text-brand-700 dark:text-brand-300' : 'text-slate-400 group-hover:text-slate-600 dark:text-slate-500 dark:group-hover:text-slate-300')}
                             aria-hidden="true"
                           />
-                          <span className="hidden truncate lg:block">{item.name}</span>
+                          <span className="hidden truncate lg:block">{t(item.key)}</span>
                         </>
                       )}
                     </NavLink>
@@ -169,29 +182,23 @@ export function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
 
-        <div className="border-t border-slate-200 p-3 dark:border-slate-800 lg:px-4">
-          <div className="hidden items-center justify-between gap-2 lg:flex">
-            <span className="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-2xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
-              <span className="truncate">{ENVIRONMENT}</span>
-            </span>
-            <span className="shrink-0 font-mono text-2xs text-slate-400 dark:text-slate-500">v{APP_VERSION}</span>
-          </div>
-          <div className="flex justify-center lg:hidden">
-            <Tooltip content={`${ENVIRONMENT} · v${APP_VERSION}`} side="right">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" aria-label="Environment online" />
-            </Tooltip>
-          </div>
+        <div className="border-t border-slate-200 p-3 dark:border-white/[0.06] lg:px-5">
+          <span dir="ltr" className="hidden text-2xs text-slate-400 dark:text-slate-500 lg:block">
+            {t('brand.version', { version: APP_VERSION })}
+          </span>
+          <span dir="ltr" className="block text-center text-2xs text-slate-400 dark:text-slate-500 lg:hidden">
+            v{APP_VERSION}
+          </span>
         </div>
       </aside>
 
       {/* Main */}
-      <div className="pl-16 lg:pl-[264px]">
-        <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-4 border-b border-slate-200 bg-white/80 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/80 sm:px-6">
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-sm">
+      <div className="ps-16 lg:ps-[264px]">
+        <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-4 border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur-md dark:border-white/[0.06] dark:bg-slate-950/80 sm:px-6">
+          <nav aria-label={t('a11y.breadcrumb')} className="flex min-w-0 items-center gap-1 text-sm">
             {crumbs.map((c, i) => (
               <span key={i} className="flex min-w-0 items-center gap-1">
-                {i > 0 && <ChevronRightIcon className="h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" aria-hidden="true" />}
+                {i > 0 && <ChevronRightIcon className="flip-rtl h-4 w-4 shrink-0 text-slate-300 dark:text-slate-600" aria-hidden="true" />}
                 {c.to ? (
                   <Link to={c.to} className="truncate rounded text-slate-500 transition-colors hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100">
                     {c.label}
@@ -209,11 +216,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}
-              className="hidden h-8 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 pl-2.5 pr-1.5 text-sm text-slate-500 transition-colors hover:border-slate-300 hover:bg-white hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200 dark:focus-visible:ring-offset-slate-900 sm:flex"
+              className="hidden h-9 w-72 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 pe-1.5 ps-3 text-xs text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:border-white/[0.08] dark:bg-white/[0.04] dark:text-slate-400 dark:hover:border-white/[0.16] dark:hover:text-slate-200 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900 sm:flex"
             >
               <MagnifyingGlassIcon className="h-4 w-4" aria-hidden="true" />
-              <span className="w-40 text-left text-xs">Search…</span>
-              <span className="flex items-center gap-0.5">
+              <span className="flex-1 truncate text-start">{t('palette.placeholder')}</span>
+              <span dir="ltr" className="flex items-center gap-0.5">
                 <Kbd>{isMac ? '⌘' : 'Ctrl'}</Kbd>
                 <Kbd>K</Kbd>
               </span>
@@ -221,16 +228,21 @@ export function AppShell({ children }: { children: ReactNode }) {
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}
-              aria-label="Search"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 sm:hidden"
+              aria-label={t('a11y.search')}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:text-slate-400 dark:hover:bg-white/[0.06] dark:hover:text-slate-100 dark:focus-visible:ring-brand-300 sm:hidden"
             >
               <MagnifyingGlassIcon className="h-4 w-4" aria-hidden="true" />
             </button>
+            <LanguageToggle />
             <ThemeToggle />
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] p-6">{children}</main>
+        <main className="mx-auto w-full max-w-[1440px] p-6">
+          <div key={location.pathname} className="motion-safe:animate-fade-in">
+            {children}
+          </div>
+        </main>
       </div>
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />

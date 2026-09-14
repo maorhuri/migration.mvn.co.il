@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { CheckIcon, XMarkIcon } from '@heroicons/react/16/solid';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import { Spinner } from './Spinner';
 
 export interface Step {
@@ -37,15 +38,17 @@ export function stepState(index: number, current: number, completedUpTo: number,
 /**
  * Wizard / process stepper. Horizontal for the wizard rail, vertical for a running
  * migration's step list (pass `running` so the current step shows a spinner).
+ * The connector fills toward the next step as steps complete; the current ring pops in.
  */
 export function Stepper({ steps, current, completedUpTo, error, running, orientation = 'horizontal', onStepClick, className }: StepperProps) {
+  const t = useT();
   const done = completedUpTo ?? current - 1;
   const vertical = orientation === 'vertical';
 
   return (
     <ol
       className={cn('flex', vertical ? 'flex-col gap-0' : 'w-full items-start gap-2 overflow-x-auto scrollbar-none', className)}
-      aria-label="Progress"
+      aria-label={t('stepper.progress')}
     >
       {steps.map((step, i) => {
         const state = stepState(i, current, done, error);
@@ -56,9 +59,9 @@ export function Stepper({ steps, current, completedUpTo, error, running, orienta
           <span
             className={cn(
               'relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold transition-colors',
-              state === 'complete' && 'border-indigo-600 bg-indigo-600 text-white dark:border-indigo-500 dark:bg-indigo-500',
-              state === 'current' && 'border-indigo-600 bg-white text-indigo-600 ring-4 ring-indigo-500/15 dark:border-indigo-400 dark:bg-slate-900 dark:text-indigo-300',
-              state === 'upcoming' && 'border-slate-300 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-500',
+              state === 'complete' && 'border-brand-500/40 bg-brand-50 text-brand-700 dark:border-brand-400/40 dark:bg-brand-500/15 dark:text-brand-300',
+              state === 'current' && 'border-transparent bg-brand-700 text-white ring-4 ring-brand-500/15 dark:bg-brand-600 motion-safe:animate-ring-pop',
+              state === 'upcoming' && 'border-slate-300 bg-white text-slate-400 dark:border-white/[0.15] dark:bg-slate-900 dark:text-slate-500',
               state === 'error' && 'border-rose-500 bg-rose-500 text-white',
             )}
             aria-hidden="true"
@@ -86,7 +89,9 @@ export function Stepper({ steps, current, completedUpTo, error, running, orienta
             >
               {step.label}
             </span>
-            {step.description && <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">{step.description}</span>}
+            {step.description && (
+              <span className={cn('mt-0.5 block text-2xs text-slate-500 dark:text-slate-400', !vertical && 'hidden lg:block')}>{step.description}</span>
+            )}
           </span>
         );
 
@@ -94,9 +99,14 @@ export function Stepper({ steps, current, completedUpTo, error, running, orienta
           <span
             aria-hidden="true"
             className={cn(
-              'bg-slate-200 dark:bg-slate-700',
-              vertical ? 'absolute left-[13px] top-7 h-[calc(100%-1.75rem)] w-0.5' : 'absolute left-[calc(50%+18px)] right-[calc(-50%+18px)] top-[13px] h-0.5',
-              i < done + 1 && state === 'complete' && 'bg-indigo-600 dark:bg-indigo-500',
+              vertical
+                ? 'absolute start-[13px] top-7 h-[calc(100%-1.75rem)] w-px bg-slate-200 dark:bg-white/[0.08]'
+                : 'absolute start-[calc(50%+18px)] end-[calc(-50%+18px)] top-[13px] h-px bg-slate-200 dark:bg-white/[0.08]',
+              'after:absolute after:content-[""] after:bg-brand-600 after:transition-transform after:duration-500 dark:after:bg-brand-400',
+              vertical
+                ? 'after:inset-x-0 after:top-0 after:h-full after:origin-top after:scale-y-0'
+                : 'after:inset-y-0 after:start-0 after:w-full after:origin-left after:scale-x-0 rtl:after:origin-right',
+              state === 'complete' && (vertical ? 'after:scale-y-100' : 'after:scale-x-100'),
             )}
           />
         );
@@ -125,7 +135,7 @@ export function Stepper({ steps, current, completedUpTo, error, running, orienta
               <button
                 type="button"
                 onClick={() => onStepClick?.(i)}
-                className="w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900"
+                className="w-full rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900"
               >
                 {content}
               </button>

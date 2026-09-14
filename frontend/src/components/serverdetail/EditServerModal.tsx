@@ -1,5 +1,6 @@
 import type { FormEvent } from 'react';
 import { Button, Field, Input, Modal, Select } from '../ui';
+import { useT } from '../../lib/i18n';
 import type { Server, SSHKey } from '../../types';
 
 /** Exact shape of the update payload sent to `updateServer` — do not change. */
@@ -26,81 +27,73 @@ export interface EditServerModalProps {
   saving?: boolean;
 }
 
-const PANEL_OPTIONS = [
-  { value: 'directadmin', label: 'DirectAdmin' },
-  { value: 'enhance', label: 'Enhance' },
-  { value: 'cpanel', label: 'cPanel' },
-  { value: 'cloudpanel', label: 'CloudPanel' },
-  { value: 'ftp', label: 'FTP Only' },
-  { value: 'wordpress', label: 'WordPress Only' },
-];
-
-const AUTH_OPTIONS = [
-  { value: 'password', label: 'Password' },
-  { value: 'ssh_key', label: 'SSH Key' },
-  { value: 'api_key', label: 'API Key' },
-];
+const PANEL_VALUES: Server['panel_type'][] = ['directadmin', 'enhance', 'cpanel', 'cloudpanel', 'ftp', 'wordpress'];
+const AUTH_VALUES: Server['auth_method'][] = ['password', 'ssh_key', 'api_key'];
 
 const FORM_ID = 'edit-server-form';
 
 export function EditServerModal({ open, onClose, form, onChange, sshKeys, onSubmit, saving }: EditServerModalProps) {
+  const t = useT();
   const set = <K extends keyof EditServerForm>(key: K, value: EditServerForm[K]) => onChange({ ...form, [key]: value });
+
+  const panelOptions = PANEL_VALUES.map((value) => ({ value, label: t(`panel.${value}`) }));
+  const authOptions = AUTH_VALUES.map((value) => ({ value, label: t(`auth.${value}`) }));
 
   return (
     <Modal
       open={open}
       onClose={onClose}
-      title="Edit server"
-      description="Connection details used to reach this panel or host."
+      title={t('serverdetail.edit.title')}
+      description={t('serverdetail.edit.description')}
       size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={saving}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" form={FORM_ID} variant="primary" loading={saving}>
-            Save changes
+            {t('serverdetail.edit.save')}
           </Button>
         </>
       }
     >
       <form id={FORM_ID} onSubmit={onSubmit} className="grid gap-4 sm:grid-cols-2">
-        <Field label="Server name" required>
-          <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="My Server" required />
+        <Field label={t('serverdetail.edit.name')} required>
+          <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder={t('serverdetail.edit.namePlaceholder')} required />
         </Field>
 
-        <Field label="Panel type">
-          <Select value={form.panel_type} onChange={(e) => set('panel_type', e.target.value as Server['panel_type'])} options={PANEL_OPTIONS} />
+        <Field label={t('serverdetail.edit.panel')}>
+          <Select value={form.panel_type} onChange={(e) => set('panel_type', e.target.value as Server['panel_type'])} options={panelOptions} />
         </Field>
 
-        <Field label="Host" required>
+        <Field label={t('serverdetail.edit.host')} required>
           <Input mono value={form.host} onChange={(e) => set('host', e.target.value)} placeholder="server.example.com" required />
         </Field>
 
-        <Field label="Port">
+        <Field label={t('serverdetail.edit.port')}>
           <Input mono type="number" inputMode="numeric" value={form.port} onChange={(e) => set('port', parseInt(e.target.value))} />
         </Field>
 
-        <Field label="Username" required>
+        <Field label={t('serverdetail.edit.username')} required>
           <Input mono value={form.username} onChange={(e) => set('username', e.target.value)} required />
         </Field>
 
-        <Field label="Authentication method">
-          <Select value={form.auth_method} onChange={(e) => set('auth_method', e.target.value as Server['auth_method'])} options={AUTH_OPTIONS} />
+        <Field label={t('serverdetail.edit.auth')}>
+          <Select value={form.auth_method} onChange={(e) => set('auth_method', e.target.value as Server['auth_method'])} options={authOptions} />
         </Field>
 
         {form.auth_method === 'password' && (
-          <Field label="Password" hint="Leave empty to keep the current password" className="sm:col-span-2">
+          <Field label={t('serverdetail.edit.password')} hint={t('serverdetail.edit.passwordHint')} className="sm:col-span-2">
             <Input type="password" mono autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder="••••••••" />
           </Field>
         )}
 
         {form.auth_method === 'ssh_key' && (
-          <Field label="SSH key" className="sm:col-span-2">
+          <Field label={t('serverdetail.edit.sshKey')} className="sm:col-span-2">
             <Select
               value={form.ssh_key_id}
               onChange={(e) => set('ssh_key_id', e.target.value)}
-              placeholder="Select SSH key"
+              placeholder={t('serverdetail.edit.selectKey')}
               options={sshKeys.map((key) => ({ value: key.id, label: key.name }))}
             />
           </Field>
@@ -108,10 +101,10 @@ export function EditServerModal({ open, onClose, form, onChange, sshKeys, onSubm
 
         {form.auth_method === 'api_key' && (
           <>
-            <Field label="API endpoint" className="sm:col-span-2">
+            <Field label={t('serverdetail.edit.apiEndpoint')} className="sm:col-span-2">
               <Input mono type="url" value={form.api_endpoint} onChange={(e) => set('api_endpoint', e.target.value)} placeholder="https://api.enhance.com" />
             </Field>
-            <Field label="API key" hint="Leave empty to keep the current key" className="sm:col-span-2">
+            <Field label={t('serverdetail.edit.apiKey')} hint={t('serverdetail.edit.apiKeyHint')} className="sm:col-span-2">
               <Input type="password" mono autoComplete="new-password" value={form.api_key} onChange={(e) => set('api_key', e.target.value)} placeholder="••••••••" />
             </Field>
           </>

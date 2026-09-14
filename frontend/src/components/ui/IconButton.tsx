@@ -25,7 +25,7 @@ const toneClasses = {
   default: '',
   danger: 'hover:text-rose-600 dark:hover:text-rose-400',
   success: 'hover:text-emerald-600 dark:hover:text-emerald-400',
-  brand: 'hover:text-indigo-600 dark:hover:text-indigo-400',
+  brand: 'hover:text-brand-700 dark:hover:text-brand-300',
 };
 
 /**

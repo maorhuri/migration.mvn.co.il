@@ -1,12 +1,9 @@
 import { useEffect, useRef, type MouseEvent } from 'react';
 import { CircleStackIcon, EnvelopeIcon } from '@heroicons/react/16/solid';
-import { Badge, StatusBadge, Table, TBody, TD, TDPrimary, TH, THead, TR, type SortDirection } from '../ui';
+import { Badge, Checkbox, Mono, StatusBadge, Table, TBody, TD, TDPrimary, TH, THead, TR, type SortDirection } from '../ui';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import type { Account } from '../../types';
-
-export const checkboxClasses =
-  'h-4 w-4 cursor-pointer rounded border-slate-300 accent-indigo-600 dark:border-slate-600 dark:accent-indigo-500 ' +
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900';
 
 interface CountPillProps {
   count: number;
@@ -27,8 +24,8 @@ function CountPill({ count, icon, label, onClick }: CountPillProps) {
       onClick={onClick}
       className={cn(
         'inline-flex h-6 items-center gap-1 rounded-md bg-slate-100 px-2 text-xs font-medium tabular text-slate-700 ring-1 ring-inset ring-slate-200 transition-colors',
-        'hover:bg-indigo-50 hover:text-indigo-700 hover:ring-indigo-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-indigo-500/15 dark:hover:text-indigo-300 dark:hover:ring-indigo-500/30',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 [&_svg]:h-3.5 [&_svg]:w-3.5',
+        'hover:bg-brand-50 hover:text-brand-700 hover:ring-brand-200 dark:bg-white/[0.06] dark:text-slate-300 dark:ring-white/[0.1] dark:hover:bg-brand-500/15 dark:hover:text-brand-300 dark:hover:ring-brand-500/30',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:focus-visible:ring-brand-300 [&_svg]:h-3.5 [&_svg]:w-3.5',
       )}
     >
       <span className="text-slate-400 dark:text-slate-500" aria-hidden="true">
@@ -70,6 +67,7 @@ export function AccountsTable({
   onShowEmails,
   onShowDatabases,
 }: AccountsTableProps) {
+  const t = useT();
   const headerCheckbox = useRef<HTMLInputElement | null>(null);
   const someSelected = accounts.some((a) => selectedUsernames.has(a.username));
 
@@ -83,35 +81,34 @@ export function AccountsTable({
     <Table bare stickyHeader maxHeight="60vh">
       <THead>
         <TR hoverable={false}>
-          <TH className="w-10 pr-0">
-            <input
+          <TH className="w-10 pe-0">
+            <Checkbox
               ref={headerCheckbox}
-              type="checkbox"
-              className={checkboxClasses}
               checked={accounts.length > 0 && allSelected}
               onChange={onToggleAll}
-              aria-label="Select all accounts"
+              aria-label={t('newmigration.table.selectAll')}
+              className="align-middle"
             />
           </TH>
           <TH sortable sorted={sorted('domain')} onSort={() => onSort('domain')}>
-            Domain
+            {t('newmigration.table.domain')}
           </TH>
           <TH sortable sorted={sorted('php_version')} onSort={() => onSort('php_version')} align="center">
-            PHP
+            {t('newmigration.table.php')}
           </TH>
           <TH sortable sorted={sorted('disk_usage')} onSort={() => onSort('disk_usage')} numeric>
-            Disk
+            {t('newmigration.table.disk')}
           </TH>
           <TH sortable sorted={sorted('db_size')} onSort={() => onSort('db_size')} numeric>
-            DB size
+            {t('newmigration.table.dbSize')}
           </TH>
           <TH sortable sorted={sorted('db_count')} onSort={() => onSort('db_count')} align="center">
-            Databases
+            {t('newmigration.table.databases')}
           </TH>
           <TH sortable sorted={sorted('email_count')} onSort={() => onSort('email_count')} align="center">
-            Mailboxes
+            {t('newmigration.table.mailboxes')}
           </TH>
-          <TH>Status</TH>
+          <TH>{t('newmigration.table.status')}</TH>
         </TR>
       </THead>
       <TBody>
@@ -119,32 +116,33 @@ export function AccountsTable({
           const selected = selectedUsernames.has(account.username);
           const dbCount = account.databases?.length ?? 0;
           const emailCount = account.email_accounts?.length ?? 0;
+          const name = account.domain || account.username;
           return (
             <TR key={account.username} clickable selected={selected} onClick={() => onToggle(account)}>
-              <TD className="w-10 pr-0" onClick={(e) => e.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  className={checkboxClasses}
-                  checked={selected}
-                  onChange={() => onToggle(account)}
-                  aria-label={`Select ${account.domain || account.username}`}
-                />
+              <TD className="w-10 pe-0" onClick={(e) => e.stopPropagation()}>
+                <Checkbox checked={selected} onChange={() => onToggle(account)} aria-label={t('a11y.selectX', { name })} className="align-middle" />
               </TD>
               <TDPrimary>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{account.domain || <span className="text-slate-400 dark:text-slate-500">no domain</span>}</span>
+                  {account.domain ? (
+                    <Mono className="text-[13px]">{account.domain}</Mono>
+                  ) : (
+                    <span className="font-normal text-slate-400 dark:text-slate-500">{t('newmigration.table.noDomain')}</span>
+                  )}
                   {account.is_wordpress && (
                     <Badge tone="brand" size="sm">
-                      WordPress
+                      {t('newmigration.table.wordpress')}
                     </Badge>
                   )}
                   {account.ssl_enabled && (
                     <Badge tone="success" size="sm">
-                      SSL
+                      {t('newmigration.table.ssl')}
                     </Badge>
                   )}
                 </div>
-                <div className="mt-0.5 font-mono text-xs font-normal text-slate-500 dark:text-slate-400">{account.username}</div>
+                <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400">
+                  <Mono>{account.username}</Mono>
+                </div>
               </TDPrimary>
               <TD align="center">
                 {account.php_version ? (
@@ -155,15 +153,15 @@ export function AccountsTable({
                   <span className="text-slate-400 dark:text-slate-500">—</span>
                 )}
               </TD>
-              <TD numeric>{account.disk_used || <span className="text-slate-400 dark:text-slate-500">—</span>}</TD>
+              <TD numeric>{account.disk_used ? <Mono className="text-[13px]">{account.disk_used}</Mono> : <span className="text-slate-400 dark:text-slate-500">—</span>}</TD>
               <TD numeric muted>
-                {account.db_size || <span className="text-slate-400 dark:text-slate-500">—</span>}
+                {account.db_size ? <Mono className="text-[13px]">{account.db_size}</Mono> : <span className="text-slate-400 dark:text-slate-500">—</span>}
               </TD>
               <TD align="center">
                 <CountPill
                   count={dbCount}
                   icon={<CircleStackIcon />}
-                  label={`View ${dbCount} database${dbCount === 1 ? '' : 's'} for ${account.domain || account.username}`}
+                  label={t('newmigration.table.viewItems', { items: t('units.databases', { count: dbCount }), name })}
                   onClick={(e) => {
                     e.stopPropagation();
                     onShowDatabases(account);
@@ -174,7 +172,7 @@ export function AccountsTable({
                 <CountPill
                   count={emailCount}
                   icon={<EnvelopeIcon />}
-                  label={`View ${emailCount} mailbox${emailCount === 1 ? '' : 'es'} for ${account.domain || account.username}`}
+                  label={t('newmigration.table.viewItems', { items: t('units.mailboxes', { count: emailCount }), name })}
                   onClick={(e) => {
                     e.stopPropagation();
                     onShowEmails(account);

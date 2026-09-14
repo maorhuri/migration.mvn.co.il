@@ -4,7 +4,7 @@ import { inputBaseClasses, inputBorderClasses } from './Input';
 
 export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   invalid?: boolean;
-  /** Monospace (keys, code). */
+  /** Monospace (keys, code). Also forces LTR. */
   mono?: boolean;
 }
 
@@ -18,6 +18,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       ref={ref}
       rows={rows}
       aria-invalid={invalid || undefined}
+      dir={mono ? 'ltr' : undefined}
       className={cn(inputBaseClasses, inputBorderClasses(invalid), 'px-3 py-2 text-sm leading-relaxed', mono && 'font-mono text-xs', className)}
       {...rest}
     />

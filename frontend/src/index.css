@@ -10,7 +10,6 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
-    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss03';
     color-scheme: light;
   }
 
@@ -20,10 +19,22 @@
 
   body {
     @apply bg-slate-50 text-slate-900 text-sm font-sans dark:bg-slate-950 dark:text-slate-100;
+    line-height: 1.45;
+  }
+
+  /* Hebrew needs a little more air between lines and no letter-spacing on headings. */
+  [dir="rtl"] body {
+    line-height: 1.6;
+  }
+  [dir="rtl"] h1,
+  [dir="rtl"] h2,
+  [dir="rtl"] h3,
+  [dir="rtl"] h4 {
+    letter-spacing: 0;
   }
 
   ::selection {
-    @apply bg-indigo-500/20 text-slate-900 dark:bg-indigo-400/30 dark:text-white;
+    @apply bg-brand-500/20 text-slate-900 dark:bg-brand-400/30 dark:text-white;
   }
 
   h1, h2, h3, h4 {
@@ -37,7 +48,7 @@
 
   /* Visible focus for keyboard users only. Components add their own ring where needed. */
   :focus-visible {
-    @apply outline-none ring-2 ring-indigo-500 ring-offset-2 ring-offset-white dark:ring-offset-slate-900;
+    @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-white dark:ring-brand-300 dark:ring-offset-slate-900;
   }
 
   /* Thin, theme-aware scrollbars. */
@@ -74,6 +85,58 @@
   select option {
     @apply bg-white text-slate-900 dark:bg-slate-900 dark:text-slate-100;
   }
+
+  /* Motion is sparse and always optional. */
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------
+   Legacy classes (still defined, restyled to the brand; do not use in new code)
+   ------------------------------------------------------------------ */
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white p-6 dark:border-white/[0.08] dark:bg-slate-900;
+  }
+  .btn {
+    @apply inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3.5 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand-700 text-white hover:bg-brand-600 active:bg-brand-800 dark:bg-brand-600 dark:hover:bg-brand-500;
+  }
+  .btn-secondary {
+    @apply btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-200 dark:hover:bg-white/[0.08];
+  }
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-500;
+  }
+  .input {
+    @apply block h-9 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 dark:border-white/[0.1] dark:bg-slate-950/40;
+  }
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300;
+  }
+
+  /*
+   * Every small label in the app (card kickers, stat labels, nav group titles, definition labels).
+   * Lives in the components layer so single utilities still win: `normal-case` keeps a hostname as
+   * typed, `text-brand-700` colors a page eyebrow. Hebrew drops the tracking and the uppercase
+   * (Latin words inside Hebrew labels stay as written) and reads at 12px.
+   */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400;
+  }
+  [dir="rtl"] .eyebrow {
+    letter-spacing: 0;
+    font-size: 0.75rem;
+    text-transform: none;
+  }
 }
 
 /* ------------------------------------------------------------------
@@ -92,5 +155,52 @@
   }
   .scrollbar-none::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Page-load stagger: className="motion-safe:animate-rise stagger" style={{ '--i': 3 }} */
+  .stagger {
+    animation-delay: calc(var(--i, 0) * 45ms);
+  }
+
+  /* The signature gradient (plum -> magenta -> pink). */
+  .text-gradient-brand {
+    @apply bg-gradient-to-r from-brand-900 via-brand-600 to-brand-400 bg-clip-text text-transparent dark:from-brand-300 dark:via-brand-400 dark:to-brand-300;
+  }
+  .bg-gradient-brand {
+    @apply bg-gradient-to-r from-brand-900 via-brand-600 to-brand-400;
+  }
+
+  /* Technical values (domains, IPs, paths, ids, commands) stay left-to-right in Hebrew. */
+  .ltr {
+    direction: ltr;
+    unicode-bidi: isolate;
+    text-align: start;
+  }
+
+  /* Directional icons (arrows, chevrons, "back") mirror in RTL. */
+  .flip-rtl {
+  }
+  [dir="rtl"] .flip-rtl {
+    transform: scaleX(-1);
+  }
+
+  /* A check/path that draws itself once (pair with motion-safe:animate-draw). */
+  .draw-path {
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .draw-path {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* Illustration backdrop. */
+  .dot-grid {
+    background-image: radial-gradient(theme('colors.slate.300') 1px, transparent 1px);
+    background-size: 12px 12px;
+  }
+  .dark .dot-grid {
+    background-image: radial-gradient(theme('colors.slate.700') 1px, transparent 1px);
   }
 }

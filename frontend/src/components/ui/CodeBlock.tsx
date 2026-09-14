@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { CheckIcon, ClipboardDocumentIcon } from '@heroicons/react/16/solid';
 import toast from 'react-hot-toast';
 import { cn } from '../../lib/cn';
+import { translate, useT } from '../../lib/i18n';
 import { IconButton } from './IconButton';
 
 export interface CodeBlockProps {
@@ -15,29 +16,31 @@ export interface CodeBlockProps {
   wrap?: boolean;
   /** Hide the copy button. */
   noCopy?: boolean;
-  /** Toast text on copy. */
+  /** Toast text on copy (defaults to the translated "Copied to clipboard"). */
   copiedMessage?: string;
   /** Inline single-line variant (no header). */
   inline?: boolean;
   className?: string;
 }
 
-export async function copyToClipboard(text: string, message = 'Copied to clipboard'): Promise<boolean> {
+/** Copy text and toast the result. Returns whether the copy succeeded. */
+export async function copyToClipboard(text: string, message?: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success(message);
+    toast.success(message ?? translate('codeblock.copiedToClipboard'));
     return true;
   } catch {
-    toast.error('Could not copy');
+    toast.error(translate('codeblock.copyFailed'));
     return false;
   }
 }
 
 /**
  * Monospace block with a copy button. Use for hosts entries, commands, ids.
- * Always dark (slate-950) in both themes so it reads as "terminal".
+ * Always dark (slate-950) and always left-to-right, in both themes and both languages.
  */
 export function CodeBlock({ code, title, language, wrap = true, noCopy, copiedMessage, inline, className }: CodeBlockProps) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -50,15 +53,15 @@ export function CodeBlock({ code, title, language, wrap = true, noCopy, copiedMe
 
   if (inline) {
     return (
-      <span className={cn('inline-flex max-w-full items-center gap-1 rounded-md border border-slate-200 bg-slate-50 pl-2 dark:border-slate-700 dark:bg-slate-800', className)}>
+      <span dir="ltr" className={cn('inline-flex max-w-full items-center gap-1 rounded-md border border-slate-200 bg-slate-50 ps-2 text-left dark:border-white/[0.08] dark:bg-white/[0.05]', className)}>
         <code className="truncate py-0.5 font-mono text-xs text-slate-800 dark:text-slate-200">{code}</code>
-        {!noCopy && <IconButton aria-label="Copy" icon={copied ? <CheckIcon className="text-emerald-500" /> : <ClipboardDocumentIcon />} size="xs" onClick={handleCopy} />}
+        {!noCopy && <IconButton aria-label={copied ? t('codeblock.copied') : t('codeblock.copy')} icon={copied ? <CheckIcon className="text-emerald-500" /> : <ClipboardDocumentIcon />} size="xs" onClick={handleCopy} />}
       </span>
     );
   }
 
   return (
-    <div className={cn('overflow-hidden rounded-lg border border-slate-800 bg-slate-950 text-slate-100 shadow-sm dark:border-slate-700', className)}>
+    <div dir="ltr" className={cn('overflow-hidden rounded-lg border border-slate-800 bg-slate-950 text-left text-slate-100 dark:border-white/[0.1]', className)}>
       {(title || language || !noCopy) && (
         <div className="flex items-center justify-between gap-2 border-b border-slate-800 px-3 py-1.5">
           <div className="flex min-w-0 items-center gap-2 text-xs text-slate-400">
@@ -67,7 +70,7 @@ export function CodeBlock({ code, title, language, wrap = true, noCopy, copiedMe
           </div>
           {!noCopy && (
             <IconButton
-              aria-label={copied ? 'Copied' : 'Copy to clipboard'}
+              aria-label={copied ? t('codeblock.copied') : t('codeblock.copyToClipboard')}
               icon={copied ? <CheckIcon className="text-emerald-400" /> : <ClipboardDocumentIcon />}
               size="xs"
               onClick={handleCopy}

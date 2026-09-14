@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRightIcon } from '@heroicons/react/16/solid';
+import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/16/solid';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 
 export interface Crumb {
   label: ReactNode;
@@ -11,11 +12,11 @@ export interface Crumb {
 export interface PageHeaderProps {
   title: ReactNode;
   description?: ReactNode;
-  /** Small text above the title (e.g. "Server", "Migration"). */
+  /** Small brand-colored label above the title (e.g. "Server", "Migration"). */
   eyebrow?: ReactNode;
   /** Breadcrumb trail rendered above the title. The app shell already shows a route breadcrumb; use this for extra depth (e.g. server name). */
   breadcrumb?: Crumb[];
-  /** Buttons on the right. */
+  /** Buttons at the end of the row (one solid brand primary action). */
   actions?: ReactNode;
   /** Badges next to the title (status, panel). */
   meta?: ReactNode;
@@ -25,18 +26,20 @@ export interface PageHeaderProps {
 }
 
 /**
- * Page title block. Always the first element of a page; the page then continues with
- * `space-y-6` sections.
+ * Page title block: bold title + the page's one primary action. Always the first element of a
+ * page; the page then continues with `space-y-6` sections. It rises in first on page load
+ * (`--i` 0); the sections that follow stagger from `--i` 1.
  */
 export function PageHeader({ title, description, eyebrow, breadcrumb, actions, meta, backTo, className }: PageHeaderProps) {
+  const t = useT();
   return (
-    <header className={cn('flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between', className)}>
+    <header className={cn('flex flex-col gap-4 motion-safe:animate-rise stagger sm:flex-row sm:items-end sm:justify-between', className)}>
       <div className="min-w-0">
         {breadcrumb && breadcrumb.length > 0 && (
-          <nav aria-label="Breadcrumb" className="mb-2 flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+          <nav aria-label={t('a11y.breadcrumb')} className="mb-2 flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
             {breadcrumb.map((c, i) => (
               <span key={i} className="flex items-center gap-1">
-                {i > 0 && <ChevronRightIcon className="h-3.5 w-3.5 text-slate-300 dark:text-slate-600" aria-hidden="true" />}
+                {i > 0 && <ChevronRightIcon className="flip-rtl h-3.5 w-3.5 text-slate-300 dark:text-slate-600" aria-hidden="true" />}
                 {c.to ? (
                   <Link to={c.to} className="rounded transition-colors hover:text-slate-900 dark:hover:text-slate-100">
                     {c.label}
@@ -48,20 +51,18 @@ export function PageHeader({ title, description, eyebrow, breadcrumb, actions, m
             ))}
           </nav>
         )}
-        {eyebrow && !breadcrumb && (
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-indigo-600 dark:text-indigo-400">{eyebrow}</p>
-        )}
+        {eyebrow && !breadcrumb && <p className="eyebrow mb-1 text-brand-700 dark:text-brand-300">{eyebrow}</p>}
         <div className="flex flex-wrap items-center gap-3">
           {backTo && (
             <Link
               to={backTo}
-              aria-label="Back"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+              aria-label={t('a11y.back')}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-400 dark:hover:bg-white/[0.08] dark:hover:text-slate-100"
             >
-              <ChevronRightIcon className="h-4 w-4 rotate-180" aria-hidden="true" />
+              <ChevronLeftIcon className="flip-rtl h-4 w-4" aria-hidden="true" />
             </Link>
           )}
-          <h1 className="truncate text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
+          <h1 className="truncate text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50">{title}</h1>
           {meta && <div className="flex items-center gap-2">{meta}</div>}
         </div>
         {description && <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{description}</p>}

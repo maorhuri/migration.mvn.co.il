@@ -1,5 +1,5 @@
 import { Badge, type BadgeProps, type BadgeTone } from './Badge';
-import { panelLabel } from '../../lib/format';
+import { useT } from '../../lib/i18n';
 
 export interface PanelBadgeProps extends Omit<BadgeProps, 'tone' | 'children'> {
   panelType: string | null | undefined;
@@ -16,18 +16,30 @@ export const PANEL_TONES: Record<string, BadgeTone> = {
   wordpress: 'brand',
 };
 
+export const PANEL_TYPES = ['directadmin', 'enhance', 'cpanel', 'cloudpanel', 'ftp', 'wordpress'] as const;
+
 export function panelTone(panelType: string | null | undefined): BadgeTone {
   return PANEL_TONES[panelType ?? ''] ?? 'neutral';
 }
 
+/** Translated panel label: t('panel.<type>'), raw string for unknown types, t('panel.unknown') when empty. */
+export function usePanelLabel(): (panelType: string | null | undefined) => string {
+  const t = useT();
+  return (panelType) => {
+    if (!panelType) return t('panel.unknown');
+    return (PANEL_TYPES as readonly string[]).includes(panelType) ? t(`panel.${panelType}`) : panelType;
+  };
+}
+
 /**
  * Panel identity badge: Enhance = violet, DirectAdmin = blue, cPanel = orange,
- * CloudPanel = sky, FTP = neutral, WordPress = indigo.
+ * CloudPanel = sky, FTP = neutral, WordPress = brand.
  */
 export function PanelBadge({ panelType, compact, ...rest }: PanelBadgeProps) {
+  const label = usePanelLabel();
   return (
     <Badge tone={panelTone(panelType)} dot={compact} {...rest}>
-      {compact ? null : panelLabel(panelType)}
+      {compact ? null : label(panelType)}
     </Badge>
   );
 }

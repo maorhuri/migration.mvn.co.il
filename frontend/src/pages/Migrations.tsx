@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import { ArrowRightIcon } from '@heroicons/react/16/solid';
 import { PlusIcon, TrashIcon } from '@heroicons/react/20/solid';
-import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import {
   Badge,
   Button,
@@ -12,24 +13,32 @@ import {
   CardTitle,
   ConfirmDialog,
   EmptyState,
+  Mono,
   PageHeader,
   SkeletonTable,
   Table,
+  Tabs,
   TBody,
   TH,
   THead,
   TR,
 } from '../components/ui';
 import { MigrationRow } from '../components/migrations/MigrationRow';
+import { useT } from '../lib/i18n';
 import { getMigrations, getServers, cancelMigration, deleteMigration, clearFinishedMigrations, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, Server } from '../types';
 
+type StatusFilter = 'all' | 'running' | 'completed' | 'failed';
+
 export default function Migrations() {
+  const t = useT();
   const navigate = useNavigate();
   const [migrations, setMigrations] = useState<Migration[]>([]);
   const [servers, setServers] = useState<Record<string, Server>>({});
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Client-side lens on the same polled list; the polling itself is untouched.
+  const [filter, setFilter] = useState<StatusFilter>('all');
   // Dialog targets are kept after close so the message does not blank during the exit transition.
   const [toCancel, setToCancel] = useState<Migration | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -57,7 +66,8 @@ export default function Migrations() {
       setFetchError(null);
     } catch (error) {
       console.error('Failed to fetch data:', error);
-      setFetchError('Could not load migrations. Retrying automatically.');
+      // Stores the dictionary key so the banner follows a language switch.
+      setFetchError('migrations.error.title');
     } finally {
       setLoading(false);
     }
@@ -73,24 +83,24 @@ export default function Migrations() {
   const handleCancel = async (id: string) => {
     try {
       await cancelMigration(id);
-      toast.success('Migration cancelled');
+      toast.success(t('migrations.toast.cancelled'));
       setCancelOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to cancel migration:', error);
-      toast.error('Failed to cancel migration');
+      toast.error(t('migrations.toast.cancelFailed'));
     }
   };
 
   const handleDelete = async (id: string) => {
     try {
       await deleteMigration(id);
-      toast.success('Migration deleted');
+      toast.success(t('migrations.toast.deleted'));
       setDeleteOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to delete migration:', error);
-      toast.error('Failed to delete migration');
+      toast.error(t('migrations.toast.deleteFailed'));
     }
   };
 
@@ -100,57 +110,64 @@ export default function Migrations() {
   const handleSuspendSource = async (m: Migration) => {
     try {
       await suspendMigrationSource(m.id);
-      toast.success(`${m.account_username} suspended on the source server`);
+      toast.success(t('migrations.toast.suspended', { name: m.account_username }));
       setSuspendOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to suspend source account:', error);
-      toast.error(apiError(error, 'Failed to suspend the source account'));
+      toast.error(apiError(error, t('migrations.toast.suspendFailed')));
     }
   };
 
   const handleUnsuspendSource = async (m: Migration) => {
     try {
       await unsuspendMigrationSource(m.id);
-      toast.success(`${m.account_username} re-enabled on the source server`);
+      toast.success(t('migrations.toast.unsuspended', { name: m.account_username }));
       setUnsuspendOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to unsuspend source account:', error);
-      toast.error(apiError(error, 'Failed to unsuspend the source account'));
+      toast.error(apiError(error, t('migrations.toast.unsuspendFailed')));
     }
   };
 
   const handleClear = async () => {
     try {
       const { deleted } = await clearFinishedMigrations();
-      toast.success(deleted === 1 ? '1 migration cleared' : `${deleted} migrations cleared`);
+      toast.success(t('migrations.toast.cleared', { count: deleted }));
       setClearOpen(false);
       fetchData();
     } catch (error) {
       console.error('Failed to clear migrations:', error);
-      toast.error(apiError(error, 'Failed to clear migrations'));
+      toast.error(apiError(error, t('migrations.toast.clearFailed')));
     }
   };
 
   const runningCount = migrations.filter((m) => m.status === 'running').length;
+  const completedCount = migrations.filter((m) => m.status === 'completed').length;
+  const failedCount = migrations.filter((m) => m.status === 'failed').length;
   const finishedCount = migrations.filter((m) => m.status !== 'running' && m.status !== 'pending').length;
   const showLoadError = !loading && !!fetchError && migrations.length === 0;
+  const visible = filter === 'all' ? migrations : migrations.filter((m) => m.status === filter);
+
+  const sourceName = (m: Migration | null) => (m ? servers[m.source_server_id]?.name ?? t('migrations.dialog.sourceServer') : '');
+  const account = (name?: string) => <Mono className="font-medium text-slate-900 dark:text-slate-100">{name}</Mono>;
+  const server = (name: string) => <bdi className="font-medium text-slate-700 dark:text-slate-200">{name}</bdi>;
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Migrations"
-        description="View and manage account migrations between servers."
+        title={t('migrations.title')}
+        description={t('migrations.description')}
         actions={
           <>
             {finishedCount > 0 && (
               <Button variant="secondary" leftIcon={<TrashIcon />} onClick={() => setClearOpen(true)}>
-                Clear history
+                {t('migrations.clearHistory')}
               </Button>
             )}
             <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
-              New migration
+              {t('nav.newMigration')}
             </Button>
           </>
         }
@@ -163,78 +180,111 @@ export default function Migrations() {
         >
           <ExclamationTriangleIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
           <div className="min-w-0 flex-1">
-            <p className="font-medium">{fetchError}</p>
-            <p className="mt-0.5 text-xs opacity-80">Showing the last data that loaded successfully.</p>
+            <p className="font-medium">{t(fetchError)}</p>
+            <p className="mt-0.5 text-xs opacity-80">{t('migrations.error.stale')}</p>
           </div>
           <Button size="sm" variant="secondary" onClick={() => fetchData()}>
-            Retry
+            {t('common.retry')}
           </Button>
         </div>
       )}
 
-      <Card flush>
+      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': 1 } as CSSProperties}>
         <CardHeader
           divided
           actions={
             !loading && migrations.length > 0 ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {runningCount > 0 && (
-                  <Badge tone="brand" size="sm" dot pulse>
-                    {runningCount} running
+                  <Badge tone="brand" size="sm" dot pulse glow>
+                    {t('migrations.badge.running', { count: runningCount })}
                   </Badge>
                 )}
-                <Badge tone="neutral" size="sm">
-                  {migrations.length} total
-                </Badge>
+                <Tabs<StatusFilter>
+                  variant="pills"
+                  size="sm"
+                  value={filter}
+                  onChange={setFilter}
+                  tabs={[
+                    { id: 'all', label: t('migrations.filter.all'), count: migrations.length },
+                    { id: 'running', label: t('migrations.filter.running'), count: runningCount },
+                    { id: 'completed', label: t('migrations.filter.completed'), count: completedCount },
+                    { id: 'failed', label: t('migrations.filter.failed'), count: failedCount },
+                  ]}
+                />
               </div>
             ) : undefined
           }
         >
-          <CardTitle>All migrations</CardTitle>
-          <CardDescription>Refreshes automatically every 5 seconds.</CardDescription>
+          <CardTitle>{t('migrations.card.title')}</CardTitle>
+          <CardDescription>{t('migrations.card.description')}</CardDescription>
         </CardHeader>
 
         {loading ? (
           <SkeletonTable rows={6} columns={7} />
         ) : showLoadError ? (
           <EmptyState
-            icon={ExclamationTriangleIcon}
-            title="Could not load migrations"
-            description="The API did not respond. It is retried every 5 seconds, or you can retry now."
+            illustration="error"
+            title={t('migrations.empty.load.title')}
+            description={t('migrations.empty.load.description')}
             action={
               <Button variant="secondary" onClick={() => fetchData()}>
-                Retry
+                {t('common.retry')}
               </Button>
             }
           />
         ) : migrations.length === 0 ? (
           <EmptyState
-            icon={ArrowsRightLeftIcon}
-            title="No migrations yet"
-            description="Start your first migration to move an account between servers."
+            illustration="migrations"
+            title={t('migrations.empty.title')}
+            description={
+              <ul className="mt-2 space-y-1 text-start">
+                <li>{t('migrations.empty.b1')}</li>
+                <li>{t('migrations.empty.b2')}</li>
+                <li>{t('migrations.empty.b3')}</li>
+              </ul>
+            }
             action={
               <Button variant="primary" leftIcon={<PlusIcon />} onClick={() => navigate('/migrations/new')}>
-                New migration
+                {t('nav.newMigration')}
+              </Button>
+            }
+          />
+        ) : visible.length === 0 ? (
+          <EmptyState
+            size="sm"
+            illustration="search"
+            title={t(`migrations.empty.${filter}.title`)}
+            description={t('migrations.empty.filter.description')}
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setFilter('all')}>
+                {t('common.showAll')}
               </Button>
             }
           />
         ) : (
-          <Table bare stickyHeader maxHeight="75vh">
+          <Table bare stickyHeader maxHeight="75vh" className="[&_td]:px-3 [&_th]:px-3">
             <THead>
               <TR hoverable={false}>
-                <TH>Account</TH>
-                <TH>Source → Target</TH>
-                <TH className="hidden xl:table-cell">Node</TH>
-                <TH>Status</TH>
-                <TH>Warnings</TH>
-                <TH>Timing</TH>
-                <TH align="right">
-                  <span className="sr-only">Actions</span>
+                <TH>{t('migrations.col.account')}</TH>
+                <TH>
+                  <span className="inline-flex items-center gap-1">
+                    {t('migrations.col.source')}
+                    <ArrowRightIcon className="flip-rtl h-3 w-3 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+                    {t('migrations.col.target')}
+                  </span>
+                </TH>
+                <TH className="hidden 2xl:table-cell">{t('migrations.col.node')}</TH>
+                <TH>{t('migrations.col.status')}</TH>
+                <TH>{t('migrations.col.warnings')}</TH>
+                <TH>{t('migrations.col.timing')}</TH>
+                <TH align="end">
+                  <span className="sr-only">{t('table.actions')}</span>
                 </TH>
               </TR>
             </THead>
             <TBody>
-              {migrations.map((migration) => (
+              {visible.map((migration) => (
                 <MigrationRow
                   key={migration.id}
                   migration={migration}
@@ -268,15 +318,10 @@ export default function Migrations() {
         open={cancelOpen}
         onClose={() => setCancelOpen(false)}
         tone="warning"
-        title="Cancel this migration?"
-        message={
-          <>
-            The migration of <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toCancel?.account_username}</span> will
-            stop at its current step. Files already copied to the target are left in place.
-          </>
-        }
-        confirmLabel="Cancel migration"
-        cancelLabel="Keep running"
+        title={t('migrations.dialog.cancel.title')}
+        message={t.rich('migrations.dialog.cancel.message', { account: account(toCancel?.account_username) })}
+        confirmLabel={t('migrations.dialog.cancel.confirm')}
+        cancelLabel={t('migrations.dialog.cancel.keep')}
         onConfirm={async () => {
           if (toCancel) await handleCancel(toCancel.id);
         }}
@@ -285,15 +330,9 @@ export default function Migrations() {
       <ConfirmDialog
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
-        title="Delete this migration?"
-        message={
-          <>
-            This permanently removes the migration record and logs for{' '}
-            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toDelete?.account_username}</span>. The account on the
-            target server is not affected.
-          </>
-        }
-        confirmLabel="Delete migration"
+        title={t('migrations.dialog.delete.title')}
+        message={t.rich('migrations.dialog.delete.message', { account: account(toDelete?.account_username) })}
+        confirmLabel={t('migrations.dialog.delete.confirm')}
         onConfirm={async () => {
           if (toDelete) await handleDelete(toDelete.id);
         }}
@@ -302,14 +341,9 @@ export default function Migrations() {
       <ConfirmDialog
         open={clearOpen}
         onClose={() => setClearOpen(false)}
-        title="Clear migration history?"
-        message={
-          <>
-            This permanently deletes {finishedCount === 1 ? 'the finished migration' : `all ${finishedCount} finished migrations`} (completed, failed and
-            cancelled) together with their logs. Running migrations are kept. Accounts on the source and target servers are not affected.
-          </>
-        }
-        confirmLabel="Clear history"
+        title={t('migrations.dialog.clear.title')}
+        message={t('migrations.dialog.clear.message', { count: finishedCount })}
+        confirmLabel={t('migrations.dialog.clear.confirm')}
         onConfirm={handleClear}
       />
 
@@ -317,17 +351,10 @@ export default function Migrations() {
         open={suspendOpen}
         onClose={() => setSuspendOpen(false)}
         tone="warning"
-        title="Suspend the source account?"
-        message={
-          <>
-            The account <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toSuspend?.account_username}</span> will be
-            suspended on <span className="font-medium">{toSuspend ? servers[toSuspend.source_server_id]?.name ?? 'the source server' : ''}</span>.
-            Do this only after the IP/DNS switch, once the site is verified to load from the new server. The migrated site on the target is not
-            affected, and you can unsuspend at any time.
-          </>
-        }
-        confirmLabel="Suspend on source"
-        cancelLabel="Not yet"
+        title={t('migrations.dialog.suspend.title')}
+        message={t.rich('migrations.dialog.suspend.message', { account: account(toSuspend?.account_username), server: server(sourceName(toSuspend)) })}
+        confirmLabel={t('migrations.dialog.suspend.confirm')}
+        cancelLabel={t('migrations.dialog.suspend.notYet')}
         onConfirm={async () => {
           if (toSuspend) await handleSuspendSource(toSuspend);
         }}
@@ -337,14 +364,9 @@ export default function Migrations() {
         open={unsuspendOpen}
         onClose={() => setUnsuspendOpen(false)}
         tone="brand"
-        title="Re-enable the source account?"
-        message={
-          <>
-            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{toUnsuspend?.account_username}</span> will be active again on{' '}
-            <span className="font-medium">{toUnsuspend ? servers[toUnsuspend.source_server_id]?.name ?? 'the source server' : ''}</span>.
-          </>
-        }
-        confirmLabel="Unsuspend"
+        title={t('migrations.dialog.unsuspend.title')}
+        message={t.rich('migrations.dialog.unsuspend.message', { account: account(toUnsuspend?.account_username), server: server(sourceName(toUnsuspend)) })}
+        confirmLabel={t('migrations.dialog.unsuspend.confirm')}
         onConfirm={async () => {
           if (toUnsuspend) await handleUnsuspendSource(toUnsuspend);
         }}
@@ -352,4 +374,3 @@ export default function Migrations() {
     </div>
   );
 }
-

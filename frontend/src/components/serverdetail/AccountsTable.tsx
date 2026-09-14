@@ -1,8 +1,9 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { CircleStackIcon, EnvelopeIcon, LockClosedIcon } from '@heroicons/react/16/solid';
-import { Badge, StatusBadge, Table, THead, TBody, TR, TH, TD, TDPrimary } from '../ui';
+import { Badge, Mono, StatusBadge, Table, THead, TBody, TR, TH, TD, TDPrimary } from '../ui';
 import type { SortDirection } from '../ui';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import type { Account } from '../../types';
 
 export type AccountSortField = 'domain' | 'type' | 'php' | 'disk' | 'db_size' | 'dbs' | 'emails';
@@ -32,7 +33,7 @@ const countToneClasses = {
     'dark:bg-sky-500/15 dark:text-sky-300 dark:ring-sky-500/30 dark:hover:bg-sky-500/25',
 };
 
-/** Badge-shaped button used for "open the databases / emails list" counts. */
+/** Badge-shaped button used for "open the databases / mailboxes list" counts. */
 function CountButton({ icon, count, tone, label, className, ...rest }: CountButtonProps) {
   return (
     <button
@@ -40,7 +41,8 @@ function CountButton({ icon, count, tone, label, className, ...rest }: CountButt
       aria-label={label}
       title={label}
       className={cn(
-        'inline-flex h-5 items-center gap-1 rounded-md px-1.5 text-2xs font-medium tabular-nums ring-1 ring-inset transition-colors',
+        'inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium tabular ring-1 ring-inset transition-colors',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:focus-visible:ring-brand-300',
         '[&_svg]:h-3 [&_svg]:w-3',
         countToneClasses[tone],
         className,
@@ -53,7 +55,24 @@ function CountButton({ icon, count, tone, label, className, ...rest }: CountButt
   );
 }
 
+/** Muted zero for the count columns. */
+function Zero() {
+  return <span className="tabular text-slate-400 dark:text-slate-500">0</span>;
+}
+
+/** Muted "nothing here" dash. */
+function Dash() {
+  return <span className="text-slate-400 dark:text-slate-500">—</span>;
+}
+
+/** A size such as "608M" or "324.7 MB" — always LTR so the unit never jumps in front of the number in Hebrew. */
+function Size({ value, muted }: { value?: string; muted?: boolean }) {
+  if (!value) return <Dash />;
+  return <Mono className={cn('text-xs', muted ? 'text-slate-500 dark:text-slate-400' : 'font-medium text-slate-900 dark:text-slate-100')}>{value}</Mono>;
+}
+
 export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOpenDatabases, onOpenEmails }: AccountsTableProps) {
+  const t = useT();
   const sorted = (field: AccountSortField) => (sortField === field ? sortDirection : false);
 
   return (
@@ -61,28 +80,27 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
       <THead>
         <TR hoverable={false}>
           <TH sortable sorted={sorted('domain')} onSort={() => onSort('domain')}>
-            Domain
+            {t('serverdetail.table.domain')}
           </TH>
-          <TH>Username</TH>
           <TH sortable sorted={sorted('type')} onSort={() => onSort('type')}>
-            Type
+            {t('serverdetail.table.type')}
           </TH>
           <TH sortable sorted={sorted('php')} onSort={() => onSort('php')}>
-            PHP
+            {t('serverdetail.table.php')}
           </TH>
           <TH numeric sortable sorted={sorted('disk')} onSort={() => onSort('disk')}>
-            Disk
+            {t('serverdetail.table.disk')}
           </TH>
           <TH numeric sortable sorted={sorted('db_size')} onSort={() => onSort('db_size')}>
-            DB size
+            {t('serverdetail.table.dbSize')}
           </TH>
           <TH align="center" sortable sorted={sorted('dbs')} onSort={() => onSort('dbs')}>
-            Databases
+            {t('serverdetail.table.databases')}
           </TH>
           <TH align="center" sortable sorted={sorted('emails')} onSort={() => onSort('emails')}>
-            Emails
+            {t('serverdetail.table.mailboxes')}
           </TH>
-          <TH>Status</TH>
+          <TH>{t('serverdetail.table.status')}</TH>
         </TR>
       </THead>
       <TBody>
@@ -91,36 +109,50 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
           const emailCount = account.email_accounts?.length || 0;
           return (
             <TR key={account.username}>
-              <TDPrimary className="max-w-xs">
+              <TDPrimary className="whitespace-nowrap">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate">{account.domain || '—'}</span>
+                  {account.domain ? <Mono className="text-[13px] font-medium">{account.domain}</Mono> : <Dash />}
                   {account.ssl_enabled && (
-                    <Badge tone="success" size="sm" icon={<LockClosedIcon />} title={account.ssl_expiry ? `Expires ${account.ssl_expiry}` : 'SSL enabled'}>
-                      SSL
+                    <Badge
+                      tone="success"
+                      size="sm"
+                      icon={<LockClosedIcon />}
+                      title={account.ssl_expiry ? t('serverdetail.table.sslExpires', { date: account.ssl_expiry }) : t('serverdetail.table.sslEnabled')}
+                    >
+                      {t('serverdetail.table.ssl')}
                     </Badge>
                   )}
                 </div>
+                <Mono block className="mt-0.5 text-2xs font-normal text-slate-500 dark:text-slate-400">
+                  {account.username}
+                </Mono>
               </TDPrimary>
-              <TD mono>{account.username}</TD>
               <TD>
                 {account.is_wordpress ? (
-                  <Badge tone="brand" size="sm">
-                    WordPress
+                  <Badge tone="neutral" size="sm" title={t('serverdetail.table.wordpress')}>
+                    <span aria-hidden="true">{t('serverdetail.table.wp')}</span>
+                    <span className="sr-only">{t('serverdetail.table.wordpress')}</span>
                   </Badge>
                 ) : (
-                  <span className="text-slate-400 dark:text-slate-500">—</span>
+                  <Dash />
                 )}
               </TD>
               <TD>
-                <Badge tone={account.php_version ? 'neutral' : 'warning'} size="sm" mono>
-                  {account.php_version || '?'}
-                </Badge>
+                {account.php_version ? (
+                  <Badge tone="neutral" size="sm" mono>
+                    {account.php_version}
+                  </Badge>
+                ) : (
+                  <Badge tone="warning" size="sm" mono title={t('serverdetail.table.phpUnknown')}>
+                    ?
+                  </Badge>
+                )}
               </TD>
-              <TD numeric className="font-medium">
-                {account.disk_used || '—'}
+              <TD numeric>
+                <Size value={account.disk_used} />
               </TD>
-              <TD numeric muted>
-                {account.db_size || '—'}
+              <TD numeric>
+                <Size value={account.db_size} muted />
               </TD>
               <TD align="center">
                 {dbCount > 0 ? (
@@ -128,14 +160,14 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
                     tone="violet"
                     icon={<CircleStackIcon />}
                     count={dbCount}
-                    label={`Show ${dbCount} database${dbCount === 1 ? '' : 's'} for ${account.domain}`}
+                    label={t('serverdetail.table.showDatabases', { count: dbCount, domain: account.domain })}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenDatabases(account);
                     }}
                   />
                 ) : (
-                  <span className="text-slate-400 dark:text-slate-500">0</span>
+                  <Zero />
                 )}
               </TD>
               <TD align="center">
@@ -144,14 +176,14 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
                     tone="sky"
                     icon={<EnvelopeIcon />}
                     count={emailCount}
-                    label={`Show ${emailCount} email account${emailCount === 1 ? '' : 's'} for ${account.domain}`}
+                    label={t('serverdetail.table.showMailboxes', { count: emailCount, domain: account.domain })}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenEmails(account);
                     }}
                   />
                 ) : (
-                  <span className="text-slate-400 dark:text-slate-500">0</span>
+                  <Zero />
                 )}
               </TD>
               <TD>

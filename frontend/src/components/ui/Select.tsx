@@ -29,7 +29,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
       <select
         ref={ref}
         aria-invalid={invalid || undefined}
-        className={cn(inputBaseClasses, inputBorderClasses(invalid), inputSizeClasses[size], 'appearance-none pr-9', className)}
+        className={cn(inputBaseClasses, inputBorderClasses(invalid), inputSizeClasses[size], 'appearance-none pe-9', className)}
         {...rest}
       >
         {placeholder !== undefined && <option value="">{placeholder}</option>}
@@ -41,7 +41,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
             ))
           : children}
       </select>
-      <ChevronUpDownIcon className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+      <ChevronUpDownIcon className="pointer-events-none absolute end-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 dark:text-slate-500" aria-hidden="true" />
     </div>
   );
 });

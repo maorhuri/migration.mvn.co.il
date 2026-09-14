@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowPathIcon,
   ArrowsRightLeftIcon,
   CircleStackIcon,
-  GlobeAltIcon,
   MagnifyingGlassIcon,
   PencilIcon,
   SignalIcon,
@@ -20,18 +19,22 @@ import {
   CardHeader,
   CardTitle,
   CardDescription,
+  CodeBlock,
   EmptyState,
   Input,
   KeyValue,
+  Mono,
   PageHeader,
   PanelBadge,
+  ProgressBar,
   Skeleton,
   SkeletonCard,
   SkeletonTable,
   Stat,
   StatusBadge,
 } from '../components/ui';
-import { formatDate, formatRelativeTime } from '../lib/format';
+import { formatDate, formatRelativeTime, parseSizeToBytes, percent } from '../lib/format';
+import { useT } from '../lib/i18n';
 import { AccountsTable } from '../components/serverdetail/AccountsTable';
 import type { AccountSortField } from '../components/serverdetail/AccountsTable';
 import { EditServerModal } from '../components/serverdetail/EditServerModal';
@@ -42,13 +45,13 @@ interface ServerAccounts {
   total: number;
 }
 
-const AUTH_LABELS: Record<Server['auth_method'], string> = {
-  password: 'Password',
-  ssh_key: 'SSH key',
-  api_key: 'API key',
-};
+const EMPTY = '—';
+
+/** Page-load stagger index (cards rise in one after another). */
+const stagger = (i: number) => ({ '--i': i }) as CSSProperties;
 
 export default function ServerDetail() {
+  const t = useT();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [server, setServer] = useState<Server | null>(null);
@@ -113,7 +116,7 @@ export default function ServerDetail() {
         api_key: '',
       });
     } catch (error) {
-      toast.error('Failed to load server');
+      toast.error(t('serverdetail.toast.loadFailed'));
       navigate('/servers');
     } finally {
       setLoading(false);
@@ -146,15 +149,15 @@ export default function ServerDetail() {
       const result = await testServerConnection(id);
       if (result.success) {
         setConnectionStatus('success');
-        toast.success('Connection successful!');
+        toast.success(t('serverdetail.toast.connected'));
         loadServerInfo();
       } else {
         setConnectionStatus('failed');
-        toast.error(result.message || 'Connection failed');
+        toast.error(result.message || t('serverdetail.toast.connectionFailed'));
       }
     } catch (error) {
       setConnectionStatus('failed');
-      toast.error('Connection test failed');
+      toast.error(t('serverdetail.toast.testFailed'));
     } finally {
       setTesting(false);
     }
@@ -168,7 +171,7 @@ export default function ServerDetail() {
       setAccounts(data);
       setAccountsSource({ kind: 'cached', at: new Date() });
     } catch (error) {
-      toast.error('Failed to load accounts');
+      toast.error(t('serverdetail.toast.accountsLoadFailed'));
     } finally {
       setLoadingAccounts(false);
     }
@@ -181,9 +184,9 @@ export default function ServerDetail() {
       const data = await refreshServerAccounts(id);
       setAccounts(data);
       setAccountsSource({ kind: 'refreshed', at: new Date() });
-      toast.success('Accounts refreshed successfully');
+      toast.success(t('serverdetail.toast.accountsRefreshed'));
     } catch (error) {
-      toast.error('Failed to refresh accounts');
+      toast.error(t('serverdetail.toast.accountsRefreshFailed'));
     } finally {
       setLoadingAccounts(false);
     }
@@ -195,11 +198,11 @@ export default function ServerDetail() {
     setSaving(true);
     try {
       await updateServer(id, editFormData);
-      toast.success('Server updated successfully');
+      toast.success(t('serverdetail.toast.saved'));
       setIsEditModalOpen(false);
       loadServer();
     } catch (error) {
-      toast.error('Failed to update server');
+      toast.error(t('serverdetail.toast.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -212,16 +215,6 @@ export default function ServerDetail() {
       setSortField(field);
       setSortDirection('asc');
     }
-  };
-
-  const parseSize = (size: string | undefined): number => {
-    if (!size) return 0;
-    const match = size.match(/^([\d.]+)\s*([KMGT]?)B?$/i);
-    if (!match) return 0;
-    const num = parseFloat(match[1]);
-    const unit = match[2].toUpperCase();
-    const multipliers: Record<string, number> = { '': 1, 'K': 1024, 'M': 1024*1024, 'G': 1024*1024*1024, 'T': 1024*1024*1024*1024 };
-    return num * (multipliers[unit] || 1);
   };
 
   const filteredAndSortedAccounts = accounts?.accounts
@@ -243,12 +236,12 @@ export default function ServerDetail() {
           bVal = b.php_version || '';
           break;
         case 'disk':
-          aVal = parseSize(a.disk_used);
-          bVal = parseSize(b.disk_used);
+          aVal = parseSizeToBytes(a.disk_used);
+          bVal = parseSizeToBytes(b.disk_used);
           break;
         case 'db_size':
-          aVal = parseSize(a.db_size);
-          bVal = parseSize(b.db_size);
+          aVal = parseSizeToBytes(a.db_size);
+          bVal = parseSizeToBytes(b.db_size);
           break;
         case 'dbs':
           aVal = a.databases?.length || 0;
@@ -274,11 +267,22 @@ export default function ServerDetail() {
 
   if (loading) {
     return (
-      <div className="space-y-6" role="status" aria-label="Loading server">
-        <div className="space-y-3">
-          <Skeleton className="h-3 w-40" />
-          <Skeleton className="h-7 w-64" />
-          <Skeleton className="h-4 w-80" />
+      <div className="space-y-6" role="status" aria-label={t('a11y.loadingX', { name: t('serverdetail.eyebrow') })}>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-3 w-12" />
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-8 w-8 rounded-lg" />
+              <Skeleton className="h-7 w-56" />
+              <Skeleton className="h-6 w-20 rounded-md" />
+            </div>
+            <Skeleton className="h-4 w-48" />
+          </div>
+          <div className="flex gap-2">
+            <Skeleton className="h-9 w-32 rounded-lg" />
+            <Skeleton className="h-9 w-36 rounded-lg" />
+            <Skeleton className="h-9 w-36 rounded-lg" />
+          </div>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
@@ -290,7 +294,7 @@ export default function ServerDetail() {
           <SkeletonCard lines={4} />
         </div>
         <Card flush>
-          <SkeletonTable rows={6} columns={9} />
+          <SkeletonTable rows={6} columns={8} />
         </Card>
       </div>
     );
@@ -300,37 +304,52 @@ export default function ServerDetail() {
     return (
       <div className="space-y-6">
         <PageHeader
-          breadcrumb={[{ label: 'Servers', to: '/servers' }, { label: 'Not found' }]}
-          title="Server not found"
-          description={id ? <span className="font-mono text-[13px]">{id}</span> : undefined}
+          backTo="/servers"
+          eyebrow={t('serverdetail.eyebrow')}
+          title={t('serverdetail.notFound.title')}
+          description={id ? <Mono className="text-[13px]">{id}</Mono> : undefined}
         />
         <Card flush>
           <EmptyState
-            icon={ServerStackOutlineIcon}
-            title="Server not found"
-            description="This server may have been removed or the link is out of date."
-            action={<Button variant="primary" onClick={() => navigate('/servers')}>Back to servers</Button>}
+            illustration="servers"
+            title={t('serverdetail.notFound.title')}
+            description={t('serverdetail.notFound.description')}
+            action={
+              <Button variant="primary" onClick={() => navigate('/servers')}>
+                {t('serverdetail.notFound.back')}
+              </Button>
+            }
           />
         </Card>
       </div>
     );
   }
 
-  const totalDatabases = accounts ? accounts.accounts.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0) : 0;
-  const wordpressCount = accounts ? accounts.accounts.filter((acc) => acc.is_wordpress).length : 0;
+  const accountList = accounts?.accounts ?? [];
+  const totalDatabases = accountList.reduce((sum, acc) => sum + (acc.databases?.length || 0), 0);
+  const wordpressCount = accountList.filter((acc) => acc.is_wordpress).length;
+  const sslCount = accountList.filter((acc) => acc.ssl_enabled).length;
+  const suspendedCount = accountList.filter((acc) => acc.suspended).length;
   const sshKeyName = server.ssh_key_id ? sshKeys.find((k) => k.id === server.ssh_key_id)?.name : undefined;
   const hasAccounts = !!accounts && accounts.accounts.length > 0;
   const hasSystemInfo = !!serverInfo && !!(serverInfo.os_version || serverInfo.web_server || serverInfo.total_disk || serverInfo.php_versions);
 
+  const phpVersions = serverInfo?.php_versions ? serverInfo.php_versions.split(/[,\s]+/).filter(Boolean) : [];
+  const usedBytes = parseSizeToBytes(serverInfo?.used_disk);
+  const totalBytes = parseSizeToBytes(serverInfo?.total_disk);
+  const diskPercent = usedBytes > 0 && totalBytes > 0 ? percent(usedBytes, totalBytes) : null;
+  const diskTone = diskPercent === null ? 'neutral' : diskPercent >= 90 ? 'danger' : diskPercent >= 75 ? 'warning' : 'success';
+
   return (
     <div className="space-y-6">
       <PageHeader
-        breadcrumb={[{ label: 'Servers', to: '/servers' }, { label: server.name }]}
+        backTo="/servers"
+        eyebrow={t('serverdetail.eyebrow')}
         title={server.name}
         description={
-          <span className="font-mono text-[13px]">
+          <Mono className="text-[13px]">
             {server.username}@{server.host}:{server.port}
-          </span>
+          </Mono>
         }
         meta={
           <>
@@ -341,130 +360,197 @@ export default function ServerDetail() {
         actions={
           <>
             <Button variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
-              Test connection
+              {t('serverdetail.actions.test')}
             </Button>
             <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
-              Refresh accounts
+              {t('serverdetail.actions.refresh')}
             </Button>
             <Button variant="primary" leftIcon={<ArrowsRightLeftIcon />} onClick={() => navigate('/migrations/new')}>
-              New migration
+              {t('serverdetail.actions.newMigration')}
             </Button>
           </>
         }
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat
-          label="Accounts"
-          value={accounts ? accounts.total : '—'}
-          icon={UsersOutlineIcon}
-          tone="blue"
-          loading={loadingAccounts && !accounts}
-          hint={accounts ? `${wordpressCount} WordPress` : 'Not loaded yet'}
-        />
-        <Stat
-          label="Databases"
-          value={accounts ? totalDatabases : '—'}
-          icon={CircleStackIcon}
-          tone="violet"
-          loading={loadingAccounts && !accounts}
-          hint={accounts ? 'across all accounts' : 'Not loaded yet'}
-        />
-        <Stat
-          label="Disk used"
-          value={serverInfo?.used_disk ? <span className="font-mono text-xl">{serverInfo.used_disk}</span> : '—'}
-          icon={ServerStackOutlineIcon}
-          tone={serverInfo?.used_disk ? 'brand' : 'neutral'}
-          hint={serverInfo?.total_disk ? `of ${serverInfo.total_disk}` : 'Test the connection to load'}
-        />
-        <Stat
-          label="Web server"
-          value={serverInfo?.web_server ? <span className="text-xl">{serverInfo.web_server}</span> : '—'}
-          icon={CpuChipIcon}
-          tone={serverInfo?.web_server ? 'orange' : 'neutral'}
-          hint={serverInfo?.os_version ? serverInfo.os_version : 'Test the connection to load'}
-        />
+        <div className="motion-safe:animate-rise stagger" style={stagger(1)}>
+          <Stat
+            label={t('serverdetail.stats.accounts')}
+            value={accounts ? accounts.total : EMPTY}
+            icon={UsersOutlineIcon}
+            tone="blue"
+            loading={loadingAccounts && !accounts}
+            quiet={!accounts}
+            hint={accounts ? t('serverdetail.stats.wordpress', { count: wordpressCount }) : t('serverdetail.stats.notLoaded')}
+          />
+        </div>
+        <div className="motion-safe:animate-rise stagger" style={stagger(2)}>
+          <Stat
+            label={t('serverdetail.stats.databases')}
+            value={accounts ? totalDatabases : EMPTY}
+            icon={CircleStackIcon}
+            tone="violet"
+            loading={loadingAccounts && !accounts}
+            quiet={!accounts}
+            hint={accounts ? t('serverdetail.stats.databasesHint') : t('serverdetail.stats.notLoaded')}
+          />
+        </div>
+        <div className="motion-safe:animate-rise stagger" style={stagger(3)}>
+          <Stat
+            label={t('serverdetail.stats.disk')}
+            value={serverInfo?.used_disk ? <Mono>{serverInfo.used_disk}</Mono> : EMPTY}
+            icon={ServerStackOutlineIcon}
+            tone={serverInfo?.used_disk ? 'brand' : 'neutral'}
+            quiet={!serverInfo?.used_disk}
+            hint={
+              serverInfo?.total_disk
+                ? t.rich('serverdetail.stats.diskOf', { total: <Mono className="text-xs">{serverInfo.total_disk}</Mono> })
+                : t('serverdetail.stats.testToLoad')
+            }
+          />
+        </div>
+        <div className="motion-safe:animate-rise stagger" style={stagger(4)}>
+          <Stat
+            label={t('serverdetail.stats.webServer')}
+            value={serverInfo?.web_server ? <Mono className="text-xl">{serverInfo.web_server}</Mono> : EMPTY}
+            icon={CpuChipIcon}
+            tone={serverInfo?.web_server ? 'orange' : 'neutral'}
+            quiet={!serverInfo?.web_server}
+            hint={
+              serverInfo?.os_version ? (
+                <span title={serverInfo.os_version}>
+                  <Mono className="text-xs">{serverInfo.os_version}</Mono>
+                </span>
+              ) : (
+                t('serverdetail.stats.testToLoad')
+              )
+            }
+          />
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+        <Card className="motion-safe:animate-rise stagger" style={stagger(5)}>
           <CardHeader
             actions={
               <Button size="sm" variant="ghost" leftIcon={<PencilIcon />} onClick={() => setIsEditModalOpen(true)}>
-                Edit
+                {t('common.edit')}
               </Button>
             }
           >
-            <CardTitle>Connection</CardTitle>
-            <CardDescription>How the migration tool reaches this server.</CardDescription>
+            <CardTitle>{t('serverdetail.connection.title')}</CardTitle>
+            <CardDescription>{t('serverdetail.connection.description')}</CardDescription>
           </CardHeader>
           <KeyValue
             layout="grid"
             columns={3}
             items={[
-              { label: 'Host', value: server.host, mono: true },
-              { label: 'Port', value: server.port, mono: true },
-              { label: 'Username', value: server.username, mono: true },
-              { label: 'Auth method', value: AUTH_LABELS[server.auth_method] ?? server.auth_method },
-              { label: 'Panel', value: <PanelBadge panelType={server.panel_type} size="sm" /> },
-              ...(server.auth_method === 'ssh_key' ? [{ label: 'SSH key', value: sshKeyName ?? server.ssh_key_id, mono: !sshKeyName }] : []),
-              ...(server.api_endpoint ? [{ label: 'API endpoint', value: server.api_endpoint, mono: true, span: true }] : []),
-              ...(server.enhance_org_id ? [{ label: 'Enhance org', value: server.enhance_org_id, mono: true, span: true }] : []),
-              { label: 'Added', value: <span title={formatDate(server.created_at)}>{formatRelativeTime(server.created_at)}</span> },
+              { label: t('serverdetail.connection.host'), value: server.host, mono: true },
+              { label: t('serverdetail.connection.port'), value: server.port, mono: true },
+              { label: t('serverdetail.connection.username'), value: server.username, mono: true },
+              { label: t('serverdetail.connection.auth'), value: t(`auth.${server.auth_method}`) },
+              { label: t('serverdetail.connection.panel'), value: <PanelBadge panelType={server.panel_type} size="sm" /> },
+              ...(server.auth_method === 'ssh_key'
+                ? [{ label: t('serverdetail.connection.sshKey'), value: sshKeyName ?? server.ssh_key_id, mono: !sshKeyName }]
+                : []),
+              ...(server.api_endpoint ? [{ label: t('serverdetail.connection.apiEndpoint'), value: server.api_endpoint, mono: true, span: true }] : []),
+              ...(server.enhance_org_id ? [{ label: t('serverdetail.connection.enhanceOrg'), value: server.enhance_org_id, mono: true, span: true }] : []),
             ]}
           />
+          {server.auth_method !== 'api_key' && (
+            <div className="mt-6">
+              <p className="eyebrow mb-1.5">{t('serverdetail.connection.sshCommand')}</p>
+              <CodeBlock language="ssh" code={`ssh -p ${server.port} ${server.username}@${server.host}`} />
+            </div>
+          )}
+          <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
+            <span title={formatDate(server.created_at)}>{t('serverdetail.connection.addedAt', { time: formatRelativeTime(server.created_at) })}</span>
+          </p>
         </Card>
 
-        <Card>
+        <Card className="motion-safe:animate-rise stagger" style={stagger(6)}>
           <CardHeader
             actions={
-              <Button size="sm" variant="ghost" leftIcon={<ArrowPathIcon />} onClick={handleTestConnection} loading={testing}>
-                {hasSystemInfo ? 'Reload' : 'Load'}
-              </Button>
+              hasSystemInfo ? (
+                <Button size="sm" variant="ghost" leftIcon={<ArrowPathIcon />} onClick={handleTestConnection} loading={testing}>
+                  {t('serverdetail.actions.reload')}
+                </Button>
+              ) : undefined
             }
           >
-            <CardTitle>System</CardTitle>
-            <CardDescription>Reported by the server after a successful connection test.</CardDescription>
+            <CardTitle>{t('serverdetail.system.title')}</CardTitle>
+            <CardDescription>{t('serverdetail.system.description')}</CardDescription>
           </CardHeader>
           {hasSystemInfo ? (
-            <KeyValue
-              layout="grid"
-              columns={2}
-              items={[
-                { label: 'Operating system', value: serverInfo?.os_version, span: true },
-                { label: 'Web server', value: serverInfo?.web_server, mono: true },
-                {
-                  label: 'Disk',
-                  value: serverInfo?.total_disk ? `${serverInfo.used_disk ?? '?'} / ${serverInfo.total_disk}` : undefined,
-                  mono: true,
-                },
-                {
-                  label: 'PHP versions',
-                  value: serverInfo?.php_versions ? (
-                    <span className="flex flex-wrap gap-1">
-                      {serverInfo.php_versions
-                        .split(/[,\s]+/)
-                        .filter(Boolean)
-                        .map((v) => (
-                          <Badge key={v} tone="neutral" size="sm" mono>
-                            {v}
-                          </Badge>
-                        ))}
-                    </span>
-                  ) : undefined,
-                  span: true,
-                },
-              ]}
-            />
+            <div className="space-y-5">
+              {phpVersions.length > 0 && (
+                <div>
+                  <p className="eyebrow mb-1.5">{t('serverdetail.system.php')}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {phpVersions.map((v) => (
+                      <Badge key={v} tone="info" mono dir="ltr">
+                        PHP {v}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(serverInfo?.os_version || serverInfo?.web_server) && (
+                <KeyValue
+                  layout="grid"
+                  columns={2}
+                  items={[
+                    { label: t('serverdetail.system.os'), value: serverInfo?.os_version, mono: true, span: true },
+                    { label: t('serverdetail.system.webServer'), value: serverInfo?.web_server, mono: true },
+                  ]}
+                />
+              )}
+              {serverInfo?.total_disk && (
+                <div>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="eyebrow">{t('serverdetail.system.disk')}</p>
+                    {diskPercent !== null && (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{t('serverdetail.system.diskUsage', { percent: diskPercent })}</span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                    <Mono>
+                      {serverInfo.used_disk ?? '?'}
+                      <span className="mx-1.5 text-sm font-normal text-slate-400 dark:text-slate-500">/</span>
+                      <span className="text-sm font-normal text-slate-500 dark:text-slate-400">{serverInfo.total_disk}</span>
+                    </Mono>
+                  </p>
+                  {diskPercent !== null && <ProgressBar className="mt-2" value={diskPercent} tone={diskTone} size="sm" label={t('serverdetail.system.disk')} />}
+                </div>
+              )}
+            </div>
           ) : (
             <EmptyState
               size="sm"
-              icon={CpuChipIcon}
-              title="No system info yet"
-              description="Run a connection test to read the OS, web server, disk and PHP versions."
+              illustration="system"
+              title={t('serverdetail.system.empty.title')}
+              description={
+                <>
+                  <p>{t('serverdetail.system.empty.lead')}</p>
+                  <ul className="mt-2 space-y-1 text-start">
+                    <li className="flex items-start gap-2">
+                      <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                      {t('serverdetail.system.empty.b1')}
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                      {t('serverdetail.system.empty.b2')}
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                      {t('serverdetail.system.empty.b3')}
+                    </li>
+                  </ul>
+                </>
+              }
               action={
                 <Button size="sm" variant="secondary" leftIcon={<SignalIcon />} onClick={handleTestConnection} loading={testing}>
-                  Test connection
+                  {t('serverdetail.actions.test')}
                 </Button>
               }
             />
@@ -472,7 +558,7 @@ export default function ServerDetail() {
         </Card>
       </div>
 
-      <Card flush>
+      <Card flush className="motion-safe:animate-rise stagger" style={stagger(7)}>
         <CardHeader
           divided
           actions={
@@ -480,9 +566,9 @@ export default function ServerDetail() {
               <Input
                 size="sm"
                 type="search"
-                aria-label="Search accounts"
+                aria-label={t('serverdetail.accounts.searchLabel')}
                 leftIcon={<MagnifyingGlassIcon />}
-                placeholder="Search domain or username…"
+                placeholder={t('serverdetail.accounts.search')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full sm:w-72"
@@ -491,10 +577,10 @@ export default function ServerDetail() {
           }
         >
           <div className="flex flex-wrap items-center gap-2">
-            <CardTitle>Accounts</CardTitle>
+            <CardTitle>{t('serverdetail.accounts.title')}</CardTitle>
             {accounts && (
               <Badge tone="neutral" size="sm">
-                {searchTerm ? `${filteredAndSortedAccounts.length} of ${accounts.total}` : accounts.total}
+                {searchTerm ? t('serverdetail.accounts.countOf', { shown: filteredAndSortedAccounts.length, total: accounts.total }) : accounts.total}
               </Badge>
             )}
             {accountsSource && !loadingAccounts && (
@@ -504,44 +590,72 @@ export default function ServerDetail() {
                 dot
                 title={formatDate(accountsSource.at)}
               >
-                {accountsSource.kind === 'refreshed' ? 'Refreshed' : 'Cached'} {formatRelativeTime(accountsSource.at)}
+                {accountsSource.kind === 'refreshed'
+                  ? t('serverdetail.accounts.refreshed', { time: formatRelativeTime(accountsSource.at) })
+                  : t('serverdetail.accounts.cached')}
               </Badge>
             )}
             {loadingAccounts && (
               <Badge tone="info" size="sm" dot pulse>
-                Loading
+                {t('serverdetail.accounts.loading')}
               </Badge>
             )}
           </div>
-          <CardDescription>Hosting accounts discovered on this server. Refresh to pull the latest list from the panel.</CardDescription>
+          {hasAccounts && (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1.5">
+              <Badge tone="neutral" size="sm">
+                {t('serverdetail.accounts.facts.wordpress', { count: wordpressCount })}
+              </Badge>
+              <Badge tone="neutral" size="sm">
+                {t('serverdetail.accounts.facts.ssl', { count: sslCount })}
+              </Badge>
+              <Badge tone={suspendedCount > 0 ? 'warning' : 'neutral'} size="sm">
+                {t('serverdetail.accounts.facts.suspended', { count: suspendedCount })}
+              </Badge>
+            </div>
+          )}
         </CardHeader>
 
         {loadingAccounts ? (
-          <SkeletonTable rows={6} columns={9} />
+          <SkeletonTable rows={6} columns={8} />
         ) : !hasAccounts ? (
           <EmptyState
-            icon={UsersOutlineIcon}
-            title="No cached accounts"
-            description="Nothing has been fetched from this server yet. Refresh to load the account list from the panel."
+            illustration="accounts"
+            title={t('serverdetail.accounts.empty.title')}
+            description={
+              <>
+                <p>{t('serverdetail.accounts.empty.lead')}</p>
+                <ul className="mt-2 space-y-1 text-start">
+                  <li className="flex items-start gap-2">
+                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                    {t('serverdetail.accounts.empty.b1')}
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                    {t('serverdetail.accounts.empty.b2')}
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span aria-hidden="true" className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-500" />
+                    {t('serverdetail.accounts.empty.b3')}
+                  </li>
+                </ul>
+              </>
+            }
             action={
               <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={loadingAccounts}>
-                Refresh accounts
+                {t('serverdetail.actions.refresh')}
               </Button>
             }
           />
         ) : filteredAndSortedAccounts.length === 0 ? (
           <EmptyState
             size="sm"
-            icon={GlobeAltIcon}
-            title="No matching accounts"
-            description={
-              <>
-                Nothing matches <span className="font-mono">“{searchTerm}”</span>.
-              </>
-            }
+            illustration="search"
+            title={t('serverdetail.accounts.noMatch.title')}
+            description={t.rich('serverdetail.accounts.noMatch.description', { query: <Mono className="text-[13px]">{searchTerm}</Mono> })}
             action={
               <Button variant="secondary" size="sm" onClick={() => setSearchTerm('')}>
-                Clear search
+                {t('serverdetail.accounts.clearSearch')}
               </Button>
             }
           />

@@ -2,8 +2,10 @@ import { Fragment, useRef, useState, type ReactNode } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { ExclamationTriangleIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import { Button } from './Button';
 import { Input } from './Input';
+import { surfaceClasses } from './Card';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -12,7 +14,9 @@ export interface ConfirmDialogProps {
   onConfirm: () => void | Promise<void>;
   title: ReactNode;
   message?: ReactNode;
+  /** Defaults to t('confirm.confirm'). */
   confirmLabel?: string;
+  /** Defaults to t('confirm.cancel'). */
   cancelLabel?: string;
   tone?: 'danger' | 'warning' | 'brand';
   /** External loading control (otherwise inferred from the onConfirm promise). */
@@ -25,7 +29,7 @@ export interface ConfirmDialogProps {
 const toneIcon = {
   danger: 'bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400',
   warning: 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400',
-  brand: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-400',
+  brand: 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300',
 };
 
 /**
@@ -38,13 +42,14 @@ export function ConfirmDialog({
   onConfirm,
   title,
   message,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   tone = 'danger',
   loading: loadingProp,
   confirmText,
   children,
 }: ConfirmDialogProps) {
+  const t = useT();
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const [internalLoading, setInternalLoading] = useState(false);
   const [typed, setTyped] = useState('');
@@ -86,7 +91,7 @@ export function ConfirmDialog({
               leaveFrom="opacity-100 scale-100 translate-y-0"
               leaveTo="opacity-0 scale-[0.97] translate-y-1"
             >
-              <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-xl border border-slate-200 bg-white p-6 text-left shadow-2xl shadow-slate-900/10 transition-all dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40">
+              <Dialog.Panel className={cn(surfaceClasses, 'w-full max-w-md transform overflow-hidden p-6 text-start shadow-2xl shadow-slate-900/10 transition-all dark:shadow-black/50')}>
                 <div className="flex gap-4">
                   <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full', toneIcon[tone])}>
                     <Icon className="h-5 w-5" aria-hidden="true" />
@@ -100,7 +105,13 @@ export function ConfirmDialog({
                     {confirmText && (
                       <div className="mt-4 space-y-2">
                         <p className="text-xs text-slate-500 dark:text-slate-400">
-                          Type <span className="rounded bg-slate-100 px-1 py-0.5 font-mono text-xs font-medium text-slate-900 dark:bg-slate-800 dark:text-slate-100">{confirmText}</span> to confirm.
+                          {t.rich('confirm.typeToConfirm', {
+                            text: (
+                              <bdi dir="ltr" className="rounded bg-slate-100 px-1 py-0.5 font-mono text-xs font-medium text-slate-900 dark:bg-white/[0.08] dark:text-slate-100">
+                                {confirmText}
+                              </bdi>
+                            ),
+                          })}
                         </p>
                         <Input mono value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={confirmText} autoComplete="off" autoFocus />
                       </div>
@@ -109,10 +120,10 @@ export function ConfirmDialog({
                 </div>
                 <div className="mt-6 flex justify-end gap-2">
                   <Button ref={cancelRef} variant="secondary" onClick={handleClose} disabled={loading}>
-                    {cancelLabel}
+                    {cancelLabel ?? t('confirm.cancel')}
                   </Button>
                   <Button variant={tone === 'danger' ? 'danger' : 'primary'} onClick={handleConfirm} loading={loading} disabled={!canConfirm}>
-                    {confirmLabel}
+                    {confirmLabel ?? t('confirm.confirm')}
                   </Button>
                 </div>
               </Dialog.Panel>

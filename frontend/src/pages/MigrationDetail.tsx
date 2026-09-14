@@ -1,20 +1,31 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { cancelMigration, getMigration, getMigrationLogs, getServer, repairMigrationWordPress, rerunMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
-import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
+import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
+import { useT } from '../lib/i18n';
+import { deriveTimeline, parseInventory } from '../lib/migrationSteps';
 import { MigrationHero } from '../components/migrationdetail/MigrationHero';
+import { NextStepsCard } from '../components/migrationdetail/NextStepsCard';
+import { RunTimeline } from '../components/migrationdetail/RunTimeline';
 import { ServerFlow } from '../components/migrationdetail/ServerFlow';
 import { WarningsCard } from '../components/migrationdetail/WarningsCard';
 import { ScanReportPanel } from '../components/migrations/ScanReportPanel';
 
+const RISE = 'motion-safe:animate-rise stagger';
+const stagger = (i: number) => ({ '--i': i }) as CSSProperties;
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
+
 function MigrationDetailSkeleton() {
+  const t = useT();
   return (
-    <div className="space-y-6" role="status" aria-label="Loading migration">
+    <div className="space-y-6" role="status" aria-label={t('migrationdetail.loading')}>
       <div className="flex items-center gap-3">
         <Skeleton className="h-8 w-8 rounded-lg" />
         <div className="space-y-2">
@@ -22,20 +33,27 @@ function MigrationDetailSkeleton() {
           <Skeleton className="h-7 w-48" />
         </div>
       </div>
-      <SkeletonCard lines={4} />
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-        <SkeletonCard lines={3} />
-        <div className="hidden w-9 lg:block" />
-        <SkeletonCard lines={3} />
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div className="min-w-0 space-y-6">
+          <SkeletonCard lines={4} />
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+            <SkeletonCard lines={3} />
+            <div className="hidden w-24 lg:block" />
+            <SkeletonCard lines={3} />
+          </div>
+          <Skeleton className="h-96 w-full rounded-lg" />
+        </div>
+        <SkeletonCard lines={10} />
       </div>
-      <Skeleton className="h-96 w-full rounded-lg" />
     </div>
   );
 }
 
 export default function MigrationDetail() {
+  const t = useT();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [migration, setMigration] = useState<Migration | null>(null);
   const [logs, setLogs] = useState<MigrationLog[]>([]);
   const [sourceServer, setSourceServer] = useState<Server | null>(null);
@@ -51,6 +69,9 @@ export default function MigrationDetail() {
   const [rerunning, setRerunning] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
+  const [jumpToId, setJumpToId] = useState<string | null>(null);
+  const deepLinkedRef = useRef(false);
+  const consoleRef = useRef<HTMLElement | null>(null);
 
   const fetchData = async () => {
     if (!id) return;
@@ -93,6 +114,37 @@ export default function MigrationDetail() {
     return () => clearInterval(interval);
   }, [id, migration?.status]);
 
+  // Timeline + inventory are derived from the log that already arrives.
+  const timeline = useMemo(
+    () => (migration ? deriveTimeline(logs, migration, { scan: !!migration.scan_requested }) : []),
+    [logs, migration],
+  );
+  const inventory = useMemo(() => parseInventory(logs), [logs]);
+  // Console section headers: the step's translated name, isolated (U+2068 first-strong isolate ... U+2069)
+  // so a Hebrew name with Latin words inside keeps its order in the always-LTR console.
+  const sections = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of timeline) if (item.firstLogId) map.set(item.firstLogId, `\u2068${t(`steps.${item.id}.name`)}\u2069`);
+    return map;
+  }, [timeline, t]);
+
+  // Bring the console into view and hand the line to the viewer, which centers and flashes it.
+  // Reset first so jumping to the same line twice flashes again.
+  const jumpTo = (logId: string) => {
+    consoleRef.current?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+    setJumpToId(null);
+    window.setTimeout(() => setJumpToId(logId), 0);
+  };
+
+  // Deep link: /migrations/:id?line=<logId> brings the console into view and flashes that line once it is rendered.
+  useEffect(() => {
+    if (deepLinkedRef.current || loading || logs.length === 0) return;
+    deepLinkedRef.current = true;
+    const line = searchParams.get('line');
+    if (line) jumpTo(line);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, logs, searchParams]);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -111,31 +163,33 @@ export default function MigrationDetail() {
       <div className="space-y-6">
         <PageHeader
           backTo="/migrations"
-          eyebrow="Migration"
-          title={loadError ? 'Migration unavailable' : 'Migration not found'}
-          description={id ? <span className="font-mono text-[13px]">{id}</span> : undefined}
+          eyebrow={t('migrationdetail.eyebrow')}
+          title={loadError ? t('migrationdetail.unavailable.title') : t('migrationdetail.notFound.title')}
+          description={id ? <Mono className="text-[13px]">{id}</Mono> : undefined}
         />
         <Card flush>
           <EmptyState
-            icon={loadError ? ExclamationTriangleIcon : ArrowsRightLeftIcon}
-            title={loadError ? "Couldn't load this migration" : 'Migration not found'}
-            description={
-              loadError
-                ? 'The API did not respond or returned an error. Try again or go back to the list.'
-                : 'It may have been deleted, or the link is wrong.'
-            }
+            illustration={loadError ? 'error' : 'search'}
+            title={loadError ? t('migrationdetail.unavailable.empty') : t('migrationdetail.notFound.title')}
+            description={loadError ? t('migrationdetail.unavailable.description') : t('migrationdetail.notFound.description')}
             action={
               loadError ? (
                 <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
-                  Try again
+                  {t('common.tryAgain')}
                 </Button>
               ) : (
                 <Button variant="primary" onClick={() => navigate('/migrations')}>
-                  Back to migrations
+                  {t('migrationdetail.backToList')}
                 </Button>
               )
             }
-            secondaryAction={loadError ? <Button variant="secondary" onClick={() => navigate('/migrations')}>Back to migrations</Button> : undefined}
+            secondaryAction={
+              loadError ? (
+                <Button variant="secondary" onClick={() => navigate('/migrations')}>
+                  {t('migrationdetail.backToList')}
+                </Button>
+              ) : undefined
+            }
           />
         </Card>
       </div>
@@ -152,10 +206,12 @@ export default function MigrationDetail() {
     setDecisionBusy(true);
     try {
       await submitScanDecision(migration.id, action);
-      toast.success(action === 'clean' ? 'Cleaning the staging copy, then continuing' : action === 'skip' ? 'Continuing without cleaning' : 'Migration aborted');
+      toast.success(
+        action === 'clean' ? t('migrationdetail.toast.clean') : action === 'skip' ? t('migrationdetail.toast.skip') : t('migrationdetail.toast.abort'),
+      );
       await fetchData();
     } catch (error) {
-      toast.error(apiError(error, 'Failed to submit the decision'));
+      toast.error(apiError(error, t('migrationdetail.toast.decisionFailed')));
     } finally {
       setDecisionBusy(false);
     }
@@ -165,11 +221,11 @@ export default function MigrationDetail() {
     setRerunning(true);
     try {
       const created = await rerunMigration(migration.id);
-      toast.success(`New migration started for ${migration.account_username}`);
+      toast.success(t('migrationdetail.toast.rerunStarted', { account: migration.account_username }));
       setRerunOpen(false);
       navigate(`/migrations/${created.id}`);
     } catch (error) {
-      toast.error(apiError(error, 'Could not start the migration again'));
+      toast.error(apiError(error, t('migrationdetail.toast.rerunFailed')));
     } finally {
       setRerunning(false);
     }
@@ -179,11 +235,11 @@ export default function MigrationDetail() {
     setRepairing(true);
     try {
       const { summary } = await repairMigrationWordPress(migration.id);
-      toast.success(summary.length ? summary.join(' · ') : 'Nothing needed changing', { duration: 8000 });
+      toast.success(summary.length ? summary.join(' · ') : t('migrationdetail.toast.repairNothing'), { duration: 8000 });
       setRepairOpen(false);
       await fetchData();
     } catch (error) {
-      toast.error(apiError(error, 'Repair failed'));
+      toast.error(apiError(error, t('migrationdetail.toast.repairFailed')));
     } finally {
       setRepairing(false);
     }
@@ -192,137 +248,189 @@ export default function MigrationDetail() {
   const handleCancel = async () => {
     try {
       await cancelMigration(migration.id);
-      toast.success('Cancellation requested; the current step is being aborted');
+      toast.success(t('migrationdetail.toast.cancelRequested'));
       setCancelOpen(false);
       await fetchData();
     } catch (error) {
-      toast.error(apiError(error, 'Failed to cancel the migration'));
+      toast.error(apiError(error, t('migrationdetail.toast.cancelFailed')));
     }
   };
   const handleSuspendSource = async () => {
     try {
       await suspendMigrationSource(migration.id);
-      toast.success(`${migration.account_username} suspended on the source server`);
+      toast.success(t('migrationdetail.toast.suspended', { account: migration.account_username }));
       setSuspendOpen(false);
       await fetchData();
     } catch (error) {
-      toast.error(apiError(error, 'Failed to suspend the source account'));
+      toast.error(apiError(error, t('migrationdetail.toast.suspendFailed')));
     }
   };
   const handleUnsuspendSource = async () => {
     try {
       await unsuspendMigrationSource(migration.id);
-      toast.success(`${migration.account_username} re-enabled on the source server`);
+      toast.success(t('migrationdetail.toast.unsuspended', { account: migration.account_username }));
       setUnsuspendOpen(false);
       await fetchData();
     } catch (error) {
-      toast.error(apiError(error, 'Failed to unsuspend the source account'));
+      toast.error(apiError(error, t('migrationdetail.toast.unsuspendFailed')));
     }
   };
   const warningLogs = logs.filter((log) => log.level === 'warn');
   const domains = migration.export_data?.domains?.map((d) => d.name).filter(Boolean) ?? [];
   const hostsEntry = migration.target_ip && domains.length > 0 ? `${migration.target_ip} ${domains.join(' ')}` : null;
 
+  const accountMono = <Mono className="font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</Mono>;
+  const sourceMono = sourceServer ? <Mono>{sourceServer.name}</Mono> : t('migrationdetail.confirm.sourceServer');
+
   return (
     <div className="space-y-6">
       <PageHeader
-        backTo="/migrations"
-        eyebrow="Migration"
-        title={<span className="font-mono">{migration.account_username}</span>}
-        description={`${sourceServer?.name ?? 'Unknown source'} → ${targetServer?.name ?? 'Unknown target'} · created ${formatRelativeTime(migration.created_at)}`}
-        meta={
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={migration.status} />
-            {isCompleted && (
-              <Badge tone={sourceSuspended ? 'neutral' : 'info'} dot>
-                {sourceSuspended ? 'Source suspended' : 'Source still active'}
-              </Badge>
-            )}
-          </div>
-        }
-        actions={
-          <>
-            <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
-              Refresh
-            </Button>
-            {(isRunning || migration.status === 'pending') && (
-              <Button variant="danger" leftIcon={<StopIcon />} onClick={() => setCancelOpen(true)}>
-                Cancel migration
+          backTo="/migrations"
+          eyebrow={t('migrationdetail.eyebrow')}
+          title={<Mono>{migration.account_username}</Mono>}
+          description={t.rich('migrationdetail.description', {
+            source: sourceServer ? <Mono>{sourceServer.name}</Mono> : t('migrationdetail.unknownSource'),
+            target: targetServer ? <Mono>{targetServer.name}</Mono> : t('migrationdetail.unknownTarget'),
+            created: formatRelativeTime(migration.created_at),
+          })}
+          meta={
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusBadge status={migration.status} />
+              {isCompleted && (
+                <Badge tone={sourceSuspended ? 'neutral' : 'info'} dot>
+                  {sourceSuspended ? t('status.sourceSuspended') : t('status.sourceActive')}
+                </Badge>
+              )}
+            </div>
+          }
+          actions={
+            <>
+              <Button variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefresh} loading={refreshing}>
+                {t('common.refresh')}
               </Button>
-            )}
-            {isCompleted && !sourceSuspended && (
-              <Button variant="primary" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)}>
-                Suspend source
-              </Button>
-            )}
-            {isCompleted && sourceSuspended && (
-              <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
-                Unsuspend source
-              </Button>
-            )}
-            {isCompleted && (
-              <Button variant="outline" leftIcon={<WrenchScrewdriverIcon />} onClick={() => setRepairOpen(true)} loading={repairing}>
-                Repair WordPress
-              </Button>
-            )}
-            {(migration.status === 'failed' || migration.status === 'cancelled') && (
-              <Button variant="primary" leftIcon={<PlayIcon />} onClick={() => setRerunOpen(true)} loading={rerunning}>
-                Run again
-              </Button>
-            )}
-          </>
-        }
-      />
-
-      <MigrationHero migration={migration} />
-
-      <ServerFlow source={sourceServer} target={targetServer} migration={migration} />
-
-      {migration.scan_report && (
-        <ScanReportPanel
-          report={migration.scan_report}
-          decided={migration.scan_decision}
-          decision={
-            awaitingReview
-              ? {
-                  busy: decisionBusy,
-                  onClean: () => submitDecision('clean'),
-                  onSkip: () => submitDecision('skip'),
-                  onAbort: () => submitDecision('abort'),
-                }
-              : undefined
+              {(isRunning || migration.status === 'pending') && (
+                <Button variant="danger" leftIcon={<StopIcon />} onClick={() => setCancelOpen(true)}>
+                  {t('migrationdetail.actions.cancel')}
+                </Button>
+              )}
+              {isCompleted && !sourceSuspended && (
+                <Button variant="primary" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)}>
+                  {t('migrationdetail.actions.suspend')}
+                </Button>
+              )}
+              {isCompleted && sourceSuspended && (
+                <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
+                  {t('migrationdetail.actions.unsuspend')}
+                </Button>
+              )}
+              {isCompleted && (
+                <Button variant="outline" leftIcon={<WrenchScrewdriverIcon />} onClick={() => setRepairOpen(true)} loading={repairing}>
+                  {t('migrationdetail.actions.repair')}
+                </Button>
+              )}
+              {(migration.status === 'failed' || migration.status === 'cancelled') && (
+                <Button variant="primary" leftIcon={<PlayIcon />} onClick={() => setRerunOpen(true)} loading={rerunning}>
+                  {t('migrationdetail.actions.rerun')}
+                </Button>
+              )}
+            </>
           }
         />
-      )}
 
-      {hostsEntry && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Hosts entry for testing</CardTitle>
-            <CardDescription>
-              Add this line to your local <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">/etc/hosts</code> to
-              preview the site on the target node before switching DNS.
-            </CardDescription>
-          </CardHeader>
-          <CodeBlock title="/etc/hosts" code={hostsEntry} copiedMessage="Hosts entry copied" />
-        </Card>
-      )}
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div className="min-w-0 space-y-6">
+          <MigrationHero
+            migration={migration}
+            logs={logs}
+            inventory={inventory}
+            warningCount={warningLogs.length}
+            timeline={timeline}
+            className={RISE}
+            style={stagger(1)}
+          />
 
-      <WarningsCard warnings={warningLogs} />
+          {isCompleted && (
+            <NextStepsCard
+              migration={migration}
+              sourceName={sourceServer?.name}
+              hostsEntry={hostsEntry}
+              domains={domains}
+              onSuspend={() => setSuspendOpen(true)}
+              onUnsuspend={() => setUnsuspendOpen(true)}
+              className={RISE}
+              style={stagger(2)}
+            />
+          )}
+
+          <ServerFlow source={sourceServer} target={targetServer} migration={migration} className={RISE} style={stagger(3)} />
+
+          {migration.scan_report && (
+            <ScanReportPanel
+              report={migration.scan_report}
+              decided={migration.scan_decision}
+              decision={
+                awaitingReview
+                  ? {
+                      busy: decisionBusy,
+                      onClean: () => submitDecision('clean'),
+                      onSkip: () => submitDecision('skip'),
+                      onAbort: () => submitDecision('abort'),
+                    }
+                  : undefined
+              }
+            />
+          )}
+
+          <WarningsCard warnings={warningLogs} onJump={jumpTo} className={RISE} style={stagger(4)} />
+
+          <section ref={consoleRef} className={`scroll-mt-20 space-y-3 ${RISE}`} style={stagger(5)} aria-labelledby="migration-log-heading">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div className="min-w-0">
+                <h2 id="migration-log-heading" className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                  {t('migrationdetail.log.title')}
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  {isRunning ? t('migrationdetail.log.live') : t('migrationdetail.log.history')}
+                </p>
+              </div>
+              {loadError && (
+                <p className="text-xs text-rose-600 dark:text-rose-400" role="status">
+                  {t('migrationdetail.log.refreshFailed')}
+                </p>
+              )}
+            </div>
+            <LogViewer
+              items={logs}
+              live={isRunning}
+              height="32rem"
+              title={t('migrationdetail.console')}
+              jumpToId={jumpToId}
+              sectionFor={(item) => sections.get(item.id) ?? null}
+            />
+          </section>
+        </div>
+
+        <div className="min-w-0">
+          <RunTimeline
+            items={timeline}
+            live={isRunning}
+            onJump={jumpTo}
+            sourceName={sourceServer?.name}
+            targetName={migration.target_node || targetServer?.name}
+            className={RISE}
+            style={stagger(2)}
+          />
+        </div>
+      </div>
 
       <ConfirmDialog
         open={cancelOpen}
         onClose={() => setCancelOpen(false)}
         tone="warning"
-        title="Cancel this migration?"
-        message={
-          <>
-            The current step is aborted immediately. Anything already created on the target (website, uploaded files, database) stays in place, and a
-            re-run reuses the website on the same node.
-          </>
-        }
-        confirmLabel="Cancel migration"
-        cancelLabel="Keep running"
+        title={t('migrationdetail.confirm.cancel.title')}
+        message={t('migrationdetail.confirm.cancel.message')}
+        confirmLabel={t('migrationdetail.confirm.cancel.confirm')}
+        cancelLabel={t('migrationdetail.confirm.cancel.keep')}
         onConfirm={handleCancel}
       />
 
@@ -330,16 +438,10 @@ export default function MigrationDetail() {
         open={suspendOpen}
         onClose={() => setSuspendOpen(false)}
         tone="warning"
-        title="Suspend the source account?"
-        message={
-          <>
-            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</span> will be suspended on{' '}
-            <span className="font-medium">{sourceServer?.name ?? 'the source server'}</span>. Do this only after the IP/DNS switch, once the site is
-            verified to load from the new server. The migrated site on the target is not affected, and you can unsuspend at any time.
-          </>
-        }
-        confirmLabel="Suspend on source"
-        cancelLabel="Not yet"
+        title={t('migrationdetail.confirm.suspend.title')}
+        message={t.rich('migrationdetail.confirm.suspend.message', { account: accountMono, server: sourceMono })}
+        confirmLabel={t('migrationdetail.confirm.suspend.confirm')}
+        cancelLabel={t('migrationdetail.confirm.suspend.notYet')}
         onConfirm={handleSuspendSource}
       />
 
@@ -347,14 +449,9 @@ export default function MigrationDetail() {
         open={unsuspendOpen}
         onClose={() => setUnsuspendOpen(false)}
         tone="brand"
-        title="Re-enable the source account?"
-        message={
-          <>
-            <span className="font-mono font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</span> will be active again on{' '}
-            <span className="font-medium">{sourceServer?.name ?? 'the source server'}</span>.
-          </>
-        }
-        confirmLabel="Unsuspend"
+        title={t('migrationdetail.confirm.unsuspend.title')}
+        message={t.rich('migrationdetail.confirm.unsuspend.message', { account: accountMono, server: sourceMono })}
+        confirmLabel={t('migrationdetail.confirm.unsuspend.confirm')}
         onConfirm={handleUnsuspendSource}
       />
 
@@ -362,15 +459,9 @@ export default function MigrationDetail() {
         open={repairOpen}
         onClose={() => setRepairOpen(false)}
         tone="brand"
-        title="Repair WordPress registration?"
-        message={
-          <>
-            Re-runs the post-import steps on the target: sets the PHP version to the source's, moves old WordPress installs whose database does not exist
-            out of the web root (kept under migration-leftovers, not deleted), removes stale app records, triggers Enhance's WordPress discovery again
-            and fixes file ownership. Use it when the WP login button or user list in Enhance does not work. Progress is written to the console below.
-          </>
-        }
-        confirmLabel="Repair"
+        title={t('migrationdetail.confirm.repair.title')}
+        message={t.rich('migrationdetail.confirm.repair.message', { leftovers: <Mono>migration-leftovers</Mono> })}
+        confirmLabel={t('migrationdetail.confirm.repair.confirm')}
         onConfirm={handleRepair}
       />
 
@@ -378,36 +469,14 @@ export default function MigrationDetail() {
         open={rerunOpen}
         onClose={() => setRerunOpen(false)}
         tone="brand"
-        title="Run this migration again?"
-        message={
-          <>
-            A new migration starts for <span className="font-mono">{migration.account_username}</span> with the same source, target node and options
-            {migration.scan_requested ? ' (including the malware scan)' : ''}. A website that already exists on the node is reused. This failed run stays in the
-            history.
-          </>
-        }
-        confirmLabel="Run again"
+        title={t('migrationdetail.confirm.rerun.title')}
+        message={t.rich('migrationdetail.confirm.rerun.message', {
+          account: <Mono>{migration.account_username}</Mono>,
+          scan: migration.scan_requested ? t('migrationdetail.confirm.rerun.withScan') : '',
+        })}
+        confirmLabel={t('migrationdetail.confirm.rerun.confirm')}
         onConfirm={handleRerun}
       />
-
-      <section className="space-y-3" aria-labelledby="migration-log-heading">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="min-w-0">
-            <h2 id="migration-log-heading" className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-              Migration log
-            </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              {isRunning ? 'Refreshes automatically every 5 seconds while the migration is running.' : 'Full run history for this migration.'}
-            </p>
-          </div>
-          {loadError && (
-            <p className="text-xs text-rose-600 dark:text-rose-400" role="status">
-              Last refresh failed — showing the last data received.
-            </p>
-          )}
-        </div>
-        <LogViewer items={logs} live={isRunning} height="32rem" title="Console" emptyMessage="No log lines yet" />
-      </section>
     </div>
   );
 }

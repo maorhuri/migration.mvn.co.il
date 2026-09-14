@@ -1,8 +1,8 @@
 import { CheckIcon } from '@heroicons/react/16/solid';
 import { InformationCircleIcon, MagnifyingGlassIcon } from '@heroicons/react/20/solid';
-import { CpuChipIcon } from '@heroicons/react/24/outline';
-import { Badge, Button, EmptyState, Input, SkeletonCard } from '../ui';
+import { Badge, Button, EmptyState, Input, Mono, SkeletonCard, surfaceClasses } from '../ui';
 import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import type { ClusterServer } from '../../api/client';
 
 function nodeRoles(node: ClusterServer): string[] {
@@ -24,6 +24,7 @@ export interface ClusterNodeCardProps {
 
 /** Selectable Enhance cluster node: friendly name, Main badge, mono ip/hostname, role badges. */
 export function ClusterNodeCard({ node, selected, onSelect }: ClusterNodeCardProps) {
+  const t = useT();
   const roles = nodeRoles(node);
   const title = node.friendly_name || node.hostname;
   return (
@@ -32,36 +33,45 @@ export function ClusterNodeCard({ node, selected, onSelect }: ClusterNodeCardPro
       aria-pressed={selected}
       onClick={() => onSelect(node)}
       className={cn(
-        'relative flex w-full flex-col gap-2 rounded-xl border bg-white p-4 text-left shadow-sm transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:bg-slate-900 dark:focus-visible:ring-offset-slate-900',
+        surfaceClasses,
+        'relative flex w-full flex-col gap-2 p-4 text-start transition-[transform,box-shadow,border-color,background-color] duration-200',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900',
         selected
-          ? 'border-indigo-500 ring-2 ring-indigo-500/25 dark:border-indigo-400 dark:ring-indigo-400/25'
-          : 'border-slate-200 hover:border-slate-300 dark:border-slate-800 dark:hover:border-slate-600',
+          ? 'border-brand-500 bg-brand-50/40 ring-2 ring-brand-500/25 dark:border-brand-400 dark:bg-brand-500/[0.06] dark:ring-brand-400/25'
+          : 'hover:-translate-y-px hover:border-slate-300 hover:shadow-pop dark:hover:border-white/[0.16] dark:hover:shadow-pop-dark motion-reduce:hover:translate-y-0',
       )}
     >
       <span className="flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{title}</span>
+          <span className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</span>
           {node.is_main && (
             <Badge tone="violet" size="sm">
-              Main
+              {t('newmigration.nodes.main')}
             </Badge>
           )}
         </span>
-        {selected && (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-white dark:bg-indigo-500" aria-hidden="true">
-            <CheckIcon className="h-3.5 w-3.5" />
-          </span>
-        )}
+        <span
+          aria-hidden="true"
+          className={cn(
+            'flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-[opacity,transform] duration-200',
+            selected ? 'bg-brand-700 text-white opacity-100 motion-safe:animate-scale-in dark:bg-brand-600' : 'scale-75 opacity-0',
+          )}
+        >
+          <CheckIcon className="h-3.5 w-3.5" />
+        </span>
       </span>
-      <span className="block font-mono text-xs text-slate-700 dark:text-slate-300">{node.ip || <span className="text-slate-400 dark:text-slate-500">no IP reported</span>}</span>
+      <span className="block text-xs text-slate-700 dark:text-slate-300">
+        {node.ip ? <Mono>{node.ip}</Mono> : <span className="text-slate-400 dark:text-slate-500">{t('newmigration.nodes.noIp')}</span>}
+      </span>
       {node.hostname && node.hostname !== node.friendly_name && (
-        <span className="block truncate font-mono text-2xs text-slate-400 dark:text-slate-500">{node.hostname}</span>
+        <span className="block text-2xs text-slate-400 dark:text-slate-500">
+          <Mono>{node.hostname}</Mono>
+        </span>
       )}
       {roles.length > 0 && (
         <span className="flex flex-wrap gap-1 pt-0.5">
           {roles.map((role) => (
-            <Badge key={role} tone="neutral" size="sm">
+            <Badge key={role} tone="neutral" size="sm" mono>
               {role}
             </Badge>
           ))}
@@ -88,6 +98,7 @@ export interface ClusterNodePickerProps {
  * where the website will be created.
  */
 export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, search, onSearchChange, loading }: ClusterNodePickerProps) {
+  const t = useT();
   const selected = allNodes.find((n) => n.id === selectedId);
 
   return (
@@ -97,19 +108,19 @@ export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, searc
           <Input
             size="sm"
             leftIcon={<MagnifyingGlassIcon />}
-            placeholder="Search by name, hostname or IP…"
+            placeholder={t('newmigration.nodes.search')}
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
-            aria-label="Search cluster nodes"
+            aria-label={t('newmigration.nodes.searchAria')}
           />
         </div>
         <span className="text-xs text-slate-500 dark:text-slate-400">
-          {allNodes.length} node{allNodes.length === 1 ? '' : 's'} in this cluster
+          {loading ? t('newmigration.nodes.loading') : t('newmigration.nodes.inCluster', { nodes: t('units.nodes', { count: allNodes.length }) })}
         </span>
       </div>
 
       {loading ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" role="status" aria-label="Loading cluster nodes">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" role="status" aria-label={t('newmigration.nodes.loading')}>
           {[0, 1, 2].map((i) => (
             <SkeletonCard key={i} lines={1} />
           ))}
@@ -117,13 +128,13 @@ export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, searc
       ) : nodes.length === 0 ? (
         <EmptyState
           size="sm"
-          icon={CpuChipIcon}
-          title={allNodes.length === 0 ? 'No cluster nodes reported' : 'No nodes match'}
-          description={allNodes.length === 0 ? 'The Enhance API returned no servers for this cluster.' : 'Try a different search term.'}
+          illustration={allNodes.length === 0 ? 'servers' : 'search'}
+          title={allNodes.length === 0 ? t('newmigration.nodes.empty.title') : t('newmigration.nodes.noMatch.title')}
+          description={allNodes.length === 0 ? t('newmigration.nodes.empty.description') : t('newmigration.nodes.noMatch.description')}
           action={
             allNodes.length > 0 && search ? (
               <Button variant="secondary" size="sm" onClick={() => onSearchChange('')}>
-                Clear search
+                {t('newmigration.nodes.clearSearch')}
               </Button>
             ) : undefined
           }
@@ -148,17 +159,21 @@ export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, searc
         <InformationCircleIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
         {selected ? (
           <p>
-            The website will be created on <span className="font-semibold">{selected.friendly_name || selected.hostname}</span>
-            {selected.ip && (
-              <>
-                {' '}
-                (<span className="font-mono text-[13px]">{selected.ip}</span>)
-              </>
-            )}
-            . Files are uploaded to this node over SSH and the hosts entry will point to its IP.
+            {t.rich('newmigration.nodes.callout.selected', {
+              name: <span className="font-semibold">{selected.friendly_name || selected.hostname}</span>,
+              ip: selected.ip ? (
+                <span>
+                  {' ('}
+                  <Mono className="text-[13px]">{selected.ip}</Mono>
+                  {')'}
+                </span>
+              ) : (
+                ''
+              ),
+            })}
           </p>
         ) : (
-          <p>Select the cluster node the website should be created on. Files are uploaded to that node and the hosts entry will point to its IP.</p>
+          <p>{t('newmigration.nodes.callout.pick')}</p>
         )}
       </div>
     </div>

@@ -1,8 +1,20 @@
 import { forwardRef, type HTMLAttributes, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
 import { ChevronDownIcon, ChevronUpIcon, ChevronUpDownIcon } from '@heroicons/react/16/solid';
 import { cn } from '../../lib/cn';
+import { surfaceClasses } from './Card';
+
+export { checkboxClasses } from './Checkbox';
 
 export type SortDirection = 'asc' | 'desc';
+/** `left`/`right` are kept for compatibility and mean start/end (they mirror in RTL). */
+export type CellAlign = 'left' | 'center' | 'right' | 'start' | 'end';
+
+function alignClass(align: CellAlign | undefined, numeric?: boolean): string {
+  const a = numeric ? 'end' : align ?? 'start';
+  if (a === 'right' || a === 'end') return 'text-end';
+  if (a === 'center') return 'text-center';
+  return 'text-start';
+}
 
 export interface TableProps extends HTMLAttributes<HTMLTableElement> {
   /** Dense rows (13px text, py-2). Default true — this is an ops tool. */
@@ -27,18 +39,14 @@ export const Table = forwardRef<HTMLTableElement, TableProps>(function Table(
 ) {
   return (
     <div
-      className={cn(
-        'relative w-full overflow-auto',
-        !bare && 'rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900',
-        wrapperClassName,
-      )}
+      className={cn('relative w-full overflow-auto', !bare && surfaceClasses, wrapperClassName)}
       style={maxHeight ? { maxHeight } : undefined}
       data-sticky={stickyHeader || undefined}
     >
       <table
         ref={ref}
         className={cn(
-          'w-full min-w-full border-collapse text-left',
+          'w-full min-w-full border-collapse text-start',
           dense ? 'text-[13px]' : 'text-sm',
           stickyHeader && '[&_thead_th]:sticky [&_thead_th]:top-0 [&_thead_th]:z-10',
           className,
@@ -50,17 +58,17 @@ export const Table = forwardRef<HTMLTableElement, TableProps>(function Table(
 });
 
 export const THead = forwardRef<HTMLTableSectionElement, HTMLAttributes<HTMLTableSectionElement>>(function THead({ className, ...rest }, ref) {
-  return <thead ref={ref} className={cn('bg-slate-50 dark:bg-slate-800/60', className)} {...rest} />;
+  return <thead ref={ref} className={cn('bg-slate-50 dark:bg-white/[0.03]', className)} {...rest} />;
 });
 
 export const TBody = forwardRef<HTMLTableSectionElement, HTMLAttributes<HTMLTableSectionElement>>(function TBody({ className, ...rest }, ref) {
-  return <tbody ref={ref} className={cn('divide-y divide-slate-100 dark:divide-slate-800', className)} {...rest} />;
+  return <tbody ref={ref} className={cn('divide-y divide-slate-100 dark:divide-white/[0.05]', className)} {...rest} />;
 });
 
 export interface TRProps extends HTMLAttributes<HTMLTableRowElement> {
   /** Highlight on hover (default true in body rows). */
   hoverable?: boolean;
-  /** Selected/active styling. */
+  /** Selected/active styling (brand tint + 2px start bar). */
   selected?: boolean;
   /**
    * Clickable row: pointer, tabindex and Enter/Space activation (pass `onClick`).
@@ -89,9 +97,10 @@ export const TR = forwardRef<HTMLTableRowElement, TRProps>(function TR({ hoverab
       }
       className={cn(
         'transition-colors',
-        hoverable && 'hover:bg-slate-50 dark:hover:bg-slate-800/50',
-        selected && 'bg-indigo-50/60 hover:bg-indigo-50 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/15',
-        clickable && 'cursor-pointer focus-visible:outline-none focus-visible:bg-slate-50 dark:focus-visible:bg-slate-800/50',
+        hoverable && 'hover:bg-slate-50 dark:hover:bg-white/[0.03]',
+        selected &&
+          'bg-brand-50/60 hover:bg-brand-50 dark:bg-brand-500/10 dark:hover:bg-brand-500/15 shadow-[inset_2px_0_0_0_theme(colors.brand.600)] rtl:shadow-[inset_-2px_0_0_0_theme(colors.brand.600)]',
+        clickable && 'cursor-pointer focus-visible:outline-none focus-visible:bg-slate-50 dark:focus-visible:bg-white/[0.04]',
         className,
       )}
       {...rest}
@@ -99,14 +108,14 @@ export const TR = forwardRef<HTMLTableRowElement, TRProps>(function TR({ hoverab
   );
 });
 
-export interface THProps extends ThHTMLAttributes<HTMLTableCellElement> {
+export interface THProps extends Omit<ThHTMLAttributes<HTMLTableCellElement>, 'align'> {
   /** Make the header a sort button. */
   sortable?: boolean;
   /** Current sort direction if this column is sorted. */
   sorted?: SortDirection | false | null;
   onSort?: () => void;
-  align?: 'left' | 'center' | 'right';
-  /** Numeric column: right-aligned, tabular figures. */
+  align?: CellAlign;
+  /** Numeric column: end-aligned, tabular figures. */
   numeric?: boolean;
 }
 
@@ -114,8 +123,7 @@ export const TH = forwardRef<HTMLTableCellElement, THProps>(function TH(
   { sortable, sorted, onSort, align, numeric, className, children, ...rest },
   ref,
 ) {
-  const alignment = numeric ? 'right' : align ?? 'left';
-  const alignClass = alignment === 'right' ? 'text-right' : alignment === 'center' ? 'text-center' : 'text-left';
+  const cls = alignClass(align, numeric);
   const SortIcon = sorted === 'asc' ? ChevronUpIcon : sorted === 'desc' ? ChevronDownIcon : ChevronUpDownIcon;
   return (
     <th
@@ -123,9 +131,10 @@ export const TH = forwardRef<HTMLTableCellElement, THProps>(function TH(
       scope="col"
       aria-sort={sortable ? (sorted === 'asc' ? 'ascending' : sorted === 'desc' ? 'descending' : 'none') : undefined}
       className={cn(
-        'whitespace-nowrap border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-800/60 dark:text-slate-400',
+        // Hebrew headers keep Latin words as written ("PHP", "Host"), like every other small label in RTL.
+        'whitespace-nowrap border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-slate-500 rtl:normal-case rtl:tracking-normal dark:border-white/[0.06] dark:bg-white/[0.03] dark:text-slate-400',
         numeric && 'tabular',
-        alignClass,
+        cls,
         className,
       )}
       {...rest}
@@ -135,14 +144,14 @@ export const TH = forwardRef<HTMLTableCellElement, THProps>(function TH(
           type="button"
           onClick={onSort}
           className={cn(
-            'group/th -mx-1 inline-flex items-center gap-1 rounded px-1 uppercase tracking-wide transition-colors hover:text-slate-900 dark:hover:text-slate-100',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500',
+            'group/th -mx-1 inline-flex items-center gap-1 rounded px-1 uppercase tracking-wide transition-colors hover:text-slate-900 rtl:normal-case rtl:tracking-normal dark:hover:text-slate-100',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:focus-visible:ring-brand-300',
             sorted && 'text-slate-900 dark:text-slate-100',
-            alignment === 'right' && 'flex-row-reverse',
+            cls === 'text-end' && 'flex-row-reverse',
           )}
         >
           {children}
-          <SortIcon className={cn('h-3.5 w-3.5 shrink-0', sorted ? 'text-indigo-500 dark:text-indigo-400' : 'text-slate-400 opacity-0 group-hover/th:opacity-100 dark:text-slate-500')} aria-hidden="true" />
+          <SortIcon className={cn('h-3.5 w-3.5 shrink-0', sorted ? 'text-brand-600 dark:text-brand-300' : 'text-slate-400 opacity-0 group-hover/th:opacity-100 dark:text-slate-500')} aria-hidden="true" />
         </button>
       ) : (
         children
@@ -151,10 +160,10 @@ export const TH = forwardRef<HTMLTableCellElement, THProps>(function TH(
   );
 });
 
-export interface TDProps extends TdHTMLAttributes<HTMLTableCellElement> {
-  /** Monospace: IPs, hosts, ids, paths. */
+export interface TDProps extends Omit<TdHTMLAttributes<HTMLTableCellElement>, 'align'> {
+  /** Monospace, LTR: IPs, hosts, ids, paths. */
   mono?: boolean;
-  align?: 'left' | 'center' | 'right';
+  align?: CellAlign;
   numeric?: boolean;
   /** Muted secondary text. */
   muted?: boolean;
@@ -166,17 +175,17 @@ export const TD = forwardRef<HTMLTableCellElement, TDProps>(function TD(
   { mono, align, numeric, muted, truncate, className, ...rest },
   ref,
 ) {
-  const alignment = numeric ? 'right' : align ?? 'left';
   return (
     <td
       ref={ref}
+      dir={mono ? 'ltr' : undefined}
       className={cn(
         'px-4 py-2.5 align-middle text-slate-700 dark:text-slate-300',
         mono && 'font-mono text-xs',
         numeric && 'tabular',
         muted && 'text-slate-500 dark:text-slate-400',
         truncate && 'max-w-0 truncate',
-        alignment === 'right' ? 'text-right' : alignment === 'center' ? 'text-center' : 'text-left',
+        alignClass(align, numeric),
         className,
       )}
       {...rest}

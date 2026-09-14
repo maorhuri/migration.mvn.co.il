@@ -1,10 +1,14 @@
 import type { ComponentType, ReactNode, SVGProps } from 'react';
 import { cn } from '../../lib/cn';
+import { useCountUp } from '../../lib/useCountUp';
+import { surfaceClasses } from './Card';
+import { Skeleton } from './Skeleton';
 
 export type StatTone = 'neutral' | 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange';
 
 export interface StatProps {
   label: ReactNode;
+  /** Big tabular figure. Numbers count up on change. */
   value: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<SVGProps<SVGSVGElement>>;
@@ -13,48 +17,83 @@ export interface StatProps {
   interactive?: boolean;
   /** Loading skeleton. */
   loading?: boolean;
+  /** Muted value (nothing to report: 0 failed, 0 warnings). */
+  quiet?: boolean;
+  valueClassName?: string;
+  /** Rendered at the end of the value row (a `<Sparkline />`). */
+  trend?: ReactNode;
   className?: string;
 }
 
 const toneIcon: Record<StatTone, string> = {
-  neutral: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
-  brand: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300',
-  success: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-300',
-  warning: 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300',
-  danger: 'bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-300',
-  info: 'bg-sky-50 text-sky-600 dark:bg-sky-500/15 dark:text-sky-300',
-  violet: 'bg-violet-50 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300',
-  blue: 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300',
-  orange: 'bg-orange-50 text-orange-600 dark:bg-orange-500/15 dark:text-orange-300',
+  neutral: 'text-slate-400 dark:text-slate-500',
+  brand: 'text-brand-600 dark:text-brand-300',
+  success: 'text-emerald-500',
+  warning: 'text-amber-500',
+  danger: 'text-rose-500',
+  info: 'text-sky-500',
+  violet: 'text-violet-500',
+  blue: 'text-blue-500',
+  orange: 'text-orange-500',
 };
 
+const toneLine: Record<StatTone, string> = {
+  neutral: 'via-slate-300/60 dark:via-white/10',
+  brand: 'via-brand-500/50',
+  success: 'via-emerald-500/50',
+  warning: 'via-amber-500/50',
+  danger: 'via-rose-500/50',
+  info: 'via-sky-500/50',
+  violet: 'via-violet-500/50',
+  blue: 'via-blue-500/50',
+  orange: 'via-orange-500/50',
+};
+
+function CountUp({ value }: { value: number }) {
+  const n = useCountUp(value);
+  return <>{n}</>;
+}
+
 /**
- * KPI tile: label, big tabular value, optional hint and tinted icon.
- * Place 3-4 in a `grid gap-4 sm:grid-cols-2 lg:grid-cols-4`.
+ * KPI tile: eyebrow label, big tabular figure (28px), optional hint, tone-colored icon and a
+ * faint tone hairline at the bottom. Its own card; place 3-4 in a `grid gap-4 sm:grid-cols-2 lg:grid-cols-4`.
  */
-export function Stat({ label, value, hint, icon: Icon, tone = 'neutral', interactive, loading, className }: StatProps) {
+export function Stat({ label, value, hint, icon: Icon, tone = 'neutral', interactive, loading, quiet, valueClassName, trend, className }: StatProps) {
   return (
     <div
       className={cn(
-        'flex items-start gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900',
-        interactive && 'transition-colors hover:border-slate-300 dark:hover:border-slate-700',
+        surfaceClasses,
+        'relative overflow-hidden p-6',
+        interactive && 'cursor-pointer transition-colors hover:border-slate-300 dark:hover:border-white/[0.16]',
         className,
       )}
     >
-      {Icon && (
-        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', toneIcon[tone])}>
-          <Icon className="h-5 w-5" aria-hidden="true" />
+      <div className="flex items-center justify-between gap-3">
+        <p className="eyebrow truncate">{label}</p>
+        {Icon && <Icon className={cn('h-4 w-4 shrink-0', toneIcon[tone])} aria-hidden="true" />}
+      </div>
+      {loading ? (
+        <Skeleton className="mt-3 h-7 w-16" />
+      ) : (
+        <div className="mt-3 flex items-end justify-between gap-3">
+          <p
+            className={cn(
+              'text-[28px] font-semibold leading-none tabular',
+              quiet ? 'text-slate-300 dark:text-slate-600' : 'text-slate-900 dark:text-slate-50',
+              valueClassName,
+            )}
+          >
+            {typeof value === 'number' ? <CountUp value={value} /> : value}
+          </p>
+          {trend && <div className="shrink-0 text-slate-400 dark:text-slate-500">{trend}</div>}
         </div>
       )}
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</p>
-        {loading ? (
-          <div className="mt-1.5 h-7 w-16 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
-        ) : (
-          <p className="mt-0.5 text-2xl font-semibold tracking-tight tabular text-slate-900 dark:text-slate-50">{value}</p>
-        )}
-        {hint && <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{hint}</p>}
-      </div>
+      {hint && (
+        <p className="mt-2 truncate text-xs text-slate-500 dark:text-slate-400" title={typeof hint === 'string' ? hint : undefined}>
+          {hint}
+        </p>
+      )}
+      <span aria-hidden="true" className={cn('absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent to-transparent', toneLine[tone])} />
     </div>
   );
 }

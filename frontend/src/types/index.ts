@@ -78,7 +78,18 @@ export interface Migration {
   completed_at?: string;
   created_at: string;
   /** Export metadata stored by the backend once the source export finished (domains used for the hosts entry). */
-  export_data?: { domains?: { name: string }[] };
+  export_data?: {
+    domains?: { name: string }[];
+    /** Snapshot of the source account as it was when the export ran. */
+    account?: {
+      domain?: string;
+      disk_usage?: string;
+      php_version?: string;
+      databases?: string[];
+      is_wordpress?: boolean;
+      db_size?: string;
+    };
+  };
   /** Live progress block returned by the API; transfer byte counters live here rather than at the top level. */
   progress?: { bytes_transferred?: number; total_bytes?: number };
 }
@@ -89,6 +100,8 @@ export interface MigrationLog {
   level: 'info' | 'warn' | 'error';
   message: string;
   created_at: string;
+  /** Structured payload some lines carry (e.g. "Export completed": { domains, databases, emails, cron_jobs }). */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface CompatibilityResult {

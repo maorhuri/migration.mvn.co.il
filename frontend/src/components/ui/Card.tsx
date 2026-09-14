@@ -1,55 +1,63 @@
 import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
 import { cn } from '../../lib/cn';
+import { badgeDotClasses, type BadgeTone } from './Badge';
+
+/** The one surface recipe: white card, hairline border, 14px radius, no shadow at rest. */
+export const surfaceClasses = 'rounded-xl border border-slate-200 bg-white dark:border-white/[0.08] dark:bg-slate-900';
 
 export interface CardProps extends HTMLAttributes<HTMLDivElement> {
   /** Remove the default inner padding — use when the card holds a Table. */
   flush?: boolean;
-  /** Elevate slightly on hover and show a pointer (for clickable cards). */
+  /** Lift slightly on hover and show a pointer (for clickable cards). */
   interactive?: boolean;
-  /** Left accent strip tone. */
+  /** Start-side accent strip tone. */
   accent?: 'brand' | 'success' | 'warning' | 'danger' | 'info' | 'violet' | 'blue' | 'orange';
+  /** 2px colored top edge (state at a glance, quieter than `accent`). */
+  edge?: BadgeTone;
 }
 
 const accentClasses = {
-  brand: 'border-l-4 border-l-indigo-500',
-  success: 'border-l-4 border-l-emerald-500',
-  warning: 'border-l-4 border-l-amber-500',
-  danger: 'border-l-4 border-l-rose-500',
-  info: 'border-l-4 border-l-sky-500',
-  violet: 'border-l-4 border-l-violet-500',
-  blue: 'border-l-4 border-l-blue-500',
-  orange: 'border-l-4 border-l-orange-500',
+  brand: 'border-s-4 border-s-brand-500',
+  success: 'border-s-4 border-s-emerald-500',
+  warning: 'border-s-4 border-s-amber-500',
+  danger: 'border-s-4 border-s-rose-500',
+  info: 'border-s-4 border-s-sky-500',
+  violet: 'border-s-4 border-s-violet-500',
+  blue: 'border-s-4 border-s-blue-500',
+  orange: 'border-s-4 border-s-orange-500',
 };
 
 /**
- * Surface container: white/slate-900, 1px border, soft shadow, 12px radius.
+ * Surface container: white/slate-900, hairline border, 14px radius, 24px padding, no shadow.
  * Compose with CardHeader / CardContent / CardFooter. Tables go in a `flush` card.
  */
 export const Card = forwardRef<HTMLDivElement, CardProps>(function Card(
-  { flush, interactive, accent, className, children, ...rest },
+  { flush, interactive, accent, edge, className, children, ...rest },
   ref,
 ) {
   return (
     <div
       ref={ref}
       className={cn(
-        'rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900',
-        !flush && 'p-5 sm:p-6',
+        surfaceClasses,
+        !flush && 'p-6',
         interactive &&
-          'cursor-pointer transition-all duration-150 hover:border-slate-300 hover:shadow-pop dark:hover:border-slate-700 ' +
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
+          'cursor-pointer transition-[transform,box-shadow,border-color] duration-200 hover:-translate-y-px hover:border-slate-300 hover:shadow-pop dark:hover:border-white/[0.16] dark:hover:shadow-pop-dark motion-reduce:hover:translate-y-0 ' +
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900',
         accent && accentClasses[accent],
+        edge && 'relative overflow-hidden',
         className,
       )}
       {...rest}
     >
+      {edge && <span aria-hidden="true" className={cn('absolute inset-x-0 top-0 h-0.5 rounded-t-xl', badgeDotClasses[edge])} />}
       {children}
     </div>
   );
 });
 
 export interface CardHeaderProps extends HTMLAttributes<HTMLDivElement> {
-  /** Right-aligned actions slot. */
+  /** End-aligned actions slot. */
   actions?: ReactNode;
   /** Draw a bottom border (recommended when the card is `flush`). */
   divided?: boolean;
@@ -65,7 +73,7 @@ export const CardHeader = forwardRef<HTMLDivElement, CardHeaderProps>(function C
       ref={ref}
       className={cn(
         'flex flex-wrap items-start justify-between gap-3',
-        divided ? 'border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6' : 'mb-4',
+        divided ? 'border-b border-slate-200 px-6 py-4 dark:border-white/[0.08]' : 'mb-4',
         className,
       )}
       {...rest}
@@ -94,7 +102,7 @@ export interface CardContentProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 export const CardContent = forwardRef<HTMLDivElement, CardContentProps>(function CardContent({ padded, className, ...rest }, ref) {
-  return <div ref={ref} className={cn(padded && 'px-5 py-4 sm:px-6', className)} {...rest} />;
+  return <div ref={ref} className={cn(padded && 'px-6 py-4', className)} {...rest} />;
 });
 
 export const CardFooter = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> & { divided?: boolean }>(
@@ -104,7 +112,7 @@ export const CardFooter = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEleme
         ref={ref}
         className={cn(
           'flex flex-wrap items-center justify-end gap-2',
-          divided ? 'mt-5 border-t border-slate-200 pt-4 dark:border-slate-800' : 'mt-4',
+          divided ? 'mt-5 border-t border-slate-200 pt-4 dark:border-white/[0.08]' : 'mt-4',
           className,
         )}
         {...rest}

@@ -3,7 +3,7 @@
  * `{ className: boolean }` objects. No dependency on clsx/tailwind-merge:
  * order matters, so pass overriding classes last and avoid conflicting utilities.
  *
- * @example cn('px-2', isActive && 'bg-indigo-50', { 'opacity-50': disabled })
+ * @example cn('px-2', isActive && 'bg-brand-50', { 'opacity-50': disabled })
  */
 export type ClassValue =
   | string

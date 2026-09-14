@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { ArrowUpTrayIcon, PlusIcon } from '@heroicons/react/20/solid';
-import { ExclamationTriangleIcon, KeyIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import {
   getSSHKeys,
@@ -20,9 +19,11 @@ import {
   CardTitle,
   ConfirmDialog,
   EmptyState,
+  Mono,
   PageHeader,
   SkeletonTable,
 } from '../components/ui';
+import { useT } from '../lib/i18n';
 import { DefaultKeyCallout } from '../components/sshkeys/DefaultKeyCallout';
 import { GenerateKeyModal } from '../components/sshkeys/GenerateKeyModal';
 import { ImportKeyModal, type ImportKeyFormData } from '../components/sshkeys/ImportKeyModal';
@@ -37,6 +38,7 @@ const EMPTY_FORM: ImportKeyFormData = {
 };
 
 export default function SSHKeys() {
+  const t = useT();
   const [keys, setKeys] = useState<SSHKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -64,7 +66,7 @@ export default function SSHKeys() {
       setLoadError(false);
     } catch (error) {
       setLoadError(true);
-      toast.error('Failed to fetch SSH keys');
+      toast.error(t('sshkeys.toast.fetchFailed'));
     } finally {
       setLoading(false);
     }
@@ -75,12 +77,12 @@ export default function SSHKeys() {
     setImporting(true);
     try {
       await createSSHKey(formData);
-      toast.success('SSH key added successfully');
+      toast.success(t('sshkeys.toast.imported'));
       setIsModalOpen(false);
       setFormData(EMPTY_FORM);
       fetchKeys();
     } catch (error) {
-      toast.error('Failed to add SSH key');
+      toast.error(t('sshkeys.toast.importFailed'));
     } finally {
       setImporting(false);
     }
@@ -89,11 +91,11 @@ export default function SSHKeys() {
   const handleDelete = async (id: string) => {
     try {
       await deleteSSHKey(id);
-      toast.success('SSH key deleted');
+      toast.success(t('sshkeys.toast.deleted'));
       if (viewKey?.id === id) setViewKey(null);
       fetchKeys();
     } catch (error) {
-      toast.error('Failed to delete SSH key');
+      toast.error(t('sshkeys.toast.deleteFailed'));
     }
   };
 
@@ -114,13 +116,13 @@ export default function SSHKeys() {
     setGenerating(true);
     try {
       const created = await generateSSHKey({ name: generateName.trim() });
-      toast.success('SSH key generated');
+      toast.success(t('sshkeys.toast.generated'));
       setGenerateOpen(false);
       setGenerateName('');
       await fetchKeys();
       setViewKey(created);
     } catch (error) {
-      toast.error('Failed to generate SSH key');
+      toast.error(t('sshkeys.toast.generateFailed'));
     } finally {
       setGenerating(false);
     }
@@ -131,14 +133,14 @@ export default function SSHKeys() {
     try {
       if (key.is_default) {
         await unsetDefaultSSHKey(key.id);
-        toast.success(`${key.name} is no longer the default key`);
+        toast.success(t('sshkeys.toast.noLongerDefault', { name: key.name }));
       } else {
         await setDefaultSSHKey(key.id);
-        toast.success(`${key.name} is now the default for cluster nodes`);
+        toast.success(t('sshkeys.toast.nowDefault', { name: key.name }));
       }
       await fetchKeys();
     } catch (error) {
-      toast.error(key.is_default ? 'Failed to unset default key' : 'Failed to set default key');
+      toast.error(key.is_default ? t('sshkeys.toast.unsetDefaultFailed') : t('sshkeys.toast.setDefaultFailed'));
     } finally {
       setPendingDefaultId(null);
     }
@@ -150,48 +152,56 @@ export default function SSHKeys() {
   // Keep the view modal in sync with the freshest copy of the key (e.g. after toggling default).
   const currentViewKey = viewKey ? keys.find((k) => k.id === viewKey.id) ?? viewKey : null;
   const defaultKey = keys.find((k) => k.is_default) ?? null;
+  const hasKeys = !loading && keys.length > 0;
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="SSH keys"
-        description="Keys the tool uses to authenticate against servers and Enhance cluster nodes."
+        title={t('sshkeys.title')}
+        description={t('sshkeys.description')}
         actions={
           <>
             <Button variant="secondary" leftIcon={<ArrowUpTrayIcon />} onClick={openImport}>
-              Import key
+              {t('sshkeys.import')}
             </Button>
             <Button variant="primary" leftIcon={<PlusIcon />} onClick={openGenerate}>
-              Generate key
+              {t('sshkeys.generate')}
             </Button>
           </>
         }
       />
 
-      {!loading && keys.length > 0 && <DefaultKeyCallout defaultKey={defaultKey} onView={setViewKey} />}
+      {hasKeys && (
+        <DefaultKeyCallout
+          defaultKey={defaultKey}
+          onView={setViewKey}
+          className="motion-safe:animate-rise stagger"
+          style={{ '--i': 1 } as CSSProperties}
+        />
+      )}
 
-      <Card flush>
+      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': hasKeys ? 2 : 1 } as CSSProperties}>
         <CardHeader
           divided
           actions={
-            !loading && keys.length > 0 ? (
+            hasKeys ? (
               <Badge tone="neutral" size="sm">
-                {keys.length} {keys.length === 1 ? 'key' : 'keys'}
+                {t('units.keys', { count: keys.length })}
               </Badge>
             ) : undefined
           }
         >
-          <CardTitle>All keys</CardTitle>
-          <CardDescription>Private keys are stored on the tool; only the public half is ever installed on servers.</CardDescription>
+          <CardTitle>{t('sshkeys.all.title')}</CardTitle>
+          <CardDescription>{t('sshkeys.all.description')}</CardDescription>
         </CardHeader>
 
         {loading ? (
           <SkeletonTable rows={4} columns={5} />
         ) : loadError && keys.length === 0 ? (
           <EmptyState
-            icon={ExclamationTriangleIcon}
-            title="Could not load SSH keys"
-            description="The API did not respond. Check that the backend is running and try again."
+            illustration="error"
+            title={t('sshkeys.error.title')}
+            description={t('sshkeys.error.description')}
             action={
               <Button
                 variant="secondary"
@@ -200,23 +210,32 @@ export default function SSHKeys() {
                   fetchKeys();
                 }}
               >
-                Retry
+                {t('common.retry')}
               </Button>
             }
           />
         ) : keys.length === 0 ? (
           <EmptyState
-            icon={KeyIcon}
-            title="No SSH keys yet"
-            description="Generate a key on the tool or import an existing one to authenticate against servers and cluster nodes."
+            illustration="keys"
+            title={t('sshkeys.empty.title')}
+            description={
+              <ul className="mt-2 space-y-1.5 text-start text-wrap">
+                {(['sshkeys.empty.b1', 'sshkeys.empty.b2', 'sshkeys.empty.b3'] as const).map((k) => (
+                  <li key={k} className="flex items-start gap-2">
+                    <span aria-hidden="true" className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-400 dark:bg-brand-300" />
+                    <span>{t(k)}</span>
+                  </li>
+                ))}
+              </ul>
+            }
             action={
               <Button variant="primary" leftIcon={<PlusIcon />} onClick={openGenerate}>
-                Generate key
+                {t('sshkeys.generate')}
               </Button>
             }
             secondaryAction={
               <Button variant="secondary" leftIcon={<ArrowUpTrayIcon />} onClick={openImport}>
-                Import key
+                {t('sshkeys.import')}
               </Button>
             }
           />
@@ -260,15 +279,16 @@ export default function SSHKeys() {
       <ConfirmDialog
         open={!!toDelete}
         onClose={() => setToDelete(null)}
-        title="Delete SSH key?"
+        title={t('sshkeys.delete.title')}
         message={
           <>
-            This removes <span className="font-medium text-slate-900 dark:text-slate-100">{toDelete?.name}</span> from the tool.
-            {toDelete?.is_default && ' It is the default key for Enhance cluster nodes; migrations to those nodes will need a new default.'}{' '}
-            Servers that already have the public key installed keep accepting it until you remove it there.
+            {t.rich('sshkeys.delete.message', {
+              name: <Mono className="font-medium text-slate-900 dark:text-slate-100">{toDelete?.name}</Mono>,
+            })}
+            {toDelete?.is_default && <> {t('sshkeys.delete.defaultNote')}</>} {t('sshkeys.delete.serversNote')}
           </>
         }
-        confirmLabel="Delete key"
+        confirmLabel={t('sshkeys.delete.confirm')}
         onConfirm={async () => {
           if (!toDelete) return;
           await handleDelete(toDelete.id);

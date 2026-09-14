@@ -4,7 +4,7 @@ import { cn } from '../../lib/cn';
 export interface TabItem<T extends string = string> {
   id: T;
   label: ReactNode;
-  /** Small count/badge on the right of the label. */
+  /** Small count/badge after the label. */
   count?: number | string;
   icon?: ReactNode;
   disabled?: boolean;
@@ -31,7 +31,7 @@ export function Tabs<T extends string = string>({ tabs, value, onChange, variant
       role="tablist"
       className={cn(
         'flex items-center',
-        underline ? 'gap-1 border-b border-slate-200 dark:border-slate-800' : 'gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800',
+        underline ? 'gap-1 border-b border-slate-200 dark:border-white/[0.08]' : 'gap-1 rounded-lg bg-slate-100 p-1 dark:bg-white/[0.06]',
         className,
       )}
     >
@@ -47,20 +47,20 @@ export function Tabs<T extends string = string>({ tabs, value, onChange, variant
             onClick={() => onChange(tab.id)}
             className={cn(
               'inline-flex items-center gap-1.5 whitespace-nowrap font-medium transition-colors disabled:opacity-50',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 dark:focus-visible:ring-brand-300 dark:focus-visible:ring-offset-slate-900',
               size === 'sm' ? 'text-xs' : 'text-sm',
               underline
                 ? cn(
                     '-mb-px border-b-2 px-3 py-2.5',
                     active
-                      ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-300'
-                      : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-900 dark:text-slate-400 dark:hover:border-slate-600 dark:hover:text-slate-100',
+                      ? 'border-brand-600 text-brand-700 dark:border-brand-400 dark:text-brand-300'
+                      : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-900 dark:text-slate-400 dark:hover:border-white/[0.2] dark:hover:text-slate-100',
                   )
                 : cn(
                     'rounded-md px-3',
                     size === 'sm' ? 'py-1' : 'py-1.5',
                     active
-                      ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-slate-100'
+                      ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-slate-100'
                       : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100',
                   ),
             )}
@@ -71,7 +71,7 @@ export function Tabs<T extends string = string>({ tabs, value, onChange, variant
               <span
                 className={cn(
                   'rounded-md px-1.5 py-0.5 text-2xs tabular',
-                  active ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
+                  active ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/20 dark:text-brand-300' : 'bg-slate-100 text-slate-600 dark:bg-white/[0.08] dark:text-slate-300',
                 )}
               >
                 {tab.count}

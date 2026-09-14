@@ -6,8 +6,11 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
+  Checkbox,
   KeyValue,
+  Mono,
   PanelBadge,
+  PanelMonogram,
   Table,
   TBody,
   TD,
@@ -15,26 +18,13 @@ import {
   TH,
   THead,
   TR,
+  Wire,
   panelTone,
-  type BadgeTone,
-  type CardProps,
 } from '../ui';
+import { useT } from '../../lib/i18n';
 import type { ClusterServer } from '../../api/client';
 import type { Account, Server } from '../../types';
 import type { MigrationStepStatus } from './types';
-
-function accentFor(tone: BadgeTone): CardProps['accent'] {
-  switch (tone) {
-    case 'violet':
-    case 'blue':
-    case 'orange':
-    case 'info':
-    case 'brand':
-      return tone;
-    default:
-      return undefined;
-  }
-}
 
 interface ServerSummaryCardProps {
   title: string;
@@ -43,26 +33,35 @@ interface ServerSummaryCardProps {
 }
 
 function ServerSummaryCard({ title, server, node }: ServerSummaryCardProps) {
+  const t = useT();
   const items = [
-    { label: 'Server', value: server?.name ?? '—' },
-    { label: 'Host', value: server?.host ?? '—', mono: true },
-    { label: 'Panel', value: <PanelBadge panelType={server?.panel_type} size="sm" /> },
+    { label: t('newmigration.review.server'), value: server?.name ?? '—' },
+    { label: t('newmigration.review.host'), value: server?.host ?? '—', mono: true },
+    { label: t('newmigration.review.panel'), value: <PanelBadge panelType={server?.panel_type} size="sm" /> },
   ];
   if (node) {
     items.push({
-      label: 'Node',
+      label: t('newmigration.review.node'),
       value: (
         <span className="inline-flex items-center gap-1.5">
           <span>{node.friendly_name || node.hostname}</span>
-          {node.ip && <span className="font-mono text-[13px] text-slate-500 dark:text-slate-400">{node.ip}</span>}
+          {node.ip && <Mono className="text-[13px] text-slate-500 dark:text-slate-400">{node.ip}</Mono>}
         </span>
       ),
     });
   }
   return (
-    <Card accent={server ? accentFor(panelTone(server.panel_type)) : undefined}>
+    <Card edge={server ? panelTone(server.panel_type) : 'neutral'} className="min-w-0">
       <CardHeader>
-        <CardTitle as="h3">{title}</CardTitle>
+        <div className="flex items-center gap-3">
+          <PanelMonogram panelType={server?.panel_type} size="md" />
+          <div className="min-w-0">
+            <p className="eyebrow">{title}</p>
+            <CardTitle as="h3" className="truncate">
+              {server?.name ?? '—'}
+            </CardTitle>
+          </div>
+        </div>
       </CardHeader>
       <KeyValue divided items={items} />
     </Card>
@@ -86,27 +85,26 @@ export interface ReviewStepProps {
 
 interface PlanColumnProps {
   title: string;
-  subtitle: string;
   steps: Pick<MigrationStepStatus, 'id' | 'name'>[];
   /** Number to start counting from (continues across columns). */
   offset: number;
 }
 
-function PlanColumn({ title, subtitle, steps, offset }: PlanColumnProps) {
+function PlanColumn({ title, steps, offset }: PlanColumnProps) {
+  const t = useT();
   return (
     <div>
       <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
-      <p className="text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
       <ol className="mt-3 space-y-1.5">
         {steps.map((step, i) => (
           <li key={step.id} className="flex items-center gap-2.5 text-sm text-slate-700 dark:text-slate-300">
             <span
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-slate-300 font-mono text-2xs tabular text-slate-500 dark:border-slate-600 dark:text-slate-400"
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-slate-300 font-mono text-2xs tabular text-slate-500 dark:border-white/[0.15] dark:text-slate-400"
               aria-hidden="true"
             >
               {offset + i + 1}
             </span>
-            {step.name}
+            {t(`steps.${step.id}.name`)}
           </li>
         ))}
       </ol>
@@ -116,39 +114,40 @@ function PlanColumn({ title, subtitle, steps, offset }: PlanColumnProps) {
 
 /** Final confirmation before the migration starts. */
 export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, scanMalware, onScanMalwareChange, starting, onStart, onBack }: ReviewStepProps) {
+  const t = useT();
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
+  const targetName = targetNode?.friendly_name || targetNode?.hostname || targetServer?.name || t('newmigration.review.targetFallback');
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 md:grid-cols-2">
-        <ServerSummaryCard title="Source" server={sourceServer} />
-        <ServerSummaryCard title="Target" server={targetServer} node={targetNode} />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
+        <ServerSummaryCard title={t('newmigration.review.source')} server={sourceServer} />
+        <Wire status="pending" className="mx-auto" />
+        <ServerSummaryCard title={t('newmigration.review.target')} server={targetServer} node={targetNode} />
       </div>
 
       <Card flush>
         <CardHeader divided>
-          <CardTitle>Accounts to migrate</CardTitle>
-          <CardDescription>
-            {accounts.length} account{accounts.length === 1 ? '' : 's'} will be exported from the source and recreated on the target.
-          </CardDescription>
+          <CardTitle>{t('newmigration.review.accounts.title')}</CardTitle>
+          <CardDescription>{t('newmigration.review.accounts.description', { count: accounts.length })}</CardDescription>
         </CardHeader>
         <Table bare stickyHeader maxHeight="40vh">
           <THead>
             <TR hoverable={false}>
-              <TH>Domain</TH>
-              <TH>Username</TH>
-              <TH numeric>Disk</TH>
-              <TH numeric>Databases</TH>
-              <TH numeric>Mailboxes</TH>
+              <TH>{t('newmigration.table.domain')}</TH>
+              <TH>{t('newmigration.table.username')}</TH>
+              <TH numeric>{t('newmigration.table.disk')}</TH>
+              <TH numeric>{t('newmigration.table.databases')}</TH>
+              <TH numeric>{t('newmigration.table.mailboxes')}</TH>
             </TR>
           </THead>
           <TBody>
             {accounts.map((account) => (
               <TR key={account.username}>
-                <TDPrimary>{account.domain || '—'}</TDPrimary>
+                <TDPrimary>{account.domain ? <Mono className="text-[13px]">{account.domain}</Mono> : '—'}</TDPrimary>
                 <TD mono>{account.username}</TD>
-                <TD numeric>{account.disk_used || '—'}</TD>
+                <TD numeric>{account.disk_used ? <Mono className="text-[13px]">{account.disk_used}</Mono> : '—'}</TD>
                 <TD numeric>{account.databases?.length ?? 0}</TD>
                 <TD numeric>{account.email_accounts?.length ?? 0}</TD>
               </TR>
@@ -159,44 +158,33 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
 
       <Card>
         <CardHeader>
-          <CardTitle>What will happen</CardTitle>
-          <CardDescription>
-            Each account runs through these {plan.length} steps in order. Nothing is changed on the source server.
-          </CardDescription>
+          <CardTitle>{t('newmigration.review.plan.title')}</CardTitle>
+          <CardDescription>{t('newmigration.review.plan.description', { steps: t('units.steps', { count: plan.length }) })}</CardDescription>
         </CardHeader>
         <div className="grid gap-6 sm:grid-cols-2">
-          <PlanColumn title="Export" subtitle={`From ${sourceServer?.name ?? 'the source server'}`} steps={exportSteps} offset={0} />
-          <PlanColumn title="Import" subtitle={`To ${targetNode?.friendly_name || targetNode?.hostname || targetServer?.name || 'the target server'}`} steps={importSteps} offset={exportSteps.length} />
+          <PlanColumn title={t('steps.phase.export', { name: sourceServer?.name ?? t('newmigration.review.sourceFallback') })} steps={exportSteps} offset={0} />
+          <PlanColumn title={t('steps.phase.import', { name: targetName })} steps={importSteps} offset={exportSteps.length} />
         </div>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Options</CardTitle>
-          <CardDescription>Files, databases, mailboxes, cron jobs, SSL, WordPress registration and PHP settings are migrated automatically.</CardDescription>
+          <CardTitle>{t('newmigration.review.options.title')}</CardTitle>
+          <CardDescription>{t('newmigration.review.options.description')}</CardDescription>
         </CardHeader>
-        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/60">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-900"
-            checked={scanMalware}
-            onChange={(e) => onScanMalwareChange(e.target.checked)}
-          />
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-white/[0.08] dark:hover:bg-white/[0.03]">
+          <Checkbox className="mt-0.5" checked={scanMalware} onChange={(e) => onScanMalwareChange(e.target.checked)} />
           <span className="min-w-0">
-            <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">Scan for malware before upload</span>
-            <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-              The exported files and database dumps are scanned on the staging server: web shells, obfuscated code, PHP inside uploads, injected config
-              directives, tampered WordPress core files (verified against wordpress.org), hidden administrators and SEO spam. If anything is found the
-              migration pauses for your decision: clean (quarantine + restore core files), continue as-is, or abort. Nothing is uploaded until you decide.
-            </span>
+            <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">{t('newmigration.review.scan.title')}</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">{t('newmigration.review.scan.description')}</span>
           </span>
         </label>
         <CardFooter>
-          <Button variant="secondary" leftIcon={<ArrowLeftIcon />} onClick={onBack} disabled={starting}>
-            Back
+          <Button variant="secondary" leftIcon={<ArrowLeftIcon className="flip-rtl" />} onClick={onBack} disabled={starting}>
+            {t('common.back')}
           </Button>
-          <Button variant="primary" leftIcon={<PlayIcon />} onClick={onStart} loading={starting}>
-            Start migration
+          <Button variant="primary" leftIcon={<PlayIcon className="flip-rtl" />} onClick={onStart} loading={starting}>
+            {t('newmigration.review.start')}
           </Button>
         </CardFooter>
       </Card>

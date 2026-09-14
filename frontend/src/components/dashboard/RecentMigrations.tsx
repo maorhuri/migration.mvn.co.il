@@ -1,5 +1,4 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowsRightLeftIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
 import { ArrowRightIcon } from '@heroicons/react/16/solid';
 import {
   Button,
@@ -8,6 +7,8 @@ import {
   CardTitle,
   CardDescription,
   EmptyState,
+  Mono,
+  PanelMonogram,
   SkeletonTable,
   StatusBadge,
   Table,
@@ -18,6 +19,8 @@ import {
   TD,
   TDPrimary,
 } from '../ui';
+import { cn } from '../../lib/cn';
+import { useT } from '../../lib/i18n';
 import { formatDate, formatRelativeTime, realDate } from '../../lib/format';
 import type { Migration, Server } from '../../types';
 
@@ -27,29 +30,46 @@ export interface RecentMigrationsProps {
   loading: boolean;
   error: boolean;
   onRetry: () => void;
+  className?: string;
 }
 
 const viewAllClasses =
-  'inline-flex items-center gap-1 rounded-md text-sm font-medium text-indigo-600 transition-colors hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-300';
+  'inline-flex items-center gap-1 rounded-md text-sm font-medium text-brand-700 transition-colors hover:text-brand-600 dark:text-brand-300 dark:hover:text-brand-200';
 
-/** Card listing the latest migrations with resolved source → target names. */
-export function RecentMigrations({ migrations, servers, loading, error, onRetry }: RecentMigrationsProps) {
+/** One end of the route: panel monogram + server name (LTR mono, since names are hostnames). */
+function RouteEnd({ server, fallback }: { server: Server | undefined; fallback: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <PanelMonogram panelType={server?.panel_type} size="sm" />
+      {server ? (
+        <Mono className="max-w-[10rem] text-xs text-slate-700 dark:text-slate-300">{server.name}</Mono>
+      ) : (
+        <span className="text-xs text-slate-400 dark:text-slate-500">{fallback}</span>
+      )}
+    </span>
+  );
+}
+
+/** Card listing the latest migrations with resolved source and target servers. */
+export function RecentMigrations({ migrations, servers, loading, error, onRetry, className }: RecentMigrationsProps) {
+  const t = useT();
   const navigate = useNavigate();
-  const serverName = (id: string) => servers.find((s) => s.id === id)?.name;
+  const serverById = (id: string) => servers.find((s) => s.id === id);
+  const na = t('common.notAvailable');
 
   return (
-    <Card flush className="overflow-hidden xl:col-span-2">
+    <Card flush className={cn('overflow-hidden', className)}>
       <CardHeader
         divided
         actions={
           <Link to="/migrations" className={viewAllClasses}>
-            View all
-            <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+            {t('common.viewAll')}
+            <ArrowRightIcon className="flip-rtl h-4 w-4" aria-hidden="true" />
           </Link>
         }
       >
-        <CardTitle>Recent migrations</CardTitle>
-        <CardDescription>Latest account moves across the fleet.</CardDescription>
+        <CardTitle>{t('dashboard.recent.title')}</CardTitle>
+        <CardDescription>{t('dashboard.recent.description')}</CardDescription>
       </CardHeader>
 
       {loading ? (
@@ -57,51 +77,61 @@ export function RecentMigrations({ migrations, servers, loading, error, onRetry 
       ) : error && migrations.length === 0 ? (
         <EmptyState
           size="sm"
-          icon={ExclamationCircleIcon}
-          title="Could not load migrations"
-          description="The API did not respond. Check that the backend is running and try again."
-          action={<Button variant="secondary" size="sm" onClick={onRetry}>Retry</Button>}
+          illustration="error"
+          title={t('dashboard.recent.error.title')}
+          description={t('empty.couldNotLoad.description')}
+          action={
+            <Button variant="secondary" size="sm" onClick={onRetry}>
+              {t('common.retry')}
+            </Button>
+          }
         />
       ) : migrations.length === 0 ? (
         <EmptyState
           size="sm"
-          icon={ArrowsRightLeftIcon}
-          title="No migrations yet"
-          description="Start a migration to move an account between servers."
-          action={<Button variant="primary" size="sm" onClick={() => navigate('/migrations/new')}>New migration</Button>}
+          illustration="migrations"
+          title={t('dashboard.recent.empty.title')}
+          description={t('dashboard.recent.empty.description')}
+          action={
+            <Button variant="primary" size="sm" onClick={() => navigate('/migrations/new')}>
+              {t('nav.newMigration')}
+            </Button>
+          }
         />
       ) : (
         <Table bare>
           <THead>
             <TR hoverable={false}>
-              <TH>Account</TH>
-              <TH>Route</TH>
-              <TH>Status</TH>
-              <TH>Target</TH>
-              <TH align="right">Started</TH>
+              <TH>{t('dashboard.recent.col.account')}</TH>
+              <TH>{t('dashboard.recent.col.route')}</TH>
+              <TH>{t('dashboard.recent.col.status')}</TH>
+              <TH>{t('dashboard.recent.col.target')}</TH>
+              <TH align="end">{t('dashboard.recent.col.started')}</TH>
             </TR>
           </THead>
           <TBody>
             {migrations.map((m) => {
-              const source = serverName(m.source_server_id);
-              const target = serverName(m.target_server_id);
+              const source = serverById(m.source_server_id);
+              const target = serverById(m.target_server_id);
               const targetValue = m.target_node || m.target_ip;
               const started = realDate(m.started_at) ?? m.created_at;
               return (
                 <TR key={m.id} clickable onClick={() => navigate(`/migrations/${m.id}`)}>
-                  <TDPrimary mono className="text-[13px]">{m.account_username}</TDPrimary>
+                  <TDPrimary className="text-[13px]">
+                    <Mono>{m.account_username}</Mono>
+                  </TDPrimary>
                   <TD>
-                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                      <span className="text-slate-700 dark:text-slate-300">{source ?? '—'}</span>
-                      <ArrowRightIcon className="h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
-                      <span className="text-slate-700 dark:text-slate-300">{target ?? '—'}</span>
+                    <span className="inline-flex items-center gap-2 whitespace-nowrap">
+                      <RouteEnd server={source} fallback={na} />
+                      <ArrowRightIcon className="flip-rtl h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+                      <RouteEnd server={target} fallback={na} />
                     </span>
                   </TD>
                   <TD>
                     <StatusBadge status={m.status} size="sm" label={m.status === 'running' && m.current_step ? m.current_step : undefined} />
                   </TD>
-                  <TD mono muted={!targetValue}>{targetValue ?? '—'}</TD>
-                  <TD align="right" muted className="whitespace-nowrap" title={formatDate(started)}>
+                  <TD muted={!targetValue}>{targetValue ? <Mono className="text-xs">{targetValue}</Mono> : na}</TD>
+                  <TD align="end" muted className="whitespace-nowrap tabular" title={formatDate(started)}>
                     {formatRelativeTime(started)}
                   </TD>
                 </TR>

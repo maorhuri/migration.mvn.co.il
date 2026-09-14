@@ -1,6 +1,7 @@
 import { useRef, type ChangeEvent, type FormEvent } from 'react';
 import { ArrowUpTrayIcon } from '@heroicons/react/16/solid';
 import { Button, Field, Input, Modal, Textarea } from '../ui';
+import { useT } from '../../lib/i18n';
 
 export interface ImportKeyFormData {
   name: string;
@@ -22,13 +23,14 @@ export interface ImportKeyModalProps {
 
 /** Small "Upload file" link-button that wraps a visually hidden file input. */
 function FileUploadLabel({ id, accept, onChange }: { id: string; accept?: string; onChange: (e: ChangeEvent<HTMLInputElement>) => void }) {
+  const t = useT();
   return (
     <label
       htmlFor={id}
-      className="inline-flex cursor-pointer items-center gap-1 rounded text-xs font-medium text-indigo-600 transition-colors hover:text-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:ring-offset-2 focus-within:ring-offset-white dark:text-indigo-400 dark:hover:text-indigo-300 dark:focus-within:ring-offset-slate-900"
+      className="inline-flex cursor-pointer items-center gap-1 rounded text-xs font-medium text-brand-700 transition-colors hover:text-brand-600 focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 focus-within:ring-offset-white dark:text-brand-300 dark:hover:text-brand-200 dark:focus-within:ring-brand-300 dark:focus-within:ring-offset-slate-900"
     >
       <ArrowUpTrayIcon className="h-3.5 w-3.5" aria-hidden="true" />
-      Upload file
+      {t('sshkeys.import.upload')}
       <input id={id} type="file" accept={accept} onChange={onChange} className="sr-only" />
     </label>
   );
@@ -36,6 +38,7 @@ function FileUploadLabel({ id, accept, onChange }: { id: string; accept?: string
 
 /** Import an existing key pair. The public key is optional (derived from the private key). */
 export function ImportKeyModal({ open, onClose, formData, onChange, onSubmit, onFileUpload, loading }: ImportKeyModalProps) {
+  const t = useT();
   const nameRef = useRef<HTMLInputElement | null>(null);
   return (
     <Modal
@@ -43,35 +46,35 @@ export function ImportKeyModal({ open, onClose, formData, onChange, onSubmit, on
       onClose={loading ? () => undefined : onClose}
       initialFocus={nameRef}
       size="lg"
-      title="Import key"
-      description="Paste or upload an existing private key. Keys are stored encrypted on the tool."
+      title={t('sshkeys.import.title')}
+      description={t('sshkeys.import.description')}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={loading}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="primary" type="submit" form="import-ssh-key-form" loading={loading}>
-            Import key
+            {t('sshkeys.import.submit')}
           </Button>
         </>
       }
     >
       <form id="import-ssh-key-form" onSubmit={onSubmit} className="space-y-4">
-        <Field label="Name" required>
+        <Field label={t('sshkeys.import.name')} required>
           <Input
             ref={nameRef}
             value={formData.name}
             onChange={(e) => onChange({ name: e.target.value })}
-            placeholder="My SSH key"
+            placeholder="enhance-cluster-eu1"
             autoComplete="off"
             required
           />
         </Field>
 
         <Field
-          label="Private key"
+          label={t('sshkeys.import.privateKey')}
           required
-          hint="PEM or OpenSSH format (-----BEGIN OPENSSH PRIVATE KEY-----)."
+          hint={t('sshkeys.import.privateKeyHint')}
           labelAddon={<FileUploadLabel id="import-private-key-file" onChange={onFileUpload('private_key')} />}
         >
           <Textarea
@@ -87,11 +90,11 @@ export function ImportKeyModal({ open, onClose, formData, onChange, onSubmit, on
         </Field>
 
         <Field
-          label="Public key"
-          hint="Optional — derived from the private key when left empty."
+          label={t('sshkeys.import.publicKey')}
+          hint={t('sshkeys.import.publicKeyHint')}
           labelAddon={
             <span className="inline-flex items-center gap-3">
-              <span>Optional</span>
+              <span>{t('common.optional')}</span>
               <FileUploadLabel id="import-public-key-file" accept=".pub" onChange={onFileUpload('public_key')} />
             </span>
           }
@@ -101,13 +104,13 @@ export function ImportKeyModal({ open, onClose, formData, onChange, onSubmit, on
             rows={3}
             value={formData.public_key}
             onChange={(e) => onChange({ public_key: e.target.value })}
-            placeholder="ssh-ed25519 AAAA…"
+            placeholder="ssh-ed25519 AAAA..."
             spellCheck={false}
             autoComplete="off"
           />
         </Field>
 
-        <Field label="Passphrase" labelAddon="Optional" hint="Leave empty if the private key is not encrypted.">
+        <Field label={t('sshkeys.import.passphrase')} labelAddon={t('common.optional')} hint={t('sshkeys.import.passphraseHint')}>
           <Input
             type="password"
             value={formData.passphrase}

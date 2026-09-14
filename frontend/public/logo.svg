@@ -1,13 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Migration Tool">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="MVNMigrate">
   <defs>
-    <linearGradient id="mt-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6366f1"/>
-      <stop offset="1" stop-color="#8b5cf6"/>
+    <linearGradient id="mvn-g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#570f3a"/>
+      <stop offset="0.55" stop-color="#ad1f74"/>
+      <stop offset="1" stop-color="#e052a7"/>
     </linearGradient>
   </defs>
-  <rect width="64" height="64" rx="16" fill="url(#mt-g)"/>
+  <rect width="64" height="64" rx="16" fill="url(#mvn-g)"/>
   <!-- top arrow: left -> right -->
-  <path d="M17 24h24l-6-6" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- bottom arrow: right -> left -->
-  <path d="M47 40H23l6 6" fill="none" stroke="#fff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+  <path d="M15 25h26M34 18l7 7-7 7" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- bottom arrow: right -> left (overlaps the first) -->
+  <path d="M49 39H23M30 32l-7 7 7 7" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
 </svg>

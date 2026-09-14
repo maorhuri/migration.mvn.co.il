@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
-import { MagnifyingGlassIcon as MagnifyingGlassOutlineIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { getServers, getServerAccounts, getClusterServers, type ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
 import type { Server, Account, MigrationLog, ScanReport } from '../types';
@@ -15,12 +14,15 @@ import {
   CardTitle,
   EmptyState,
   Input,
+  Mono,
   PageHeader,
   SkeletonTable,
   Stepper,
   type Step,
 } from '../components/ui';
 import { cn } from '../lib/cn';
+import { useT } from '../lib/i18n';
+import { formatBytes, parseSizeToBytes } from '../lib/format';
 import { ServerPicker } from '../components/newmigration/ServerPicker';
 import { ClusterNodePicker } from '../components/newmigration/ClusterNodePicker';
 import { AccountsTable } from '../components/newmigration/AccountsTable';
@@ -31,12 +33,13 @@ import { MigrationComplete } from '../components/newmigration/MigrationComplete'
 import { ScanReportPanel } from '../components/migrations/ScanReportPanel';
 import type { MigrationStep, MigrationStepStatus } from '../components/newmigration/types';
 
-const WIZARD_STEPS: Step[] = [
-  { id: 'select_source', label: 'Source' },
-  { id: 'select_accounts', label: 'Accounts' },
-  { id: 'select_target', label: 'Target' },
-  { id: 'review', label: 'Review' },
-  { id: 'migrating', label: 'Migrate' },
+/** Wizard rail: ids are stable, labels and descriptions are translated at render time. */
+const WIZARD_STEP_KEYS: { id: MigrationStep; key: string }[] = [
+  { id: 'select_source', key: 'newmigration.wizard.source' },
+  { id: 'select_accounts', key: 'newmigration.wizard.accounts' },
+  { id: 'select_target', key: 'newmigration.wizard.target' },
+  { id: 'review', key: 'newmigration.wizard.review' },
+  { id: 'migrating', key: 'newmigration.wizard.migrate' },
 ];
 
 const WIZARD_ORDER: MigrationStep[] = ['select_source', 'select_accounts', 'select_target', 'review', 'migrating'];
@@ -64,6 +67,7 @@ const INITIAL_MIGRATION_STEPS: MigrationStepStatus[] = [
 const buildSteps = (scan: boolean): MigrationStepStatus[] => INITIAL_MIGRATION_STEPS.filter((st) => scan || st.id !== 'scan_malware');
 
 export default function NewMigration() {
+  const t = useT();
   const navigate = useNavigate();
   const [servers, setServers] = useState<Server[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -104,6 +108,11 @@ export default function NewMigration() {
   const [liveLogs, setLiveLogs] = useState<MigrationLog[]>([]);
   const [migrationStartedAt, setMigrationStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  // Ids of the migrations that completed in this run (links to the detail pages on the completion screen).
+  const [completedMigrationIds, setCompletedMigrationIds] = useState<string[]>([]);
+  // Wall-clock start of every step (by index) so per-step durations can be derived on completion.
+  const stepStartedAt = useRef<Record<number, number>>({});
+  const stepEndedAt = useRef<Record<number, number>>({});
 
   // Username of the account whose migration is currently being polled (multi-account runs).
   const [activeAccount, setActiveAccount] = useState<string | null>(null);
@@ -121,12 +130,13 @@ export default function NewMigration() {
         const data = await getServers();
         setServers(data);
       } catch (error) {
-        toast.error('Failed to fetch servers');
+        toast.error(t('newmigration.toast.serversFailed'));
       } finally {
         setLoading(false);
       }
     };
     fetchServers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load accounts when source server is selected
@@ -230,6 +240,18 @@ export default function NewMigration() {
   };
 
   const updateStepStatus = (stepIndex: number, status: MigrationStepStatus['status'], error?: string, duration?: number) => {
+    // Derive a per-step duration from the wall clock when the backend does not report one.
+    if (status === 'running' && stepStartedAt.current[stepIndex] === undefined) {
+      stepStartedAt.current[stepIndex] = Date.now();
+    }
+    if ((status === 'completed' || status === 'error') && duration === undefined) {
+      const start = stepStartedAt.current[stepIndex];
+      if (start !== undefined) {
+        const end = stepEndedAt.current[stepIndex] ?? Date.now();
+        stepEndedAt.current[stepIndex] = end;
+        duration = Math.round((end - start) / 1000);
+      }
+    }
     setMigrationSteps((prev: MigrationStepStatus[]) => prev.map((step: MigrationStepStatus, idx: number) =>
       idx === stepIndex ? { ...step, status, error, duration } : step
     ));
@@ -237,13 +259,15 @@ export default function NewMigration() {
 
   const handleStartMigration = async () => {
     if (selectedAccounts.length === 0) {
-      toast.error('Please select at least one account');
+      toast.error(t('newmigration.toast.selectOne'));
       return;
     }
 
+    // The step list of this run: the poll loop indexes into it, so the displayed list must be the same one.
+    const steps = buildSteps(formData.scan_malware);
     setCurrentStep('migrating');
     setStarting(true);
-    setMigrationSteps([...INITIAL_MIGRATION_STEPS]);
+    setMigrationSteps(steps.map((st) => ({ ...st })));
     setCurrentMigrationStep(0);
     setOverallProgress(0);
     setWarningLogs([]);
@@ -255,7 +279,9 @@ export default function NewMigration() {
     setElapsedMs(0);
     setMigrationStartedAt(Date.now());
     setScanReview(null);
-    const steps = buildSteps(formData.scan_malware);
+    setCompletedMigrationIds([]);
+    stepStartedAt.current = {};
+    stepEndedAt.current = {};
     let accumulatedWarnings = 0;
     let accumulatedTargetIP = '';
 
@@ -273,9 +299,11 @@ export default function NewMigration() {
         setActiveMigrationId(migration.id);
         setActiveAccount(account.username);
         // Each account runs the full step list from the top.
-        setMigrationSteps([...INITIAL_MIGRATION_STEPS]);
+        setMigrationSteps(steps.map((st) => ({ ...st })));
         setCurrentMigrationStep(0);
         setOverallProgress(0);
+        stepStartedAt.current = {};
+        stepEndedAt.current = {};
 
         // Poll for migration status
         let completed = false;
@@ -383,6 +411,7 @@ export default function NewMigration() {
               setOverallProgress(100);
               accumulatedWarnings += status.warnings || 0;
               setWarningCount(accumulatedWarnings);
+              setCompletedMigrationIds((prev: string[]) => [...prev, migration.id]);
               try {
                 const logs = await getMigrationLogs(migration.id);
                 const warns = logs.filter((l: MigrationLog) => l.level === 'warn');
@@ -392,7 +421,7 @@ export default function NewMigration() {
               }
               if (lastTargetIP) accumulatedTargetIP = lastTargetIP;
             } else if (status.status === 'failed' || status.status === 'cancelled') {
-              const errorMsg = status.error || 'Migration failed';
+              const errorMsg = status.error || t('newmigration.error.failed');
 
               // Determine which step failed based on lastStepIndex and error message
               let failedStep = lastStepIndex >= 0 ? lastStepIndex : 0;
@@ -417,6 +446,10 @@ export default function NewMigration() {
                 }
               }
 
+              // The failure cannot be earlier than the last step the backend reported: keep the heuristic
+              // only when it points past what was observed (a connection error before the import started).
+              failedStep = Math.max(failedStep, lastStepIndex);
+
               // Mark all steps before failed as completed
               for (let i = 0; i < failedStep; i++) {
                 updateStepStatus(i, 'completed');
@@ -438,7 +471,7 @@ export default function NewMigration() {
 
           // Timeout after 30 minutes
           if (Date.now() - startTime > 30 * 60 * 1000) {
-            throw new Error('Migration timeout - please check the server logs');
+            throw new Error(t('newmigration.error.timeout'));
           }
         }
       }
@@ -450,7 +483,7 @@ export default function NewMigration() {
       setHostsEntry(`${hostsIP} ${domains}`);
 
       setCurrentStep('completed');
-      toast.success('Migration completed successfully!');
+      toast.success(t('newmigration.toast.completed'));
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       // Mark the step that was running as failed — unless the poll loop already
@@ -463,7 +496,7 @@ export default function NewMigration() {
           idx === failedIndex ? { ...step, status: 'error', error: errorMessage } : step
         );
       });
-      toast.error('Migration failed: ' + errorMessage);
+      toast.error(t('newmigration.toast.failed', { error: errorMessage }));
     } finally {
       setStarting(false);
     }
@@ -502,9 +535,9 @@ export default function NewMigration() {
     try {
       const data = await refreshServerAccounts(formData.source_server_id);
       setAccounts(data.accounts);
-      toast.success('Accounts refreshed');
+      toast.success(t('newmigration.toast.refreshed'));
     } catch (error) {
-      toast.error('Failed to refresh accounts');
+      toast.error(t('newmigration.toast.refreshFailed'));
     } finally {
       setRefreshingAccounts(false);
     }
@@ -578,6 +611,7 @@ export default function NewMigration() {
     setActiveAccount(null);
     setMigrationStartedAt(null);
     setElapsedMs(0);
+    setCompletedMigrationIds([]);
     setFormData({
       source_server_id: '',
       target_server_id: '',
@@ -597,10 +631,10 @@ export default function NewMigration() {
     setDecisionBusy(true);
     try {
       await submitScanDecision(scanReview.id, action);
-      toast.success(action === 'clean' ? 'Cleaning the staging copy, then continuing' : action === 'skip' ? 'Continuing without cleaning' : 'Migration aborted');
+      toast.success(action === 'clean' ? t('newmigration.toast.cleaning') : action === 'skip' ? t('newmigration.toast.skipping') : t('newmigration.toast.aborted'));
       if (action !== 'abort') setScanReview(null);
     } catch (error) {
-      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to submit the decision';
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || t('newmigration.toast.decisionFailed');
       toast.error(msg);
     } finally {
       setDecisionBusy(false);
@@ -613,16 +647,33 @@ export default function NewMigration() {
   const wizardNavigable = currentStep !== 'migrating' && currentStep !== 'completed';
   const canContinueToReview = !!formData.target_server_id && !(clusterServers.length > 1 && !formData.target_cluster_server_id);
 
+  const wizardSteps: Step[] = WIZARD_STEP_KEYS.map((s) => ({ id: s.id, label: t(s.key), description: t(`${s.key}.desc`) }));
+
+  // What the selection weighs: disk, databases and mailboxes of the chosen accounts (tray summary).
+  const selectionSummary = useMemo(() => {
+    const bytes = selectedAccounts.reduce((sum: number, a: Account) => sum + parseSizeToBytes(a.disk_used), 0);
+    const databases = selectedAccounts.reduce((sum: number, a: Account) => sum + (a.databases?.length ?? 0), 0);
+    const mailboxes = selectedAccounts.reduce((sum: number, a: Account) => sum + (a.email_accounts?.length ?? 0), 0);
+    return { bytes, databases, mailboxes };
+  }, [selectedAccounts]);
+
+  const suspendedToggle = suspendedCount > 0 && (
+    <span className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+      <span>{showSuspended ? t('newmigration.tray.suspendedShown', { count: suspendedCount }) : t('newmigration.tray.suspendedHidden', { count: suspendedCount })}</span>
+      <span className="hidden sm:inline">{t('newmigration.tray.alreadyMigrated')}</span>
+      <Button size="sm" variant="ghost" onClick={() => setShowSuspended((v) => !v)}>
+        {showSuspended ? t('newmigration.tray.hide') : t('newmigration.tray.show')}
+      </Button>
+    </span>
+  );
+
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="New migration"
-        description="Move hosting accounts from one server to another: export from the source, recreate on the target, verify."
-      />
+      <PageHeader title={t('newmigration.title')} description={t('newmigration.description')} />
 
-      <Card className="py-4 sm:py-5">
+      <Card className="py-4 motion-safe:animate-rise stagger [--i:1] sm:py-5">
         <Stepper
-          steps={WIZARD_STEPS}
+          steps={wizardSteps}
           current={wizardIndex}
           completedUpTo={wizardCompletedUpTo}
           running={currentStep === 'migrating' && starting}
@@ -633,183 +684,202 @@ export default function NewMigration() {
 
       {/* Step 1: Select Source Server */}
       {currentStep === 'select_source' && (
-        <Card>
-          <CardHeader
-            actions={
-              !loading ? (
-                <Badge tone="neutral" size="sm">
-                  {servers.length} server{servers.length === 1 ? '' : 's'}
-                </Badge>
-              ) : undefined
-            }
-          >
-            <CardTitle>Choose the source server</CardTitle>
-            <CardDescription>Accounts are read from this server. Selecting one takes you to the account list.</CardDescription>
-          </CardHeader>
-          <ServerPicker
-            servers={sourceServers}
-            totalCount={servers.length}
-            selectedId={formData.source_server_id}
-            onSelect={(server) => {
-              const changed = server.id !== formData.source_server_id;
-              setFormData({
-                ...formData,
-                source_server_id: server.id,
-                // A server cannot be both source and target.
-                ...(server.id === formData.target_server_id ? { target_server_id: '', target_cluster_server_id: '' } : {}),
-              });
-              if (changed) {
-                // The previous selection belonged to another server's account list.
-                setSelectedAccounts([]);
-                setSearchTerm('');
+        <div key={currentStep} className="motion-safe:animate-rise">
+          <Card>
+            <CardHeader
+              actions={
+                !loading ? (
+                  <Badge tone="neutral" size="sm">
+                    {t('units.servers', { count: servers.length })}
+                  </Badge>
+                ) : undefined
               }
-              setCurrentStep('select_accounts');
-            }}
-            search={sourceSearchTerm}
-            onSearchChange={setSourceSearchTerm}
-            filterType={sourceFilterType}
-            onFilterTypeChange={setSourceFilterType}
-            loading={loading}
-            onAddServer={() => navigate('/servers')}
-          />
-        </Card>
+            >
+              <CardTitle>{t('newmigration.source.title')}</CardTitle>
+              <CardDescription>{t('newmigration.source.description')}</CardDescription>
+            </CardHeader>
+            <ServerPicker
+              servers={sourceServers}
+              totalCount={servers.length}
+              selectedId={formData.source_server_id}
+              onSelect={(server) => {
+                const changed = server.id !== formData.source_server_id;
+                setFormData({
+                  ...formData,
+                  source_server_id: server.id,
+                  // A server cannot be both source and target.
+                  ...(server.id === formData.target_server_id ? { target_server_id: '', target_cluster_server_id: '' } : {}),
+                });
+                if (changed) {
+                  // The previous selection belonged to another server's account list.
+                  setSelectedAccounts([]);
+                  setSearchTerm('');
+                }
+                setCurrentStep('select_accounts');
+              }}
+              search={sourceSearchTerm}
+              onSearchChange={setSourceSearchTerm}
+              filterType={sourceFilterType}
+              onFilterTypeChange={setSourceFilterType}
+              loading={loading}
+              onAddServer={() => navigate('/servers')}
+            />
+          </Card>
+        </div>
       )}
 
       {/* Step 2: Select Accounts */}
       {currentStep === 'select_accounts' && (
-        <Card flush>
-          <CardHeader
-            divided
-            actions={
-              <>
-                <div className="w-56">
-                  <Input
-                    size="sm"
-                    leftIcon={<MagnifyingGlassIcon />}
-                    placeholder="Search domain or username…"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    aria-label="Search accounts"
-                    disabled={loadingAccounts}
-                  />
-                </div>
-                <Button size="sm" variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts} disabled={loadingAccounts} title="Reload the account list from the server">
-                  Refresh
-                </Button>
-                <Button size="sm" variant="ghost" leftIcon={<ArrowLeftIcon />} onClick={() => setCurrentStep('select_source')}>
-                  Change server
-                </Button>
-              </>
-            }
-          >
-            <CardTitle>Select accounts to migrate</CardTitle>
-            <CardDescription>
-              {sourceServer ? (
+        <div key={currentStep} className="motion-safe:animate-rise">
+          <Card flush>
+            <CardHeader
+              divided
+              actions={
                 <>
-                  From <span className="font-medium text-slate-700 dark:text-slate-300">{sourceServer.name}</span>
-                  <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
-                  <span className="font-mono text-[13px]">{sourceServer.host}</span>
+                  <div className="w-56">
+                    <Input
+                      size="sm"
+                      leftIcon={<MagnifyingGlassIcon />}
+                      placeholder={t('newmigration.accounts.search')}
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      aria-label={t('newmigration.accounts.searchAria')}
+                      disabled={loadingAccounts}
+                    />
+                  </div>
+                  <Button size="sm" variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts} disabled={loadingAccounts} title={t('newmigration.accounts.refreshTitle')}>
+                    {t('newmigration.accounts.refresh')}
+                  </Button>
+                  <Button size="sm" variant="ghost" leftIcon={<ArrowLeftIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_source')}>
+                    {t('newmigration.accounts.changeServer')}
+                  </Button>
                 </>
-              ) : (
-                'Pick the accounts to move to the target server.'
-              )}
-            </CardDescription>
-          </CardHeader>
+              }
+            >
+              <CardTitle>{t('newmigration.accounts.title')}</CardTitle>
+              <CardDescription>
+                {sourceServer ? (
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <span>{t('newmigration.accounts.from', { name: sourceServer.name })}</span>
+                    <span className="text-slate-300 dark:text-slate-600" aria-hidden="true">
+                      ·
+                    </span>
+                    <Mono className="text-[13px]">{sourceServer.host}</Mono>
+                  </span>
+                ) : (
+                  t('newmigration.accounts.pick')
+                )}
+              </CardDescription>
+            </CardHeader>
 
-          {loadingAccounts ? (
-            <SkeletonTable rows={8} columns={7} />
-          ) : accounts.length === 0 ? (
-            <EmptyState
-              icon={UserGroupIcon}
-              title="No accounts found"
-              description="The source server reported no hosting accounts, or the list could not be loaded. Try reloading it from the server."
-              action={
-                <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts}>
-                  Refresh accounts
-                </Button>
-              }
-              secondaryAction={
-                <Button variant="secondary" onClick={() => setCurrentStep('select_source')}>
-                  Change server
-                </Button>
-              }
-            />
-          ) : filteredAccounts.length === 0 ? (
-            <EmptyState
-              icon={MagnifyingGlassOutlineIcon}
-              title="No accounts match"
-              description={`Nothing matches "${searchTerm}". Try a different domain or username.`}
-              action={
-                <Button variant="secondary" onClick={() => setSearchTerm('')}>
-                  Clear search
-                </Button>
-              }
-            />
-          ) : (
-            <AccountsTable
-              accounts={filteredAccounts}
-              selectedUsernames={selectedUsernames}
-              allSelected={allFilteredSelected}
-              onToggle={handleToggleAccount}
-              onToggleAll={handleSelectAllAccounts}
-              sortField={sortField}
-              sortDirection={sortDirection}
-              onSort={handleSort}
-              onShowEmails={setEmailModalAccount}
-              onShowDatabases={setDbModalAccount}
-            />
-          )}
+            {loadingAccounts ? (
+              <SkeletonTable rows={8} columns={7} />
+            ) : accounts.length === 0 ? (
+              <EmptyState
+                illustration="accounts"
+                title={t('newmigration.accounts.empty.title')}
+                description={t('newmigration.accounts.empty.description')}
+                action={
+                  <Button variant="primary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts}>
+                    {t('newmigration.accounts.empty.action')}
+                  </Button>
+                }
+                secondaryAction={
+                  <Button variant="secondary" onClick={() => setCurrentStep('select_source')}>
+                    {t('newmigration.accounts.changeServer')}
+                  </Button>
+                }
+              />
+            ) : filteredAccounts.length === 0 ? (
+              <EmptyState
+                illustration="search"
+                title={t('newmigration.accounts.noMatch.title')}
+                description={t.rich('newmigration.accounts.noMatch.description', { query: <Mono>{searchTerm}</Mono> })}
+                action={
+                  <Button variant="secondary" onClick={() => setSearchTerm('')}>
+                    {t('newmigration.accounts.clearSearch')}
+                  </Button>
+                }
+              />
+            ) : (
+              <AccountsTable
+                accounts={filteredAccounts}
+                selectedUsernames={selectedUsernames}
+                allSelected={allFilteredSelected}
+                onToggle={handleToggleAccount}
+                onToggleAll={handleSelectAllAccounts}
+                sortField={sortField}
+                sortDirection={sortDirection}
+                onSort={handleSort}
+                onShowEmails={setEmailModalAccount}
+                onShowDatabases={setDbModalAccount}
+              />
+            )}
 
-          {!loadingAccounts && accounts.length > 0 && (
+            {!loadingAccounts && accounts.length > 0 && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-slate-200 px-6 py-3 text-xs text-slate-500 dark:border-white/[0.08] dark:text-slate-400">
+                <span>
+                  {filteredAccounts.length !== accounts.length
+                    ? t('newmigration.tray.shownOf', { count: filteredAccounts.length, total: accounts.length })
+                    : t('newmigration.tray.shown', { count: filteredAccounts.length })}
+                </span>
+                {suspendedToggle}
+                {selectedAccounts.length === 0 && (
+                  <div className="ms-auto flex items-center gap-2">
+                    <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
+                      {t('common.selectAll')}
+                    </Button>
+                    <Button size="sm" variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_target')} disabled={selectedAccounts.length === 0}>
+                      {t('common.continue')}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+
+          {!loadingAccounts && accounts.length > 0 && selectedAccounts.length > 0 && (
             <div
               className={cn(
-                'sticky bottom-0 flex flex-wrap items-center justify-between gap-3 rounded-b-xl border-t border-slate-200 bg-white/95 px-5 py-3 backdrop-blur',
-                'dark:border-slate-800 dark:bg-slate-900/95 sm:px-6',
+                'sticky bottom-4 z-10 mx-auto mt-4 flex w-fit max-w-full flex-wrap items-center gap-2 rounded-full border border-slate-200/80 bg-white/90 py-1.5 pe-1.5 ps-4 shadow-pop backdrop-blur',
+                'motion-safe:animate-rise dark:border-white/[0.08] dark:bg-slate-900/90 dark:shadow-pop-dark',
               )}
             >
-              <div className="flex items-center gap-3 text-sm">
-                <Badge tone={selectedAccounts.length > 0 ? 'brand' : 'neutral'} size="md">
-                  {selectedAccounts.length} selected
-                </Badge>
-                <span className="text-slate-500 dark:text-slate-400">
-                  of {filteredAccounts.length} shown{filteredAccounts.length !== accounts.length ? ` (${accounts.length} total)` : ''}
-                </span>
-                {suspendedCount > 0 && (
-                  <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
-                    · {suspendedCount} suspended {showSuspended ? 'shown' : 'hidden'}
-                    <span className="hidden sm:inline">(already migrated)</span>
-                    <Button size="sm" variant="ghost" onClick={() => setShowSuspended((v) => !v)}>
-                      {showSuspended ? 'Hide' : 'Show'}
-                    </Button>
-                  </span>
-                )}
-                <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
-                  {allFilteredSelected ? 'Deselect all' : 'Select all'}
-                </Button>
-              </div>
-              <Button variant="primary" rightIcon={<ArrowRightIcon />} onClick={() => setCurrentStep('select_target')} disabled={selectedAccounts.length === 0}>
-                Continue
+              <span key={selectedAccounts.length} className="text-gradient-brand text-sm font-semibold tabular motion-safe:animate-scale-in">
+                {t('newmigration.tray.selected', { count: selectedAccounts.length })}
+              </span>
+              <span className="hidden text-xs text-slate-500 sm:inline dark:text-slate-400">
+                <Mono className="text-xs">{formatBytes(selectionSummary.bytes)}</Mono>
+                <span aria-hidden="true"> · </span>
+                {t('units.databases', { count: selectionSummary.databases })}
+                <span aria-hidden="true"> · </span>
+                {t('units.mailboxes', { count: selectionSummary.mailboxes })}
+              </span>
+              <span className="mx-1 hidden h-4 w-px bg-slate-200 sm:block dark:bg-white/[0.1]" aria-hidden="true" />
+              <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>
+                {allFilteredSelected ? t('common.deselectAll') : t('common.selectAll')}
+              </Button>
+              <Button variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_target')} disabled={selectedAccounts.length === 0} className="rounded-full">
+                {t('common.continue')}
               </Button>
             </div>
           )}
-        </Card>
+        </div>
       )}
 
       {/* Step 3: Select Target Server */}
       {currentStep === 'select_target' && (
-        <div className="space-y-6">
+        <div key={currentStep} className="space-y-6 motion-safe:animate-rise">
           <Card>
             <CardHeader
               actions={
-                <Button size="sm" variant="ghost" leftIcon={<ArrowLeftIcon />} onClick={() => setCurrentStep('select_accounts')}>
-                  Back to accounts
+                <Button size="sm" variant="ghost" leftIcon={<ArrowLeftIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_accounts')}>
+                  {t('newmigration.target.backToAccounts')}
                 </Button>
               }
             >
-              <CardTitle>Choose the target server</CardTitle>
-              <CardDescription>
-                {selectedAccounts.length} account{selectedAccounts.length === 1 ? '' : 's'} will be created here. The source server is excluded from the list.
-              </CardDescription>
+              <CardTitle>{t('newmigration.target.title')}</CardTitle>
+              <CardDescription>{t('newmigration.target.description', { count: selectedAccounts.length })}</CardDescription>
             </CardHeader>
             <ServerPicker
               servers={targetServers}
@@ -824,8 +894,8 @@ export default function NewMigration() {
             />
             {!(formData.target_server_id && (loadingCluster || clusterServers.length > 1)) && (
               <CardFooter>
-                <Button variant="primary" rightIcon={<ArrowRightIcon />} onClick={() => setCurrentStep('review')} disabled={!canContinueToReview}>
-                  Continue to review
+                <Button variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={() => setCurrentStep('review')} disabled={!canContinueToReview}>
+                  {t('newmigration.target.continue')}
                 </Button>
               </CardFooter>
             )}
@@ -833,7 +903,7 @@ export default function NewMigration() {
 
           {/* Cluster Server Selection (Enhance targets with more than one node) */}
           {formData.target_server_id && (loadingCluster || clusterServers.length > 1) && (
-            <Card accent="violet">
+            <Card edge="violet" className="motion-safe:animate-rise">
               <CardHeader
                 actions={
                   targetServer ? (
@@ -843,8 +913,8 @@ export default function NewMigration() {
                   ) : undefined
                 }
               >
-                <CardTitle>Cluster node</CardTitle>
-                <CardDescription>This Enhance cluster has several servers. Pick the node the website should be created on.</CardDescription>
+                <CardTitle>{t('newmigration.cluster.title')}</CardTitle>
+                <CardDescription>{t('newmigration.cluster.description')}</CardDescription>
               </CardHeader>
               <ClusterNodePicker
                 nodes={filteredClusterServers}
@@ -856,8 +926,8 @@ export default function NewMigration() {
                 loading={loadingCluster}
               />
               <CardFooter>
-                <Button variant="primary" rightIcon={<ArrowRightIcon />} onClick={() => setCurrentStep('review')} disabled={!canContinueToReview || loadingCluster}>
-                  Continue to review
+                <Button variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={() => setCurrentStep('review')} disabled={!canContinueToReview || loadingCluster}>
+                  {t('newmigration.target.continue')}
                 </Button>
               </CardFooter>
             </Card>
@@ -867,62 +937,72 @@ export default function NewMigration() {
 
       {/* Step 4: Review */}
       {currentStep === 'review' && (
-        <ReviewStep
-          sourceServer={sourceServer}
-          targetServer={targetServer}
-          targetNode={targetClusterNode}
-          accounts={selectedAccounts}
-          plan={buildSteps(formData.scan_malware)}
-          scanMalware={formData.scan_malware}
-          onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
-          starting={starting}
-          onStart={handleStartMigration}
-          onBack={() => setCurrentStep('select_target')}
-        />
+        <div key={currentStep} className="motion-safe:animate-rise">
+          <ReviewStep
+            sourceServer={sourceServer}
+            targetServer={targetServer}
+            targetNode={targetClusterNode}
+            accounts={selectedAccounts}
+            plan={buildSteps(formData.scan_malware)}
+            scanMalware={formData.scan_malware}
+            onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
+            starting={starting}
+            onStart={handleStartMigration}
+            onBack={() => setCurrentStep('select_target')}
+          />
+        </div>
       )}
 
       {/* Step 5: Migrating */}
-      {currentStep === 'migrating' && scanReview && (
-        <ScanReportPanel
-          report={scanReview.report}
-          decision={{
-            busy: decisionBusy,
-            onClean: () => submitDecision('clean'),
-            onSkip: () => submitDecision('skip'),
-            onAbort: () => submitDecision('abort'),
-          }}
-        />
-      )}
-
       {currentStep === 'migrating' && (
-        <MigrationProgress
-          steps={migrationSteps}
-          currentStepIndex={currentMigrationStep}
-          overallProgress={overallProgress}
-          elapsedMs={elapsedMs}
-          running={starting}
-          failed={migrationFailed}
-          logs={liveLogs}
-          accounts={selectedAccounts}
-          activeAccount={activeAccount}
-          targetNode={targetNode}
-          onBackToReview={() => setCurrentStep('review')}
-          onViewMigrations={() => navigate('/migrations')}
-        />
+        <div key={currentStep} className="space-y-6 motion-safe:animate-rise">
+          {scanReview && (
+            <ScanReportPanel
+              report={scanReview.report}
+              decision={{
+                busy: decisionBusy,
+                onClean: () => submitDecision('clean'),
+                onSkip: () => submitDecision('skip'),
+                onAbort: () => submitDecision('abort'),
+              }}
+            />
+          )}
+
+          <MigrationProgress
+            steps={migrationSteps}
+            currentStepIndex={currentMigrationStep}
+            overallProgress={overallProgress}
+            elapsedMs={elapsedMs}
+            running={starting}
+            failed={migrationFailed}
+            logs={liveLogs}
+            accounts={selectedAccounts}
+            activeAccount={activeAccount}
+            targetNode={targetNode}
+            sourceName={sourceServer?.name}
+            targetName={targetClusterNode?.friendly_name || targetClusterNode?.hostname || targetServer?.name}
+            onBackToReview={() => setCurrentStep('review')}
+            onViewMigrations={() => navigate('/migrations')}
+          />
+        </div>
       )}
 
       {/* Step 6: Completed */}
       {currentStep === 'completed' && (
-        <MigrationComplete
-          warningCount={warningCount}
-          warningLogs={warningLogs}
-          targetNode={targetNode}
-          accounts={selectedAccounts}
-          stepsCompleted={migrationSteps.filter((s: MigrationStepStatus) => s.status === 'completed').length}
-          hostsEntry={hostsEntry}
-          onStartNew={handleResetWizard}
-          onViewAll={() => navigate('/migrations')}
-        />
+        <div key={currentStep} className="motion-safe:animate-rise">
+          <MigrationComplete
+            warningCount={warningCount}
+            warningLogs={warningLogs}
+            targetNode={targetNode}
+            accounts={selectedAccounts}
+            hostsEntry={hostsEntry}
+            logs={liveLogs}
+            migrationIds={completedMigrationIds}
+            elapsedMs={elapsedMs}
+            onStartNew={handleResetWizard}
+            onViewAll={() => navigate('/migrations')}
+          />
+        </div>
       )}
 
       <EmailAccountsModal account={emailModalAccount} onClose={() => setEmailModalAccount(null)} />

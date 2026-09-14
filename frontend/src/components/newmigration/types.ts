@@ -11,11 +11,11 @@ export interface MigrationStepStatus {
   duration?: number;
 }
 
-/** Panel types offered in the source/target type filter. */
+/** Panel types offered in the source/target type filter (labels are translation keys). */
 export const PANEL_FILTER_OPTIONS = [
-  { id: 'all', label: 'All' },
-  { id: 'directadmin', label: 'DirectAdmin' },
-  { id: 'enhance', label: 'Enhance' },
-  { id: 'cpanel', label: 'cPanel' },
-  { id: 'cloudpanel', label: 'CloudPanel' },
+  { id: 'all', labelKey: 'newmigration.filter.all' },
+  { id: 'directadmin', labelKey: 'panel.directadmin' },
+  { id: 'enhance', labelKey: 'panel.enhance' },
+  { id: 'cpanel', labelKey: 'panel.cpanel' },
+  { id: 'cloudpanel', labelKey: 'panel.cloudpanel' },
 ] as const;

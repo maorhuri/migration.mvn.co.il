@@ -8,7 +8,7 @@ export interface FieldProps {
   hint?: ReactNode;
   error?: ReactNode;
   required?: boolean;
-  /** Optional right-aligned element next to the label (e.g. "Optional", a link). */
+  /** Optional end-aligned element next to the label (e.g. "Optional", a link). */
   labelAddon?: ReactNode;
   className?: string;
   children: ReactNode;
@@ -38,7 +38,7 @@ export function Field({ label, htmlFor, hint, error, required, labelAddon, class
       <div className="flex items-center justify-between gap-2">
         <label htmlFor={id} className="block text-sm font-medium text-slate-700 dark:text-slate-300">
           {label}
-          {required && <span className="ml-0.5 text-rose-500" aria-hidden="true">*</span>}
+          {required && <span className="ms-0.5 text-rose-500" aria-hidden="true">*</span>}
         </label>
         {labelAddon && <span className="text-xs text-slate-400 dark:text-slate-500">{labelAddon}</span>}
       </div>
