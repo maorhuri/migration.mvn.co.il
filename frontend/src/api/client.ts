@@ -124,6 +124,7 @@ export const startMigration = async (params: {
   target_cluster_server_id?: string;
   username: string;
   new_password?: string;
+  scan_malware?: boolean;
 }): Promise<Migration> => {
   const { data } = await api.post('/migrations', params);
   return data;
@@ -140,6 +141,12 @@ export const cancelMigration = async (id: string): Promise<void> => {
 
 export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
+};
+
+/** Operator decision on malware-scan findings while the migration waits: clean | skip | abort. */
+export const submitScanDecision = async (id: string, action: 'clean' | 'skip' | 'abort'): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/scan/decision`, { action });
+  return data;
 };
 
 /** Delete every finished migration (completed, failed, cancelled) with its logs. Running ones are kept. */

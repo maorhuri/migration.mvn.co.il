@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import { MagnifyingGlassIcon as MagnifyingGlassOutlineIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, type ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts } from '../api/client';
-import type { Server, Account, MigrationLog } from '../types';
+import { getServers, getServerAccounts, getClusterServers, type ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
+import type { Server, Account, MigrationLog, ScanReport } from '../types';
 import {
   Badge,
   Button,
@@ -28,6 +28,7 @@ import { DatabasesModal, EmailAccountsModal } from '../components/newmigration/A
 import { ReviewStep } from '../components/newmigration/ReviewStep';
 import { MigrationProgress } from '../components/newmigration/MigrationProgress';
 import { MigrationComplete } from '../components/newmigration/MigrationComplete';
+import { ScanReportPanel } from '../components/migrations/ScanReportPanel';
 import type { MigrationStep, MigrationStepStatus } from '../components/newmigration/types';
 
 const WIZARD_STEPS: Step[] = [
@@ -47,6 +48,8 @@ const INITIAL_MIGRATION_STEPS: MigrationStepStatus[] = [
   { id: 'export_emails', name: 'Export Emails', status: 'pending', details: 'Backing up mailboxes...' },
   { id: 'export_cron', name: 'Export Cron Jobs', status: 'pending', details: 'Saving scheduled tasks...' },
   { id: 'export_files', name: 'Download Files', status: 'pending', details: 'Downloading website files...' },
+  // Optional staging-server scan (removed from the list when the option is off)
+  { id: 'scan_malware', name: 'Malware Scan', status: 'pending', details: 'Scanning the staged files and database dumps on the middle server...' },
   // Import phase (to target)
   { id: 'connect_node', name: 'Connect to Cluster Node', status: 'pending', details: 'Resolving the node IP and opening root SSH...' },
   { id: 'create_website', name: 'Create Website on Enhance', status: 'pending', details: 'Creating website on the selected cluster server...' },
@@ -56,6 +59,9 @@ const INITIAL_MIGRATION_STEPS: MigrationStepStatus[] = [
   { id: 'fix_permissions', name: 'Fix Permissions', status: 'pending', details: 'Setting ownership and file permissions...' },
   { id: 'cleanup', name: 'Cleanup', status: 'pending', details: 'Removing temporary files...' },
 ];
+
+/** Step list for a run: the malware scan step only when the option is on. */
+const buildSteps = (scan: boolean): MigrationStepStatus[] => INITIAL_MIGRATION_STEPS.filter((st) => scan || st.id !== 'scan_malware');
 
 export default function NewMigration() {
   const navigate = useNavigate();
@@ -90,6 +96,9 @@ export default function NewMigration() {
 
   // Live console + elapsed time for the migrating step (polled alongside the status loop).
   const [activeMigrationId, setActiveMigrationId] = useState<string | null>(null);
+  // Malware scan waiting for the operator's decision (clean / skip / abort).
+  const [scanReview, setScanReview] = useState<{ id: string; report: ScanReport } | null>(null);
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const [liveLogs, setLiveLogs] = useState<MigrationLog[]>([]);
   const [migrationStartedAt, setMigrationStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -102,6 +111,7 @@ export default function NewMigration() {
     target_server_id: '',
     target_cluster_server_id: '',
     new_password: '',
+    scan_malware: true,
   });
 
   useEffect(() => {
@@ -243,6 +253,8 @@ export default function NewMigration() {
     setActiveAccount(null);
     setElapsedMs(0);
     setMigrationStartedAt(Date.now());
+    setScanReview(null);
+    const steps = buildSteps(formData.scan_malware);
     let accumulatedWarnings = 0;
     let accumulatedTargetIP = '';
 
@@ -256,6 +268,7 @@ export default function NewMigration() {
           target_cluster_server_id: formData.target_cluster_server_id || undefined,
           username: account.username,
           new_password: formData.new_password || undefined,
+          scan_malware: formData.scan_malware,
         });
         setActiveMigrationId(migration.id);
         setActiveAccount(account.username);
@@ -287,43 +300,64 @@ export default function NewMigration() {
             const currentStepName = status.current_step || '';
 
             // Map backend step names to UI step indices
-            const stepMapping: [string, number][] = [
+            const stepMapping: [string, string][] = [
               // Export phase
-              ['Exporting domains', 0],
-              ['Exporting databases', 1],
-              ['Exporting emails', 2],
-              ['Exporting cron', 3],
-              ['Exporting DNS', 3],
-              ['Exporting files', 4],
-              ['Downloading files', 4],
-              ['Export completed', 4],
+              ['Exporting domains', 'export_domains'],
+              ['Exporting databases', 'export_db'],
+              ['Exporting emails', 'export_emails'],
+              ['Exporting cron', 'export_cron'],
+              ['Exporting DNS', 'export_cron'],
+              ['Exporting files', 'export_files'],
+              ['Downloading files', 'export_files'],
+              ['Export completed', 'export_files'],
+              // Staging scan
+              ['Scanning for malware', 'scan_malware'],
+              ['Waiting for malware scan review', 'scan_malware'],
+              ['Cleaning malware findings', 'scan_malware'],
+              ['Malware scan reviewed', 'scan_malware'],
               // Import phase
-              ['Starting import', 5],
-              ['Connecting to cluster node', 5],
-              ['Creating websites', 6],
-              ['Creating website', 6],
-              ['Uploading files', 7],
-              ['Importing files', 7],
-              ['Importing databases', 8],
-              ['Registering WordPress', 8],
-              ['WordPress cleanup', 8],
-              ['Configuring PHP', 8],
-              ['Importing email', 9],
-              ['Importing cron', 9],
-              ['Setting up SSL', 9],
-              ['Fixing file permissions', 10],
-              ['Fixing permissions', 10],
-              ['Cleaning up', 11],
-              ['Migration completed', 11],
+              ['Starting import', 'connect_node'],
+              ['Connecting to cluster node', 'connect_node'],
+              ['Creating websites', 'create_website'],
+              ['Creating website', 'create_website'],
+              ['Uploading files', 'import_files'],
+              ['Importing files', 'import_files'],
+              ['Importing databases', 'import_db'],
+              ['Registering WordPress', 'import_db'],
+              ['WordPress cleanup', 'import_db'],
+              ['Configuring PHP', 'import_db'],
+              ['Importing email', 'import_emails'],
+              ['Importing cron', 'import_emails'],
+              ['Setting up SSL', 'import_emails'],
+              ['Fixing file permissions', 'fix_permissions'],
+              ['Fixing permissions', 'fix_permissions'],
+              ['Cleaning up', 'cleanup'],
+              ['Migration completed', 'cleanup'],
             ];
+            const stepIndexOf = (id: string) => steps.findIndex((st) => st.id === id);
 
             // Find matching step and update UI
             let matchedStepIndex = -1;
-            for (const [stepName, stepIndex] of stepMapping) {
+            for (const [stepName, stepId] of stepMapping) {
               if (currentStepName.toLowerCase().includes(stepName.toLowerCase())) {
-                matchedStepIndex = stepIndex;
+                matchedStepIndex = stepIndexOf(stepId);
                 break;
               }
+            }
+
+            // Malware scan waiting for a decision: show the findings and hold the scan step.
+            if (status.status === 'awaiting_review' && status.scan_report) {
+              setScanReview((prev) => (prev && prev.id === migration.id ? prev : { id: migration.id, report: status.scan_report! }));
+              const scanIdx = stepIndexOf('scan_malware');
+              if (scanIdx >= 0) {
+                setMigrationSteps((prev: MigrationStepStatus[]) => prev.map((st: MigrationStepStatus, idx: number) =>
+                  idx === scanIdx && st.status !== 'warning'
+                    ? { ...st, status: 'warning', details: `${status.scan_report!.findings.length} finding(s): waiting for your decision` }
+                    : st
+                ));
+              }
+            } else if (status.status === 'running') {
+              setScanReview((prev) => (prev && prev.id === migration.id ? null : prev));
             }
 
             // Update steps if we moved forward
@@ -336,13 +370,14 @@ export default function NewMigration() {
               updateStepStatus(matchedStepIndex, 'running');
               lastStepIndex = matchedStepIndex;
               setCurrentMigrationStep(matchedStepIndex);
-              setOverallProgress(Math.round(((matchedStepIndex + 1) / INITIAL_MIGRATION_STEPS.length) * 100));
+              setOverallProgress(Math.round(((matchedStepIndex + 1) / steps.length) * 100));
             }
 
             if (status.status === 'completed') {
               completed = true;
+              setScanReview(null);
               // Mark all steps as completed
-              for (let i = 0; i < INITIAL_MIGRATION_STEPS.length; i++) {
+              for (let i = 0; i < steps.length; i++) {
                 updateStepStatus(i, 'completed');
               }
               setOverallProgress(100);
@@ -362,22 +397,23 @@ export default function NewMigration() {
               // Determine which step failed based on lastStepIndex and error message
               let failedStep = lastStepIndex >= 0 ? lastStepIndex : 0;
 
-              // If error mentions import, it's in the import phase (step 5+)
-              if (errorMsg.toLowerCase().includes('import')) {
+              if (errorMsg.toLowerCase().includes('malware') && stepIndexOf('scan_malware') >= 0) {
+                failedStep = stepIndexOf('scan_malware');
+              } else if (errorMsg.toLowerCase().includes('import')) {
                 // Export was successful, fail on appropriate import step
                 const lower = errorMsg.toLowerCase();
                 if (lower.includes('ssh') || lower.includes('node') || lower.includes('reachable')) {
-                  failedStep = 5; // node connection
+                  failedStep = stepIndexOf('connect_node'); // node connection
                 } else if (lower.includes('permission')) {
-                  failedStep = 10;
+                  failedStep = stepIndexOf('fix_permissions');
                 } else if (lower.includes('database') || lower.includes('mysql')) {
-                  failedStep = 8;
+                  failedStep = stepIndexOf('import_db');
                 } else if (lower.includes('email') || lower.includes('cron') || lower.includes('ssl')) {
-                  failedStep = 9;
+                  failedStep = stepIndexOf('import_emails');
                 } else if (lower.includes('upload') || lower.includes('files')) {
-                  failedStep = 7;
+                  failedStep = stepIndexOf('import_files');
                 } else {
-                  failedStep = 6; // website creation
+                  failedStep = stepIndexOf('create_website'); // website creation
                 }
               }
 
@@ -388,7 +424,7 @@ export default function NewMigration() {
               // Mark only the failed step with error
               updateStepStatus(failedStep, 'error', errorMsg);
               setCurrentMigrationStep(failedStep);
-              setOverallProgress(Math.round((failedStep / INITIAL_MIGRATION_STEPS.length) * 100));
+              setOverallProgress(Math.round((failedStep / steps.length) * 100));
               throw new Error(errorMsg);
             }
 
@@ -545,6 +581,7 @@ export default function NewMigration() {
       target_server_id: '',
       target_cluster_server_id: '',
       new_password: '',
+      scan_malware: true,
     });
   };
 
@@ -554,6 +591,21 @@ export default function NewMigration() {
   const targetClusterNode = clusterServers.find((s: ClusterServer) => s.id === formData.target_cluster_server_id);
   const selectedUsernames = new Set(selectedAccounts.map((a: Account) => a.username));
   const allFilteredSelected = filteredAccounts.length > 0 && selectedAccounts.length === filteredAccounts.length;
+  const submitDecision = async (action: 'clean' | 'skip' | 'abort') => {
+    if (!scanReview) return;
+    setDecisionBusy(true);
+    try {
+      await submitScanDecision(scanReview.id, action);
+      toast.success(action === 'clean' ? 'Cleaning the staging copy, then continuing' : action === 'skip' ? 'Continuing without cleaning' : 'Migration aborted');
+      if (action !== 'abort') setScanReview(null);
+    } catch (error) {
+      const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to submit the decision';
+      toast.error(msg);
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
   const migrationFailed = currentStep === 'migrating' && !starting && migrationSteps.some((s: MigrationStepStatus) => s.status === 'error');
   const wizardIndex = currentStep === 'completed' ? WIZARD_ORDER.length - 1 : WIZARD_ORDER.indexOf(currentStep);
   const wizardCompletedUpTo = currentStep === 'completed' ? WIZARD_ORDER.length - 1 : wizardIndex - 1;
@@ -810,9 +862,11 @@ export default function NewMigration() {
           targetServer={targetServer}
           targetNode={targetClusterNode}
           accounts={selectedAccounts}
-          plan={INITIAL_MIGRATION_STEPS}
+          plan={buildSteps(formData.scan_malware)}
           newPassword={formData.new_password}
           onNewPasswordChange={(value) => setFormData({ ...formData, new_password: value })}
+          scanMalware={formData.scan_malware}
+          onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
           starting={starting}
           onStart={handleStartMigration}
           onBack={() => setCurrentStep('select_target')}
@@ -820,6 +874,18 @@ export default function NewMigration() {
       )}
 
       {/* Step 5: Migrating */}
+      {currentStep === 'migrating' && scanReview && (
+        <ScanReportPanel
+          report={scanReview.report}
+          decision={{
+            busy: decisionBusy,
+            onClean: () => submitDecision('clean'),
+            onSkip: () => submitDecision('skip'),
+            onAbort: () => submitDecision('abort'),
+          }}
+        />
+      )}
+
       {currentStep === 'migrating' && (
         <MigrationProgress
           steps={migrationSteps}

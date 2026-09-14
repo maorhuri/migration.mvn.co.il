@@ -55,13 +55,18 @@ export interface Migration {
   source_server_id: string;
   target_server_id: string;
   account_username: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'cancelled';
   current_step?: string;
   target_ip?: string;
   target_node?: string;
   warnings?: number;
   /** Set once the source account was suspended after the migration (manual step after the IP/DNS switch). */
   source_suspended_at?: string;
+  /** Malware scan requested for this run (scan happens on the staging server before upload). */
+  scan_requested?: boolean;
+  scan_report?: ScanReport;
+  /** Operator decision on the findings: clean | skip | abort. */
+  scan_decision?: string;
   total_steps: number;
   completed_steps: number;
   bytes_transferred: number;
@@ -89,4 +94,64 @@ export interface CompatibilityResult {
   warnings: string[];
   errors: string[];
   mappings: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Malware scan (staging server, before upload)
+// ---------------------------------------------------------------------------
+
+export type ScanSeverity = 'critical' | 'high' | 'medium' | 'info';
+
+export interface ScanFinding {
+  id: string;
+  severity: ScanSeverity;
+  category: string;
+  domain: string;
+  /** Path relative to the docroot, or "db:<table>:<item>" for database findings. */
+  path: string;
+  evidence?: string;
+  line?: number;
+  action: 'quarantine' | 'restore_core' | 'remove_lines' | 'report' | string;
+  cleanable: boolean;
+  cleaned?: boolean;
+  note?: string;
+}
+
+export interface ScanDomainSummary {
+  domain: string;
+  files: number;
+  bytes: number;
+  wordpress: boolean;
+  core_version?: string;
+  core_checked: boolean;
+  core_modified: number;
+  core_extra: number;
+  core_missing: number;
+  core_note?: string;
+}
+
+export interface ScanCleanup {
+  at: string;
+  quarantine_dir: string;
+  quarantined: string[];
+  restored: string[];
+  lines_removed: string[];
+  skipped: string[];
+  errors: string[];
+}
+
+export interface ScanReport {
+  scanned_at: string;
+  duration_ms: number;
+  domains: ScanDomainSummary[];
+  files_scanned: number;
+  bytes_scanned: number;
+  findings: ScanFinding[];
+  counts: Partial<Record<ScanSeverity, number>>;
+  cleanable: number;
+  admin_users: { id: number; login: string; email: string }[];
+  databases: string[];
+  clamav: string;
+  notes?: string[];
+  cleanup?: ScanCleanup;
 }

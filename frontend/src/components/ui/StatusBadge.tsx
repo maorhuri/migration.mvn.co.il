@@ -22,6 +22,7 @@ export const STATUS_META: Record<string, StatusMeta> = {
   // Migration
   pending: { tone: 'neutral', label: 'Pending' },
   running: { tone: 'brand', label: 'Running', pulse: true },
+  awaiting_review: { tone: 'warning', label: 'Needs review', pulse: true },
   completed: { tone: 'success', label: 'Completed' },
   failed: { tone: 'danger', label: 'Failed' },
   cancelled: { tone: 'warning', label: 'Cancelled' },

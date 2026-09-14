@@ -3,13 +3,14 @@ import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, StopIcon } from '@heroicons/react/20/solid';
 import { ArrowsRightLeftIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { cancelMigration, getMigration, getMigrationLogs, getServer, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogs, getServer, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, CodeBlock, ConfirmDialog, EmptyState, LogViewer, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
 import { MigrationHero } from '../components/migrationdetail/MigrationHero';
 import { ServerFlow } from '../components/migrationdetail/ServerFlow';
 import { WarningsCard } from '../components/migrationdetail/WarningsCard';
+import { ScanReportPanel } from '../components/migrations/ScanReportPanel';
 
 function MigrationDetailSkeleton() {
   return (
@@ -44,6 +45,7 @@ export default function MigrationDetail() {
   const [loadError, setLoadError] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [decisionBusy, setDecisionBusy] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
 
   const fetchData = async () => {
@@ -79,7 +81,7 @@ export default function MigrationDetail() {
 
     // Auto-refresh for running migrations
     const interval = setInterval(() => {
-      if (migration?.status === 'running') {
+      if (migration?.status === 'running' || migration?.status === 'awaiting_review' || migration?.status === 'pending') {
         fetchData();
       }
     }, 5000);
@@ -136,11 +138,25 @@ export default function MigrationDetail() {
     );
   }
 
-  const isRunning = migration.status === 'running';
+  const isRunning = migration.status === 'running' || migration.status === 'awaiting_review';
+  const awaitingReview = migration.status === 'awaiting_review';
   const isCompleted = migration.status === 'completed';
   const sourceSuspended = !!migration.source_suspended_at;
   const apiError = (error: unknown, fallback: string) =>
     (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
+  const submitDecision = async (action: 'clean' | 'skip' | 'abort') => {
+    setDecisionBusy(true);
+    try {
+      await submitScanDecision(migration.id, action);
+      toast.success(action === 'clean' ? 'Cleaning the staging copy, then continuing' : action === 'skip' ? 'Continuing without cleaning' : 'Migration aborted');
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, 'Failed to submit the decision'));
+    } finally {
+      setDecisionBusy(false);
+    }
+  };
+
   const handleCancel = async () => {
     try {
       await cancelMigration(migration.id);
@@ -219,6 +235,23 @@ export default function MigrationDetail() {
       <MigrationHero migration={migration} />
 
       <ServerFlow source={sourceServer} target={targetServer} migration={migration} />
+
+      {migration.scan_report && (
+        <ScanReportPanel
+          report={migration.scan_report}
+          decided={migration.scan_decision}
+          decision={
+            awaitingReview
+              ? {
+                  busy: decisionBusy,
+                  onClean: () => submitDecision('clean'),
+                  onSkip: () => submitDecision('skip'),
+                  onAbort: () => submitDecision('abort'),
+                }
+              : undefined
+          }
+        />
+      )}
 
       {hostsEntry && (
         <Card>

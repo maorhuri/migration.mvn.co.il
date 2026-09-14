@@ -21,7 +21,7 @@ export interface MigrationRowProps {
 export function MigrationRow({ migration, source, target, onView, onCancel, onDelete, onSuspendSource, onUnsuspendSource }: MigrationRowProps) {
   const m = migration;
   const isRunning = m.status === 'running';
-  const canCancel = m.status === 'running' || m.status === 'pending';
+  const canCancel = m.status === 'running' || m.status === 'pending' || m.status === 'awaiting_review';
   const canDelete = m.status !== 'running';
   const isCompleted = m.status === 'completed';
   const sourceSuspended = !!m.source_suspended_at;
@@ -97,7 +97,7 @@ export function MigrationRow({ migration, source, target, onView, onCancel, onDe
             </div>
           </div>
         )}
-        {m.status === 'pending' && (
+        {(m.status === 'pending' || m.status === 'awaiting_review') && (
           <div className="mt-2">
             <Button variant="danger" size="sm" leftIcon={<StopIcon />} onClick={onCancel}>
               Cancel migration

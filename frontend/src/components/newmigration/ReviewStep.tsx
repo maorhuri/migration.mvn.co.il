@@ -80,6 +80,9 @@ export interface ReviewStepProps {
   plan: Pick<MigrationStepStatus, 'id' | 'name'>[];
   newPassword: string;
   onNewPasswordChange: (value: string) => void;
+  /** Scan the staged export for malware on the middle server before uploading. */
+  scanMalware: boolean;
+  onScanMalwareChange: (value: boolean) => void;
   starting: boolean;
   onStart: () => void;
   onBack: () => void;
@@ -116,7 +119,7 @@ function PlanColumn({ title, subtitle, steps, offset }: PlanColumnProps) {
 }
 
 /** Final confirmation before the migration starts. */
-export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, newPassword, onNewPasswordChange, starting, onStart, onBack }: ReviewStepProps) {
+export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, newPassword, onNewPasswordChange, scanMalware, onScanMalwareChange, starting, onStart, onBack }: ReviewStepProps) {
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
 
@@ -188,6 +191,22 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
             />
           </Field>
         </div>
+        <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/60">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-900"
+            checked={scanMalware}
+            onChange={(e) => onScanMalwareChange(e.target.checked)}
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">Scan for malware before upload</span>
+            <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              The exported files and database dumps are scanned on the staging server: web shells, obfuscated code, PHP inside uploads, injected config
+              directives, tampered WordPress core files (verified against wordpress.org), hidden administrators and SEO spam. If anything is found the
+              migration pauses for your decision: clean (quarantine + restore core files), continue as-is, or abort. Nothing is uploaded until you decide.
+            </span>
+          </span>
+        </label>
         <CardFooter>
           <Button variant="secondary" leftIcon={<ArrowLeftIcon />} onClick={onBack} disabled={starting}>
             Back

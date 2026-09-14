@@ -15,6 +15,7 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
+	"github.com/migration-tool/backend/internal/security"
 	"github.com/migration-tool/backend/internal/ssh"
 	"github.com/migration-tool/backend/internal/storage"
 	"github.com/migration-tool/backend/pkg/logger"
@@ -26,13 +27,14 @@ type Engine struct {
 	logger  *logger.Logger
 	workDir string
 
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc // live workers by migration id
+	mu        sync.Mutex
+	cancels   map[string]context.CancelFunc // live workers by migration id
+	decisions map[string]chan string        // scan-review decisions for workers waiting on the operator
 }
 
 // NewEngine creates a new migration engine
 func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine {
-	return &Engine{db: db, logger: log, workDir: workDir, cancels: map[string]context.CancelFunc{}}
+	return &Engine{db: db, logger: log, workDir: workDir, cancels: map[string]context.CancelFunc{}, decisions: map[string]chan string{}}
 }
 
 // ErrClusterServerRequired is returned when an Enhance target is used without an explicit cluster server.
@@ -45,6 +47,7 @@ type MigrationRequest struct {
 	TargetClusterServerID string `json:"target_cluster_server_id,omitempty"` // For Enhance: specific server in cluster
 	Username              string `json:"username"`
 	NewPassword           string `json:"new_password,omitempty"` // Password for new account
+	ScanMalware           bool   `json:"scan_malware"`           // scan the staged export for malware before importing
 }
 
 // MigrationResult represents the state of a migration as exposed by the API
@@ -66,6 +69,9 @@ type MigrationResult struct {
 	StartedAt         time.Time                 `json:"started_at"`
 	CompletedAt       *time.Time                `json:"completed_at,omitempty"`
 	SourceSuspendedAt *time.Time                `json:"source_suspended_at,omitempty"` // source account suspended after migration
+	ScanRequested     bool                      `json:"scan_requested"`
+	ScanReport        *security.Report          `json:"scan_report,omitempty"`
+	ScanDecision      string                    `json:"scan_decision,omitempty"`
 	Progress          *common.MigrationProgress `json:"progress,omitempty"`
 }
 
@@ -80,6 +86,9 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		return nil, fmt.Errorf("failed to create migration record: %w", err)
 	}
 	migrationID := migration.ID
+	if req.ScanMalware {
+		e.db.SetMigrationScanRequested(ctx, migrationID, true)
+	}
 
 	result := &MigrationResult{
 		ID:              migrationID,
@@ -204,6 +213,75 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	if len(exportData.Databases) == 0 && len(exportData.Account.Databases) > 0 {
 		fail(fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
 		return
+	}
+
+	// Phase 1b: optional malware scan on the staging copy, with an operator decision when something is found
+	if req.ScanMalware {
+		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Scanning for malware"}
+		report, err := security.Scan(workCtx, exportData, security.Options{
+			CacheDir: filepath.Join(e.workDir, ".cache"),
+			Log:      migrationLog,
+		})
+		if err != nil {
+			fail(fmt.Sprintf("malware scan failed: %v", err))
+			return
+		}
+		storeReport := func() {
+			if enc, err := json.Marshal(report); err == nil {
+				e.db.SetMigrationScanReport(ctx, migrationID, enc)
+			}
+		}
+		storeReport()
+		migrationLog("info", "Malware scan: "+report.Summary()+"; ClamAV: "+report.ClamAV)
+		for _, f := range report.Findings {
+			level := "warn"
+			if f.Severity == security.SevInfo {
+				level = "info"
+			}
+			migrationLog(level, fmt.Sprintf("[%s] %s %s: %s", strings.ToUpper(string(f.Severity)), f.Category, f.Path, f.Evidence))
+		}
+		if report.NeedsReview() {
+			progressChan <- common.MigrationProgress{Status: "awaiting_review", CurrentStep: "Waiting for malware scan review"}
+			migrationLog("warn", fmt.Sprintf("Waiting for your decision: %d finding(s), %d can be cleaned automatically (quarantined on the staging server, core files restored from wordpress.org)", len(report.Findings), report.Cleanable))
+			decision, ok := e.waitScanDecision(workCtx, migrationID, 4*time.Hour)
+			if !ok {
+				if workCtx.Err() != nil {
+					fail("cancelled while waiting for the malware scan review")
+				} else {
+					fail("no decision on the malware scan findings within 4 hours")
+				}
+				return
+			}
+			e.db.SetMigrationScanDecision(ctx, migrationID, decision)
+			switch decision {
+			case "clean":
+				progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Cleaning malware findings"}
+				res := security.Clean(workCtx, exportData, report, security.Options{CacheDir: filepath.Join(e.workDir, ".cache"), Log: migrationLog})
+				storeReport()
+				migrationLog("info", fmt.Sprintf("Cleanup: %d quarantined, %d core file(s) restored, %d config file(s) stripped, %d skipped, %d error(s); quarantine kept at %s on the staging server",
+					len(res.Quarantined), len(res.Restored), len(res.LinesRemoved), len(res.Skipped), len(res.Errors), res.QuarantineDir))
+				for _, e := range res.Errors {
+					warn("Cleanup error: %s", e)
+				}
+				remaining := 0
+				for _, f := range report.Findings {
+					if !f.Cleaned && f.Severity != security.SevInfo {
+						remaining++
+					}
+				}
+				if remaining > 0 {
+					warn("%d finding(s) need manual review after import (database items and report-only files)", remaining)
+				}
+			case "skip":
+				warn("Malware findings were NOT cleaned (operator chose to continue); %d finding(s) will be uploaded as-is", len(report.Findings))
+			default: // abort
+				e.cancelMigrationRecord(ctx, migrationID, "aborted after the malware scan")
+				return
+			}
+			progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Malware scan reviewed"}
+		} else {
+			migrationLog("info", "Malware scan: nothing suspicious found")
+		}
 	}
 
 	// Phase 2: import
@@ -506,6 +584,14 @@ func toResult(m *storage.Migration) *MigrationResult {
 	if m.SourceSuspendedAt.Valid {
 		result.SourceSuspendedAt = &m.SourceSuspendedAt.Time
 	}
+	result.ScanRequested = m.ScanRequested
+	result.ScanDecision = m.ScanDecision.String
+	if m.ScanReport.Valid && len(m.ScanReport.Data) > 0 {
+		var rep security.Report
+		if json.Unmarshal(m.ScanReport.Data, &rep) == nil {
+			result.ScanReport = &rep
+		}
+	}
 	if m.ErrorMessage.Valid {
 		result.Error = m.ErrorMessage.String
 	}
@@ -577,6 +663,57 @@ func (e *Engine) CancelMigration(ctx context.Context, migrationID string) error 
 	// No live worker (e.g. the service restarted): mark the record directly.
 	e.cancelMigrationRecord(ctx, migrationID, "no running worker")
 	return nil
+}
+
+// waitScanDecision blocks until the operator submits a decision for the scan findings.
+func (e *Engine) waitScanDecision(ctx context.Context, migrationID string, timeout time.Duration) (string, bool) {
+	ch := make(chan string, 1)
+	e.mu.Lock()
+	e.decisions[migrationID] = ch
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.decisions, migrationID)
+		e.mu.Unlock()
+	}()
+	select {
+	case d := <-ch:
+		return d, true
+	case <-ctx.Done():
+		return "", false
+	case <-time.After(timeout):
+		return "", false
+	}
+}
+
+// SubmitScanDecision hands the operator's choice (clean, skip, abort) to the waiting worker.
+func (e *Engine) SubmitScanDecision(ctx context.Context, migrationID, decision string) (*MigrationResult, error) {
+	switch decision {
+	case "clean", "skip", "abort":
+	default:
+		return nil, fmt.Errorf("decision must be clean, skip or abort")
+	}
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "awaiting_review" {
+		return nil, fmt.Errorf("migration is not waiting for a scan review (status: %s)", m.Status)
+	}
+	e.mu.Lock()
+	ch, ok := e.decisions[migrationID]
+	e.mu.Unlock()
+	if !ok {
+		e.cancelMigrationRecord(ctx, migrationID, "the worker that scanned this export is gone (service restarted); start the migration again")
+		return nil, fmt.Errorf("the scan worker is no longer running; start the migration again")
+	}
+	select {
+	case ch <- decision:
+	default:
+		return nil, fmt.Errorf("a decision was already submitted")
+	}
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Operator decision on malware findings: "+decision, nil)
+	return e.GetMigrationStatus(ctx, migrationID)
 }
 
 // cancelMigrationRecord marks a migration as cancelled by the user.

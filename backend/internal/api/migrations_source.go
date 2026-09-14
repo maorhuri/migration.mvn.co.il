@@ -30,3 +30,20 @@ func (h *Handler) clearMigrations(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": n})
 }
+
+// scanDecision receives the operator's choice for malware-scan findings: {"action": "clean"|"skip"|"abort"}.
+func (h *Handler) scanDecision(c *gin.Context) {
+	var body struct {
+		Action string `json:"action"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action is required"})
+		return
+	}
+	result, err := h.engine.SubmitScanDecision(c.Request.Context(), c.Param("id"), body.Action)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}

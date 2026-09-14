@@ -182,6 +182,9 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_node VARCHAR(255)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS warnings INTEGER DEFAULT 0`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS source_suspended_at TIMESTAMPTZ`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_requested BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_report JSONB`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_decision VARCHAR(16)`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -297,6 +300,9 @@ type Migration struct {
 	TargetNode        NullString     `db:"target_node" json:"target_node"`
 	Warnings          int            `db:"warnings" json:"warnings"`
 	SourceSuspendedAt sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
+	ScanRequested     bool           `db:"scan_requested" json:"scan_requested"`
+	ScanReport        NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
+	ScanDecision      NullString     `db:"scan_decision" json:"scan_decision"`
 	StartedAt         sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt       sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
 	CreatedAt         time.Time      `db:"created_at" json:"created_at"`
@@ -674,6 +680,24 @@ func (d *Database) SetMigrationSourceSuspended(ctx context.Context, id string, s
 // SetMigrationExportData stores the export metadata JSON
 func (d *Database) SetMigrationExportData(ctx context.Context, id string, exportJSON []byte) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET export_data = $2 WHERE id = $1", id, exportJSON)
+	return err
+}
+
+// SetMigrationScanRequested records that the operator asked for a malware scan before import.
+func (d *Database) SetMigrationScanRequested(ctx context.Context, id string, requested bool) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET scan_requested = $2 WHERE id = $1", id, requested)
+	return err
+}
+
+// SetMigrationScanReport stores the malware scan report JSON.
+func (d *Database) SetMigrationScanReport(ctx context.Context, id string, reportJSON []byte) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET scan_report = $2 WHERE id = $1", id, reportJSON)
+	return err
+}
+
+// SetMigrationScanDecision stores the operator's decision on the scan findings (clean, skip, abort).
+func (d *Database) SetMigrationScanDecision(ctx context.Context, id, decision string) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET scan_decision = $2 WHERE id = $1", id, decision)
 	return err
 }
 
