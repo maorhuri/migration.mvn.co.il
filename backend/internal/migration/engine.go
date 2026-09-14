@@ -605,11 +605,23 @@ func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server
 
 // failMigration marks a migration as failed
 func (e *Engine) failMigration(ctx context.Context, migrationID, errorMsg string) {
+	errorMsg = capText(errorMsg, 2000, 3500)
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
 		ID: migrationID, Status: "failed", Error: errorMsg, CompletedAt: &now,
 	})
 	e.db.AddMigrationLog(ctx, migrationID, "error", errorMsg, nil)
+}
+
+// capText keeps the first head and last tail characters of a long text.
+func capText(s string, head, tail int) string {
+	if len(s) <= head+tail+80 {
+		return s
+	}
+	if tail == 0 {
+		return s[:head] + " ..."
+	}
+	return s[:head] + fmt.Sprintf("\n... [%d characters omitted] ...\n", len(s)-head-tail) + s[len(s)-tail:]
 }
 
 func toResult(m *storage.Migration) *MigrationResult {
@@ -682,7 +694,9 @@ func (e *Engine) ListMigrations(ctx context.Context) ([]*MigrationResult, error)
 	}
 	results := make([]*MigrationResult, 0, len(migrations))
 	for i := range migrations {
-		results = append(results, toResult(&migrations[i]))
+		r := toResult(&migrations[i])
+		r.Error = capText(r.Error, 500, 0) // the list is polled every few seconds; the detail page has the full text
+		results = append(results, r)
 	}
 	return results, nil
 }

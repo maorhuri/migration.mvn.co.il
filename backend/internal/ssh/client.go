@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -748,9 +749,10 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 			return fmt.Errorf("failed to chmod key: %w", err)
 		}
 
-		// rsync with optimal settings for speed
+		// rsync with optimal settings for speed (no -v: a per-file listing of a large account is
+		// megabytes of text that would end up in error messages)
 		rsyncArgs := []string{
-			"-avz",               // archive, verbose, compress
+			"-az",                // archive, compress
 			"--compress-level=1", // fast compression
 			"--whole-file",       // don't use delta algorithm (faster for new files)
 			"--no-inc-recursive", // faster for large directories
@@ -764,7 +766,10 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 		output, err := cmd.CombinedOutput()
 		stopWatch()
 		if err != nil {
-			return fmt.Errorf("rsync failed: %w, output: %s", err, string(output))
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 24 {
+				return &RsyncPartialError{Tail: tailLines(string(output), 20)}
+			}
+			return fmt.Errorf("rsync failed: %w, output: %s", err, tailLines(string(output), 40))
 		}
 		return nil
 	}
@@ -865,4 +870,28 @@ func killOnCancel(ctx context.Context, cmd *exec.Cmd) func() {
 		}
 	}()
 	return func() { close(done) }
+}
+
+// RsyncPartialError is rsync exit status 24: some source files vanished during the transfer
+// (caches and temp files being rewritten on a live site). Everything else was copied.
+type RsyncPartialError struct {
+	Tail string
+}
+
+func (e *RsyncPartialError) Error() string {
+	return "rsync: some source files vanished during the transfer (exit status 24): " + e.Tail
+}
+
+// tailLines keeps the last n non-empty lines of a command output.
+func tailLines(s string, n int) string {
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(s), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > n {
+		lines = append([]string{fmt.Sprintf("... (%d earlier lines omitted)", len(lines)-n)}, lines[len(lines)-n:]...)
+	}
+	return strings.Join(lines, "\n")
 }

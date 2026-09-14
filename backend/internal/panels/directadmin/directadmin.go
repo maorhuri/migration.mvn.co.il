@@ -4,6 +4,7 @@ package directadmin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -447,8 +448,19 @@ func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputD
 		}
 	}
 
-	// Use rsync with compression for fastest transfer
+	// Use rsync with compression for fastest transfer. Exit status 24 (files vanished at the
+	// source while copying: caches, temp files) is not a failure: a second pass picks up the
+	// changes and the migration continues with a warning.
 	err := da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal)
+	var partial *ssh.RsyncPartialError
+	if errors.As(err, &partial) {
+		da.logf("warn", "Some files changed or vanished on the source while copying (rsync exit 24); running a second pass. %s", partial.Tail)
+		err = da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal)
+		if errors.As(err, &partial) {
+			da.logf("warn", "Files are still being rewritten on the source (cache/temp files); continuing with what was copied. %s", partial.Tail)
+			err = nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("failed to download domains: %w", err)
 	}
