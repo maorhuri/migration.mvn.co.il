@@ -308,6 +308,19 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		warnings += len(en.Warnings())
 		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
 		if err != nil {
+			if workCtx.Err() != nil {
+				// Cancelled (not an ordinary failure): roll back whatever this run created on
+				// Enhance rather than leave a half-imported website behind. workCtx is already
+				// cancelled, so this needs its own bounded context (same pattern as the temp-file
+				// cleanup deferred above). Deliberately does NOT run on ordinary failure -- there,
+				// leaving the partial website in place lets a retry reuse it instead of rebuilding.
+				rollbackCtx, cancelRollback := context.WithTimeout(context.Background(), 2*time.Minute)
+				report := en.RollbackCreatedWebsites(rollbackCtx)
+				cancelRollback()
+				if len(report) > 0 {
+					e.db.AddMigrationLog(ctx, migrationID, "warn", "Cancelled: rolling back what this run created on Enhance: "+strings.Join(report, "; "), nil)
+				}
+			}
 			fail(fmt.Sprintf("import failed: %v", err))
 			return
 		}
@@ -1022,7 +1035,7 @@ func (e *Engine) cancelMigrationRecord(ctx context.Context, migrationID, detail 
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
 		ID: migrationID, Status: "cancelled", CurrentStep: "Cancelled", Error: "Cancelled by user", CompletedAt: &now,
 	})
-	e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Migration cancelled by user (%s). Anything already created on the target is left in place; re-running reuses the website on the same node.", detail), nil)
+	e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Migration cancelled by user (%s).", detail), nil)
 }
 
 // ClearFinishedMigrations deletes every completed, failed or cancelled migration with its logs.
@@ -1258,6 +1271,25 @@ func (e *Engine) ListTargetDomains(ctx context.Context, targetServerID, clusterS
 		return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
 	}
 	return en.ListWebsiteDomains(ctx, clusterServerID)
+}
+
+// DeleteEnhanceWebsite deletes one website by ID on an Enhance target server -- for manual
+// cleanup of a website a cancelled or mistaken migration left behind (Enhance scopes its
+// databases/users under the website, so this takes them with it).
+func (e *Engine) DeleteEnhanceWebsite(ctx context.Context, serverID, websiteID string) error {
+	server, err := e.db.GetServer(ctx, serverID)
+	if err != nil {
+		return fmt.Errorf("server not found: %w", err)
+	}
+	if common.PanelType(server.PanelType) != common.PanelTypeEnhance {
+		return fmt.Errorf("server %s is not an Enhance server", server.Name)
+	}
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	en := enhance.New()
+	if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
+		return fmt.Errorf("failed to connect to Enhance: %w", err)
+	}
+	return en.DeleteWebsiteByID(ctx, websiteID)
 }
 
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {

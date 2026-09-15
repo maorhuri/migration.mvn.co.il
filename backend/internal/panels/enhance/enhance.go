@@ -49,6 +49,13 @@ type Enhance struct {
 	tmpPaths []string // files we created on the node and must remove
 	websites map[string]*EnhanceWebsite
 
+	// createdWebsiteIDs holds the org ID and website ID of every website THIS run actually
+	// created (not reused from a prior run -- see createWebsite's re-run safety check). Used
+	// to roll back on cancellation; deliberately not touched on an ordinary failure, where
+	// leaving a partial website in place lets a retry reuse it instead of rebuilding from
+	// scratch.
+	createdWebsiteIDs []createdWebsite
+
 	// orgOverride, when set, is used by orgID() instead of the configured enhance_org_id: the
 	// customer org whose subscription already owns the chosen cluster node (see
 	// ResolveOrgForServer), so a website lands under its existing customer instead of the
@@ -706,7 +713,48 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 			registerName, website.ID, website.AppServerID, target)
 	}
 	e.logf("info", "Website %s created on server %s (id=%s, unixUser=%s)", registerName, website.AppServerID, website.ID, website.UnixUser)
+	e.createdWebsiteIDs = append(e.createdWebsiteIDs, createdWebsite{orgID: orgID, id: website.ID, domain: registerName})
 	return website, nil
+}
+
+// createdWebsite identifies one website createWebsite actually created (not reused) this run.
+type createdWebsite struct {
+	orgID, id, domain string
+}
+
+// RollbackCreatedWebsites deletes every website createWebsite created (not reused) during this
+// run -- used when a migration is cancelled, so an aborted run doesn't leave a half-imported
+// website behind. Never touches a website that existed before this run (createWebsite's re-run
+// safety check never adds those here). Best-effort: keeps going after a failed delete so one
+// bad response doesn't strand the rest, and reports what happened for the caller to log.
+func (e *Enhance) RollbackCreatedWebsites(ctx context.Context) []string {
+	var report []string
+	for _, cw := range e.createdWebsiteIDs {
+		if err := e.DeleteWebsite(ctx, cw.orgID, cw.id); err != nil {
+			report = append(report, fmt.Sprintf("%s: FAILED to delete (id=%s): %v", cw.domain, cw.id, err))
+			continue
+		}
+		report = append(report, fmt.Sprintf("%s: deleted (id=%s)", cw.domain, cw.id))
+	}
+	e.createdWebsiteIDs = nil
+	return report
+}
+
+// DeleteWebsite deletes a website by ID (Enhance scopes its databases/users under the website,
+// so this takes them with it).
+func (e *Enhance) DeleteWebsite(ctx context.Context, orgID, websiteID string) error {
+	_, err := e.apiRequest(ctx, "DELETE", fmt.Sprintf("/orgs/%s/websites/%s", orgID, websiteID), nil)
+	return err
+}
+
+// DeleteWebsiteByID deletes a website by ID under the connected config's org (or its override),
+// for one-off cleanup -- e.g. removing a website a cancelled or mistaken migration created.
+func (e *Enhance) DeleteWebsiteByID(ctx context.Context, websiteID string) error {
+	orgID, err := e.orgID()
+	if err != nil {
+		return err
+	}
+	return e.DeleteWebsite(ctx, orgID, websiteID)
 }
 
 // ---------------------------------------------------------------------------
@@ -1874,6 +1922,17 @@ func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (str
 	if removed := e.removeUserIni(ctx, ws); len(removed) > 0 {
 		report = append(report, fmt.Sprintf("removed %d .user.ini file(s): %s", len(removed), strings.Join(removed, ", ")))
 	}
+	// 0b. readme.html/license.txt are stock WordPress files with no function -- just version
+	//     fingerprinting for an attacker. Harmless (a no-op) to look for on a non-WP site too.
+	if removed := e.removeReadmeAndLicense(ctx, ws); len(removed) > 0 {
+		report = append(report, fmt.Sprintf("removed %d stock file(s): %s", len(removed), strings.Join(removed, ", ")))
+	}
+	// 0c. A leftover index.html next to index.php (e.g. DirectAdmin's default placeholder page
+	//     from before the real site was uploaded) is almost always stale, and depending on the
+	//     web server's DirectoryIndex order can shadow the real application entirely.
+	if removed := e.removeStaleIndexHTML(ctx, ws); len(removed) > 0 {
+		report = append(report, fmt.Sprintf("removed %d stale index.html file(s): %s", len(removed), strings.Join(removed, ", ")))
+	}
 
 	wpConfig := ws.DocRoot + "/wp-config.php"
 	if _, err := e.nodeRun(ctx, "test -f "+shq(wpConfig)); err != nil {
@@ -1981,6 +2040,46 @@ func (e *Enhance) removeUserIni(ctx context.Context, ws *EnhanceWebsite) []strin
 		return nil
 	}
 	e.logf("info", "%s: removed %s (old server's PHP settings; they break PHP here)", ws.Domain.Domain, strings.Join(files, ", "))
+	return files
+}
+
+// removeReadmeAndLicense deletes WordPress's stock readme.html / license.txt / license.html
+// files -- pure version fingerprinting for an attacker, no function -- wherever found under the
+// web root, and returns their paths.
+func (e *Enhance) removeReadmeAndLicense(ctx context.Context, ws *EnhanceWebsite) []string {
+	if ws.DocRoot == "" {
+		return nil
+	}
+	find := fmt.Sprintf(`cd %s && find . -maxdepth 4 -type f \( -name 'readme.html' -o -name 'license.txt' -o -name 'license.html' \) 2>/dev/null`, shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, find)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	files := strings.Fields(out)
+	if _, err := e.nodeRun(ctx, find+" -delete"); err != nil {
+		e.warnf("%s: could not remove %s: %v", ws.Domain.Domain, strings.Join(files, ", "), err)
+		return nil
+	}
+	e.logf("info", "%s: removed %s (stock WordPress files, no function)", ws.Domain.Domain, strings.Join(files, ", "))
+	return files
+}
+
+// removeStaleIndexHTML deletes an index.html that sits alongside index.php in the same
+// directory -- almost always a stale placeholder (e.g. DirectAdmin's default page from before
+// the real site was uploaded) that can shadow the real application if the web server tries
+// index.html before index.php in its DirectoryIndex order. A directory with only index.html
+// (no index.php) is left alone -- that could be a genuine static site/page.
+func (e *Enhance) removeStaleIndexHTML(ctx context.Context, ws *EnhanceWebsite) []string {
+	if ws.DocRoot == "" {
+		return nil
+	}
+	cmd := fmt.Sprintf(`cd %s && find . -maxdepth 4 -type f -name 'index.php' 2>/dev/null | while read -r f; do d=$(dirname "$f"); if [ -f "$d/index.html" ]; then echo "$d/index.html"; rm -f "$d/index.html"; fi; done`, shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, cmd)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	files := strings.Fields(out)
+	e.logf("info", "%s: removed stale %s (index.php is the real entry point; a co-located index.html could otherwise shadow it depending on server config)", ws.Domain.Domain, strings.Join(files, ", "))
 	return files
 }
 

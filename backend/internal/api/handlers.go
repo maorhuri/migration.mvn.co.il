@@ -63,6 +63,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.GET("/:id/info", h.getServerInfo)
 			servers.GET("/:id/cluster-servers", h.listClusterServers)
 			servers.GET("/:id/existing-domains", h.listExistingDomains)
+			servers.DELETE("/:id/enhance/websites/:website_id", h.deleteEnhanceWebsite)
 		}
 
 		// SSH Keys
@@ -602,6 +603,18 @@ func (h *Handler) listExistingDomains(c *gin.Context) {
 		domains = []string{}
 	}
 	c.JSON(http.StatusOK, gin.H{"domains": domains})
+}
+
+// deleteEnhanceWebsite deletes one website by ID on an Enhance target server -- manual cleanup
+// for a website a cancelled or mistaken migration left behind.
+func (h *Handler) deleteEnhanceWebsite(c *gin.Context) {
+	id := c.Param("id")
+	websiteID := c.Param("website_id")
+	if err := h.engine.DeleteEnhanceWebsite(c.Request.Context(), id, websiteID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }
 
 func (h *Handler) listClusterServers(c *gin.Context) {
