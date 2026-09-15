@@ -78,14 +78,24 @@ type Account struct {
 
 // Domain represents a domain configuration
 type Domain struct {
+	// Name is the source-side domain: on DirectAdmin this is often just the reseller's
+	// internal/technical hostname for the account (e.g. "customer.s2.mrvsn.com"), not
+	// something a visitor ever types in. It stays fixed to whatever the exported files are
+	// actually stored under (domains/<Name>/public_html) so the files step can always find
+	// them, even when TargetDomain is set below.
 	Name         string   `json:"name"`
 	Type         string   `json:"type"` // main, addon, subdomain, alias
 	DocumentRoot string   `json:"document_root"`
 	SSL          *SSLCert `json:"ssl,omitempty"`
 	PHPVersion   string   `json:"php_version,omitempty"`
-	// Aliases lists DirectAdmin "domain pointer" names that share this domain's document root
-	// (DA never gives them one of their own -- they're a ServerAlias on this domain's vhost).
-	// They are never exported as their own Domain entry; the target panel should register them
+	// TargetDomain, when set, is the domain the target panel should actually register the
+	// website under instead of Name. DirectAdmin "domain pointers" are the real, customer-
+	// facing domain (Name is just the internal hostname it happens to be pointed at) -- when
+	// a domain has exactly one pointer, that pointer becomes TargetDomain.
+	TargetDomain string `json:"target_domain,omitempty"`
+	// Aliases lists other domain names for this same site that were not chosen as
+	// TargetDomain -- Name itself (once superseded) plus any additional pointers beyond the
+	// first. Never exported as their own Domain entry; the target panel should register them
 	// as aliases of this website rather than create separate sites.
 	Aliases []string `json:"aliases,omitempty"`
 }

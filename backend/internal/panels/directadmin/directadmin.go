@@ -786,8 +786,14 @@ func (da *DirectAdmin) exportDomains(ctx context.Context, username string) ([]co
 	// directory exist on disk (DA provisions the standard per-domain skeleton for every domain
 	// name it knows about, pointers included), but that public_html is unused/empty; the real
 	// content lives under the domain it points to. Ask DirectAdmin itself which of this
-	// account's domains are pointers, fold them into the real domain's Aliases, and drop their
-	// fake entries so the target panel never creates a separate, empty website for one.
+	// account's domains are pointers, and drop their fake entries so the target panel never
+	// creates a separate, empty website for one.
+	//
+	// Which name is the real site: on this reseller's accounts, Name is typically just the
+	// internal hosting hostname the account was provisioned under (e.g.
+	// "customer.s2.mrvsn.com") -- nobody visits it. The domain pointer is the customer's
+	// actual, real-world domain. So the first pointer becomes TargetDomain (what gets
+	// registered on the target panel); Name and any further pointers become Aliases.
 	pointerNames := make(map[string]bool)
 	for i := range domains {
 		pointers, err := da.getDomainPointers(ctx, username, domains[i].Name)
@@ -798,11 +804,13 @@ func (da *DirectAdmin) exportDomains(ctx context.Context, username string) ([]co
 		if len(pointers) == 0 {
 			continue
 		}
-		domains[i].Aliases = pointers
 		for _, p := range pointers {
 			pointerNames[strings.ToLower(p)] = true
 		}
-		da.logf("info", "%s has domain pointer(s), migrated as alias(es): %s", domains[i].Name, strings.Join(pointers, ", "))
+		domains[i].TargetDomain = pointers[0]
+		domains[i].Aliases = append([]string{domains[i].Name}, pointers[1:]...)
+		da.logf("info", "%s has domain pointer %s; migrating the site as %s (%s kept as alias)",
+			domains[i].Name, pointers[0], pointers[0], strings.Join(domains[i].Aliases, ", "))
 	}
 	if len(pointerNames) > 0 {
 		filtered := domains[:0]

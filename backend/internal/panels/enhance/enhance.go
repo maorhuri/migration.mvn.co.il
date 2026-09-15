@@ -654,24 +654,33 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		return nil, fmt.Errorf("no target cluster server selected; refusing default placement")
 	}
 
+	// registerName is what actually gets set up on Enhance. Usually that's domain.Name, but a
+	// DirectAdmin domain pointer (TargetDomain) is the account's real, customer-facing domain
+	// -- domain.Name in that case is just the internal hostname the account happened to be
+	// provisioned under, and never belongs on the live site.
+	registerName := domain.Name
+	if domain.TargetDomain != "" {
+		registerName = domain.TargetDomain
+	}
+
 	// Re-run safety: reuse an existing website only when it sits on the selected server.
-	if existing, err := e.getWebsiteByDomain(ctx, orgID, domain.Name); err == nil && existing != nil {
+	if existing, err := e.getWebsiteByDomain(ctx, orgID, registerName); err == nil && existing != nil {
 		if existing.AppServerID != target {
 			return nil, fmt.Errorf("website %s already exists on a different server (appServerId=%s, selected=%s); move or delete it in Enhance first",
-				domain.Name, existing.AppServerID, target)
+				registerName, existing.AppServerID, target)
 		}
 		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s, dbServer=%s ips=%s); reusing it",
-			domain.Name, existing.ID, existing.UnixUser, existing.DbServerID, serverIPs(existing.DbServerIps))
+			registerName, existing.ID, existing.UnixUser, existing.DbServerID, serverIPs(existing.DbServerIps))
 		return existing, nil
 	}
 
 	websiteReq := map[string]interface{}{
-		"domain":      domain.Name,
+		"domain":      registerName,
 		"appServerId": target,
 		"dbServerId":  target,
 		"phpVersion":  e.mapPHPVersion(domain.PHPVersion),
 	}
-	e.logf("info", "Creating website %s on cluster server %s (php=%s)", domain.Name, target, websiteReq["phpVersion"])
+	e.logf("info", "Creating website %s on cluster server %s (php=%s)", registerName, target, websiteReq["phpVersion"])
 
 	resp, err := e.apiRequest(ctx, "POST", fmt.Sprintf("/orgs/%s/websites", orgID), websiteReq)
 	if err != nil {
@@ -687,16 +696,16 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		website, err = e.GetWebsiteInfo(ctx, orgID, created.ID)
 	}
 	if website == nil || err != nil {
-		website, err = e.getWebsiteByDomain(ctx, orgID, domain.Name)
+		website, err = e.getWebsiteByDomain(ctx, orgID, registerName)
 	}
 	if err != nil || website == nil {
-		return nil, fmt.Errorf("website %s was created (id=%q) but could not be read back: %v", domain.Name, created.ID, err)
+		return nil, fmt.Errorf("website %s was created (id=%q) but could not be read back: %v", registerName, created.ID, err)
 	}
 	if website.AppServerID != target {
 		return nil, fmt.Errorf("PLACEMENT MISMATCH: website %s (id=%s) landed on server %s instead of selected server %s; check it in Enhance before retrying",
-			domain.Name, website.ID, website.AppServerID, target)
+			registerName, website.ID, website.AppServerID, target)
 	}
-	e.logf("info", "Website %s created on server %s (id=%s, unixUser=%s)", domain.Name, website.AppServerID, website.ID, website.UnixUser)
+	e.logf("info", "Website %s created on server %s (id=%s, unixUser=%s)", registerName, website.AppServerID, website.ID, website.UnixUser)
 	return website, nil
 }
 
@@ -824,10 +833,12 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		}
 		e.websites[strings.ToLower(d.Name)] = ws
 		if len(d.Aliases) > 0 {
-			// DirectAdmin domain pointers: never given their own site (see common.Domain.Aliases),
-			// so nothing to create here -- but flag them clearly rather than let them silently
-			// stop working after the move, since DNS for these domains still needs pointing here.
-			e.warnf("%s has domain pointer(s) not recreated on Enhance (add manually if still needed): %s", d.Name, strings.Join(d.Aliases, ", "))
+			// d.Aliases holds names NOT registered as the website's domain: the source's own
+			// internal hostname (superseded by TargetDomain, see common.Domain) plus any extra
+			// pointers beyond the first. Not recreated as Enhance domain aliases (unconfirmed
+			// API for that) -- flag them so nothing is silently lost, even though in practice
+			// they're rarely dereferenced directly.
+			e.warnf("%s: not added as an alias on Enhance (add manually if still needed): %s", ws.Domain.Domain, strings.Join(d.Aliases, ", "))
 		}
 	}
 
