@@ -116,7 +116,14 @@ export function AccountsTable({
           const selected = selectedUsernames.has(account.username);
           const dbCount = account.databases?.length ?? 0;
           const emailCount = account.email_accounts?.length ?? 0;
-          const name = account.domain || account.username;
+          // A DirectAdmin domain pointer is the account's real, customer-facing domain --
+          // account.domain here is often just the internal hosting hostname it was provisioned
+          // under (e.g. "customer.s2.mrvsn.com"), which is what actually gets migrated as an
+          // alias, not the live site's name. Show the pointer as the primary name when there is
+          // one, matching what migrating this account will actually set up on the target.
+          const primaryPointer = account.pointers?.[0];
+          const displayDomain = primaryPointer || account.domain;
+          const name = displayDomain || account.username;
           return (
             <TR key={account.username} clickable selected={selected} onClick={() => onToggle(account)}>
               <TD className="w-10 pe-0" onClick={(e) => e.stopPropagation()}>
@@ -124,8 +131,8 @@ export function AccountsTable({
               </TD>
               <TDPrimary>
                 <div className="flex items-center gap-2">
-                  {account.domain ? (
-                    <Mono className="text-[13px]">{account.domain}</Mono>
+                  {displayDomain ? (
+                    <Mono className="text-[13px]">{displayDomain}</Mono>
                   ) : (
                     <span className="font-normal text-slate-400 dark:text-slate-500">{t('newmigration.table.noDomain')}</span>
                   )}
@@ -140,14 +147,15 @@ export function AccountsTable({
                     </Badge>
                   )}
                 </div>
-                <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400">
+                <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400" title={primaryPointer ? account.pointers?.join(', ') : undefined}>
                   <Mono>{account.username}</Mono>
+                  {primaryPointer && account.domain && (
+                    <>
+                      {' · '}
+                      <Mono>{account.domain}</Mono>
+                    </>
+                  )}
                 </div>
-                {!!account.pointers?.length && (
-                  <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400" title={account.pointers.join(', ')}>
-                    {t('newmigration.table.pointers', { domains: account.pointers.join(', ') })}
-                  </div>
-                )}
               </TDPrimary>
               <TD align="center">
                 {account.php_version ? (
