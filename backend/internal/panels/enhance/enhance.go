@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -171,6 +172,29 @@ func (e *Enhance) GetPanelType() common.PanelType { return common.PanelTypeEnhan
 
 // apiRequest performs a JSON request against the Enhance API (v2 prefix added automatically)
 func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := e.doAPIRequest(ctx, method, endpoint, body)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt == maxAttempts || !isRetryableAPIError(err) {
+			return nil, err
+		}
+		e.logf("warn", "Enhance API %s %s: %v (attempt %d/%d, retrying)", method, endpoint, err, attempt, maxAttempts)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 2 * time.Second):
+		}
+	}
+	return nil, lastErr
+}
+
+// doAPIRequest performs one attempt of a JSON request against the Enhance API.
+func (e *Enhance) doAPIRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
 	if !strings.HasPrefix(endpoint, "/v2") {
 		endpoint = "/v2" + endpoint
 	}
@@ -207,6 +231,19 @@ func (e *Enhance) apiRequest(ctx context.Context, method, endpoint string, body 
 		return nil, &APIError{Status: resp.StatusCode, Method: method, Endpoint: endpoint, Body: strings.TrimSpace(string(respBody))}
 	}
 	return respBody, nil
+}
+
+// isRetryableAPIError reports whether a failed Enhance API call is worth retrying: a network-
+// level failure (timeout, connection reset, DNS -- not an *APIError at all) or a 502/503/504
+// from the node. A definitive HTTP error (4xx, including 409 "already exists", which several
+// callers specifically check for) is never retried -- retrying it would not change the outcome
+// and could mask what the caller's own status-code handling needs to see.
+func isRetryableAPIError(err error) bool {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.Status == 502 || ae.Status == 503 || ae.Status == 504
+	}
+	return true
 }
 
 // APIError is an HTTP error from the Enhance API
