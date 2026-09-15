@@ -299,7 +299,7 @@ export default function MigrationDetail() {
     }
   };
   const warningLogs = logs.filter((log) => log.level === 'warn');
-  const domains = migration.export_data?.domains?.map((d) => d.name).filter(Boolean) ?? [];
+  const domains = migration.export_data?.domains?.map((d) => d.target_domain || d.name).filter(Boolean) ?? [];
   const hostsEntry = migration.target_ip && domains.length > 0 ? `${migration.target_ip} ${domains.join(' ')}` : null;
 
   const accountMono = <Mono className="font-medium text-slate-900 dark:text-slate-100">{migration.account_username}</Mono>;

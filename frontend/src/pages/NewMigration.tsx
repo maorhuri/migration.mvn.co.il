@@ -525,7 +525,10 @@ export default function NewMigration() {
 
       // Generate hosts entry
       const targetServer = servers.find((s: Server) => s.id === formData.target_server_id);
-      const domains = selectedAccounts.map((a: Account) => a.domain).join(' ');
+      // A DirectAdmin domain pointer is the account's real, customer-facing domain -- a.domain
+      // alone is often just the internal hosting hostname it was provisioned under, which is
+      // not what actually got registered as the website's domain on the target.
+      const domains = selectedAccounts.map((a: Account) => a.pointers?.[0] || a.domain).join(' ');
       const hostsIP = accumulatedTargetIP || clusterServers.find((c: ClusterServer) => c.id === formData.target_cluster_server_id)?.ip || targetServer?.host || 'TARGET_IP';
       setHostsEntry(`${hostsIP} ${domains}`);
 

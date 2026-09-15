@@ -121,7 +121,10 @@ export interface Migration {
   created_at: string;
   /** Export metadata stored by the backend once the source export finished (domains used for the hosts entry). */
   export_data?: {
-    domains?: { name: string }[];
+    /** target_domain, when set, is what actually got registered on the target (a DirectAdmin
+     * domain pointer is the account's real, customer-facing domain -- name alone is often just
+     * the internal hosting hostname the account was provisioned under). */
+    domains?: { name: string; target_domain?: string }[];
     /** Snapshot of the source account as it was when the export ran. */
     account?: {
       domain?: string;
