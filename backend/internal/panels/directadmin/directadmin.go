@@ -525,6 +525,19 @@ func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputD
 	return nil
 }
 
+// mysqlQuery runs a single statement through the mysql/mariadb CLI and returns its raw,
+// header-less output. Stderr is always discarded: some servers' mysql binary has been renamed
+// (MariaDB deprecating the "mysql" name in favor of "mariadb") and prints a warning on every
+// single invocation -- e.g. "mysql: Deprecated program name. It will be removed in a future
+// release, use '/usr/local/mariadb-.../bin/mariadb' instead" -- to stderr. RunCommand captures
+// stdout+stderr combined, so without this a warning line's words ("mysql:", "Deprecated", ...)
+// get parsed right along with real query results; callers here parse output as data (database
+// names, sizes, usernames), so a stray "mysql:" masquerading as the first database name was
+// enough to make mysqldump fail immediately on account export (seen live on srv2.mrvns.com).
+func (da *DirectAdmin) mysqlQuery(ctx context.Context, auth, sql string) (string, error) {
+	return da.sshClient.RunCommand(ctx, fmt.Sprintf("mysql %s -N -e %s 2>/dev/null", auth, shq(sql)))
+}
+
 // ExportDatabases dumps every database of the account using DirectAdmin's own MySQL
 // credentials (/usr/local/directadmin/conf/mysql.conf), the same way GetAccount lists them.
 func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, outputDir string) ([]common.Database, error) {
@@ -550,8 +563,7 @@ func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, out
 	auth := fmt.Sprintf("-h %s -u %s -p%s", shq(host), shq(mysqlUser), shq(mysqlPass))
 
 	likePattern := strings.ReplaceAll(username, "_", `\_`) + `\_%`
-	listCmd := fmt.Sprintf("mysql %s -N -e %s", auth, shq(fmt.Sprintf("SHOW DATABASES LIKE '%s'", likePattern)))
-	out, err = da.sshClient.RunCommand(ctx, listCmd)
+	out, err = da.mysqlQuery(ctx, auth, fmt.Sprintf("SHOW DATABASES LIKE '%s'", likePattern))
 	if err != nil {
 		return nil, fmt.Errorf("listing databases failed: %v", err)
 	}
@@ -564,21 +576,26 @@ func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, out
 	var databases []common.Database
 	for _, dbName := range dbNames {
 		var size int64
-		sizeOut, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf("mysql %s -N -e %s", auth,
-			shq(fmt.Sprintf("SELECT COALESCE(SUM(data_length + index_length),0) FROM information_schema.tables WHERE table_schema='%s'", dbName))))
+		sizeOut, _ := da.mysqlQuery(ctx, auth,
+			fmt.Sprintf("SELECT COALESCE(SUM(data_length + index_length),0) FROM information_schema.tables WHERE table_schema='%s'", dbName))
 		if v, err := strconv.ParseInt(strings.TrimSpace(sizeOut), 10, 64); err == nil {
 			size = v
 		}
 
 		var dbUsers []common.DBUser
-		usersOut, _ := da.sshClient.RunCommand(ctx, fmt.Sprintf("mysql %s -N -e %s", auth,
-			shq(fmt.Sprintf("SELECT DISTINCT User FROM mysql.db WHERE Db='%s' OR Db='%s'", dbName, strings.ReplaceAll(dbName, "_", `\_`)))))
+		usersOut, _ := da.mysqlQuery(ctx, auth,
+			fmt.Sprintf("SELECT DISTINCT User FROM mysql.db WHERE Db='%s' OR Db='%s'", dbName, strings.ReplaceAll(dbName, "_", `\_`)))
 		for _, u := range strings.Fields(usersOut) {
 			dbUsers = append(dbUsers, common.DBUser{Username: u, Host: "localhost"})
 		}
 
+		// mysqldump's stdout must stay pure SQL for gzip to pipe straight into the dump file --
+		// no "2>&1" here. Its stderr (a real error, or on some servers a "Deprecated program
+		// name" notice printed on every run, see mysqlQuery above) falls through to this
+		// command's own stderr instead, which RunCommand still captures into `out` below for
+		// the failure case; set -o pipefail keeps mysqldump's own exit code authoritative.
 		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", dbName, time.Now().Unix())
-		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s 2>&1 | gzip -1 > %s",
+		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s | gzip -1 > %s",
 			auth, shq(dbName), shq(remoteDump))
 		if out, err := da.sshClient.RunCommand(ctx, dumpCmd); err != nil {
 			da.sshClient.RunCommand(ctx, "rm -f "+shq(remoteDump))
