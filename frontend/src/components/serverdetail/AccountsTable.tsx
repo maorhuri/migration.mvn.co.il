@@ -107,11 +107,18 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
         {accounts.map((account) => {
           const dbCount = account.databases?.length || 0;
           const emailCount = account.email_accounts?.length || 0;
+          // A DirectAdmin domain pointer is the account's real, customer-facing domain --
+          // account.domain here is often just the internal hosting hostname it was provisioned
+          // under, which is what actually gets migrated as an alias, not the live site's name.
+          // Show the pointer as the primary name when there is one (same rule as the New
+          // Migration wizard's account table).
+          const primaryPointer = account.pointers?.[0];
+          const displayDomain = primaryPointer || account.domain;
           return (
             <TR key={account.username}>
               <TDPrimary className="whitespace-nowrap">
                 <div className="flex min-w-0 items-center gap-2">
-                  {account.domain ? <Mono className="text-[13px] font-medium">{account.domain}</Mono> : <Dash />}
+                  {displayDomain ? <Mono className="text-[13px] font-medium">{displayDomain}</Mono> : <Dash />}
                   {account.ssl_enabled && (
                     <Badge
                       tone="success"
@@ -123,9 +130,12 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
                     </Badge>
                   )}
                 </div>
-                <Mono block className="mt-0.5 text-2xs font-normal text-slate-500 dark:text-slate-400">
-                  {account.username}
-                </Mono>
+                <div title={primaryPointer ? account.pointers?.join(', ') : undefined}>
+                  <Mono block className="mt-0.5 text-2xs font-normal text-slate-500 dark:text-slate-400">
+                    {account.username}
+                    {primaryPointer && account.domain && ` · ${account.domain}`}
+                  </Mono>
+                </div>
               </TDPrimary>
               <TD>
                 {account.is_wordpress ? (
@@ -160,7 +170,7 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
                     tone="violet"
                     icon={<CircleStackIcon />}
                     count={dbCount}
-                    label={t('serverdetail.table.showDatabases', { count: dbCount, domain: account.domain })}
+                    label={t('serverdetail.table.showDatabases', { count: dbCount, domain: displayDomain })}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenDatabases(account);
@@ -176,7 +186,7 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
                     tone="sky"
                     icon={<EnvelopeIcon />}
                     count={emailCount}
-                    label={t('serverdetail.table.showMailboxes', { count: emailCount, domain: account.domain })}
+                    label={t('serverdetail.table.showMailboxes', { count: emailCount, domain: displayDomain })}
                     onClick={(e) => {
                       e.stopPropagation();
                       onOpenEmails(account);
