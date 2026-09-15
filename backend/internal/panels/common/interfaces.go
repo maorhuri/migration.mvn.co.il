@@ -63,10 +63,13 @@ type Account struct {
 	Databases     []string `json:"databases,omitempty"`
 	EmailAccounts []string `json:"email_accounts,omitempty"`
 	AddonDomains  []string `json:"addon_domains,omitempty"`
-	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
-	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
-	IsWordPress   bool     `json:"is_wordpress"`
-	DBSize        string   `json:"db_size,omitempty"`
+	// Pointers lists DirectAdmin "domain pointer" names found across this account's domains
+	// (display only: which real domain each points to is in Domain.Aliases at export time).
+	Pointers    []string `json:"pointers,omitempty"`
+	SSLEnabled  bool     `json:"ssl_enabled,omitempty"`
+	SSLExpiry   string   `json:"ssl_expiry,omitempty"`
+	IsWordPress bool     `json:"is_wordpress"`
+	DBSize      string   `json:"db_size,omitempty"`
 	// Counts for display
 	DBCount    int    `json:"db_count"`
 	EmailCount int    `json:"email_count"`
@@ -80,6 +83,11 @@ type Domain struct {
 	DocumentRoot string   `json:"document_root"`
 	SSL          *SSLCert `json:"ssl,omitempty"`
 	PHPVersion   string   `json:"php_version,omitempty"`
+	// Aliases lists DirectAdmin "domain pointer" names that share this domain's document root
+	// (DA never gives them one of their own -- they're a ServerAlias on this domain's vhost).
+	// They are never exported as their own Domain entry; the target panel should register them
+	// as aliases of this website rather than create separate sites.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // SSLCert represents SSL certificate data

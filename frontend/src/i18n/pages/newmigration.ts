@@ -77,6 +77,7 @@ export const newmigration: PageDict = {
     'newmigration.table.selectAll': 'בחר את כל החשבונות',
     'newmigration.table.wordpress': 'WordPress',
     'newmigration.table.ssl': 'SSL',
+    'newmigration.table.pointers': 'פוינטר: {domains}',
     'newmigration.table.viewItems': 'הצג {items} של {name}',
 
     // Selection tray
@@ -304,6 +305,7 @@ export const newmigration: PageDict = {
     'newmigration.table.selectAll': 'Select all accounts',
     'newmigration.table.wordpress': 'WordPress',
     'newmigration.table.ssl': 'SSL',
+    'newmigration.table.pointers': 'Pointer: {domains}',
     'newmigration.table.viewItems': 'View {items} for {name}',
 
     // Selection tray

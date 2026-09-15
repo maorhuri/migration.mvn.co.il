@@ -381,6 +381,7 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 						accounts[i].Databases = stringList(meta["databases"])
 						accounts[i].EmailAccounts = stringList(meta["email_accounts"])
 						accounts[i].AddonDomains = stringList(meta["addon_domains"])
+						accounts[i].Pointers = stringList(meta["pointers"])
 						if v, ok := meta["is_wordpress"].(bool); ok {
 							accounts[i].IsWordPress = v
 						}
@@ -439,6 +440,7 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 				Databases:     acc.Databases,
 				EmailAccounts: acc.EmailAccounts,
 				AddonDomains:  acc.AddonDomains,
+				Pointers:      acc.Pointers,
 				IsWordPress:   acc.IsWordPress,
 				SSLEnabled:    acc.SSLEnabled,
 				SSLExpiry:     acc.SSLExpiry,
@@ -517,6 +519,7 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 				Databases:     acc.Databases,
 				EmailAccounts: acc.EmailAccounts,
 				AddonDomains:  acc.AddonDomains,
+				Pointers:      acc.Pointers,
 				IsWordPress:   acc.IsWordPress,
 				SSLEnabled:    acc.SSLEnabled,
 				SSLExpiry:     acc.SSLExpiry,

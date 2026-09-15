@@ -823,6 +823,12 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 			return nil, err
 		}
 		e.websites[strings.ToLower(d.Name)] = ws
+		if len(d.Aliases) > 0 {
+			// DirectAdmin domain pointers: never given their own site (see common.Domain.Aliases),
+			// so nothing to create here -- but flag them clearly rather than let them silently
+			// stop working after the move, since DNS for these domains still needs pointing here.
+			e.warnf("%s has domain pointer(s) not recreated on Enhance (add manually if still needed): %s", d.Name, strings.Join(d.Aliases, ", "))
+		}
 	}
 
 	// 2. Files

@@ -143,6 +143,11 @@ export function AccountsTable({
                 <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400">
                   <Mono>{account.username}</Mono>
                 </div>
+                {!!account.pointers?.length && (
+                  <div className="mt-0.5 text-xs font-normal text-slate-500 dark:text-slate-400" title={account.pointers.join(', ')}>
+                    {t('newmigration.table.pointers', { domains: account.pointers.join(', ') })}
+                  </div>
+                )}
               </TDPrimary>
               <TD align="center">
                 {account.php_version ? (

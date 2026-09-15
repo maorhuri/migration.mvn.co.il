@@ -874,6 +874,7 @@ func (d *Database) SaveServerAccounts(ctx context.Context, serverID string, acco
 		metadataMap["databases"] = acc.Databases
 		metadataMap["email_accounts"] = acc.EmailAccounts
 		metadataMap["addon_domains"] = acc.AddonDomains
+		metadataMap["pointers"] = acc.Pointers
 		metadataMap["is_wordpress"] = acc.IsWordPress
 		metadataMap["ssl_enabled"] = acc.SSLEnabled
 		metadataMap["ssl_expiry"] = acc.SSLExpiry

@@ -991,6 +991,7 @@ func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int
 			Databases:     acc.Databases,
 			EmailAccounts: acc.EmailAccounts,
 			AddonDomains:  acc.AddonDomains,
+			Pointers:      acc.Pointers,
 			IsWordPress:   acc.IsWordPress,
 			SSLEnabled:    acc.SSLEnabled,
 			SSLExpiry:     acc.SSLExpiry,
@@ -1116,6 +1117,7 @@ type AccountInfo struct {
 	Databases     []string `json:"databases,omitempty"`
 	EmailAccounts []string `json:"email_accounts,omitempty"`
 	AddonDomains  []string `json:"addon_domains,omitempty"`
+	Pointers      []string `json:"pointers,omitempty"`
 	SSLEnabled    bool     `json:"ssl_enabled,omitempty"`
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
 	IsWordPress   bool     `json:"is_wordpress"`
@@ -1283,6 +1285,7 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 				Databases:     acc.Databases,
 				EmailAccounts: acc.EmailAccounts,
 				AddonDomains:  acc.AddonDomains,
+				Pointers:      acc.Pointers,
 				SSLEnabled:    acc.SSLEnabled,
 				SSLExpiry:     acc.SSLExpiry,
 				IsWordPress:   acc.IsWordPress,

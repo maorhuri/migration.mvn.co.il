@@ -85,6 +85,7 @@ export interface Account {
   databases?: string[];
   email_accounts?: string[];
   addon_domains?: string[];
+  pointers?: string[];
   ssl_enabled?: boolean;
   ssl_expiry?: string;
   is_wordpress?: boolean;

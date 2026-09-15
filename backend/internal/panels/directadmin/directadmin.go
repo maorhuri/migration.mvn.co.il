@@ -207,6 +207,25 @@ if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASS" ]; then
 else
     echo "0"
 fi
+echo "---SEPARATOR---"
+
+# All domains known to this account (main + addon + domain pointers, undifferentiated -- the
+# Go side tells pointers apart via CMD_API_DOMAIN_POINTER, same as exportDomains)
+DOMAINS_LIST="/usr/local/directadmin/data/users/$USER/domains.list"
+[ -f "$DOMAINS_LIST" ] && tr "\n" "," < "$DOMAINS_LIST"
+echo "---SEPARATOR---"
+
+# Domain pointers per domain, one "domain|<api response>" line each -- lightweight visibility
+# for the account list (browsed before any export runs); exportDomains does the authoritative
+# version at migration time.
+API_URL=$(/usr/local/directadmin/directadmin api-url --user="$USER" 2>/dev/null)
+if [ -n "$API_URL" ] && [ -f "$DOMAINS_LIST" ]; then
+    for d in $(cat "$DOMAINS_LIST" 2>/dev/null); do
+        resp=$(curl -sk -m 10 "$API_URL/CMD_API_DOMAIN_POINTER?domain=$d&json=yes" 2>/dev/null)
+        [ -n "$resp" ] && echo "$d|$resp"
+    done
+fi
+echo "---SEPARATOR---"
 '`, username)
 
 	output, err := da.sshClient.RunCommand(ctx, script)
@@ -303,6 +322,44 @@ fi
 		dbSize := strings.TrimSpace(parts[7])
 		if dbSize != "" && dbSize != "NULL" {
 			account.DBSize = dbSize + " MB"
+		}
+	}
+
+	// All domains known to the account: main + addon + domain pointers, undifferentiated (part 8)
+	var allDomains []string
+	if len(parts) > 8 {
+		raw := strings.TrimSpace(parts[8])
+		if raw != "" {
+			for _, d := range strings.Split(strings.TrimSuffix(raw, ","), ",") {
+				if d = strings.TrimSpace(d); d != "" {
+					allDomains = append(allDomains, d)
+				}
+			}
+		}
+	}
+
+	// Domain pointers, one "domain|<api response>" line per real domain that has any (part 9).
+	// Pointer names are excluded from AddonDomains below: they are not independent sites.
+	pointerNames := make(map[string]bool)
+	if len(parts) > 9 {
+		for _, line := range strings.Split(strings.TrimSpace(parts[9]), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			_, resp, ok := strings.Cut(line, "|")
+			if !ok {
+				continue
+			}
+			for _, p := range parseDomainPointerResponse(resp) {
+				account.Pointers = append(account.Pointers, p)
+				pointerNames[strings.ToLower(p)] = true
+			}
+		}
+	}
+	for _, d := range allDomains {
+		if !strings.EqualFold(d, account.Domain) && !pointerNames[strings.ToLower(d)] {
+			account.AddonDomains = append(account.AddonDomains, d)
 		}
 	}
 
@@ -723,7 +780,81 @@ func (da *DirectAdmin) exportDomains(ctx context.Context, username string) ([]co
 		domains = append(domains, domain)
 	}
 
+	// Domain pointers (DirectAdmin: a domain name inserted as a ServerAlias on another
+	// domain's vhost, never given a vhost or document root of its own) can otherwise end up
+	// here as a fake standalone "addon" domain -- its own domains/<name>.conf and public_html
+	// directory exist on disk (DA provisions the standard per-domain skeleton for every domain
+	// name it knows about, pointers included), but that public_html is unused/empty; the real
+	// content lives under the domain it points to. Ask DirectAdmin itself which of this
+	// account's domains are pointers, fold them into the real domain's Aliases, and drop their
+	// fake entries so the target panel never creates a separate, empty website for one.
+	pointerNames := make(map[string]bool)
+	for i := range domains {
+		pointers, err := da.getDomainPointers(ctx, username, domains[i].Name)
+		if err != nil {
+			da.logf("warn", "Could not look up domain pointers for %s: %v", domains[i].Name, err)
+			continue
+		}
+		if len(pointers) == 0 {
+			continue
+		}
+		domains[i].Aliases = pointers
+		for _, p := range pointers {
+			pointerNames[strings.ToLower(p)] = true
+		}
+		da.logf("info", "%s has domain pointer(s), migrated as alias(es): %s", domains[i].Name, strings.Join(pointers, ", "))
+	}
+	if len(pointerNames) > 0 {
+		filtered := domains[:0]
+		for _, d := range domains {
+			if pointerNames[strings.ToLower(d.Name)] {
+				continue
+			}
+			filtered = append(filtered, d)
+		}
+		domains = filtered
+	}
+
 	return domains, nil
+}
+
+// getDomainPointers asks DirectAdmin's own local API (CMD_API_DOMAIN_POINTER, which must be
+// called as the domain's owner) which domain pointers exist for the given domain. Best-effort:
+// on any failure it returns an error for the caller to log and continue past, since this is a
+// visibility/correctness nicety, not something worth failing an export over.
+func (da *DirectAdmin) getDomainPointers(ctx context.Context, username, domain string) ([]string, error) {
+	script := fmt.Sprintf(
+		`url=$(/usr/local/directadmin/directadmin api-url --user=%s 2>/dev/null) && [ -n "$url" ] && curl -sk -m 15 "$url/CMD_API_DOMAIN_POINTER?domain=%s&json=yes"`,
+		shq(username), shq(domain),
+	)
+	out, err := da.sshClient.RunCommand(ctx, script)
+	if err != nil {
+		return nil, err
+	}
+	return parseDomainPointerResponse(out), nil
+}
+
+// parseDomainPointerResponse parses a CMD_API_DOMAIN_POINTER response, JSON (json=yes) or the
+// legacy urlencoded body ("list[]=a.com&list[]=b.com") some DA builds return regardless.
+func parseDomainPointerResponse(out string) []string {
+	out = strings.TrimSpace(out)
+	if out == "" || strings.Contains(out, `"error":1`) || strings.HasPrefix(out, "error=1") {
+		return nil
+	}
+	var parsed struct {
+		List []string `json:"list"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err == nil {
+		return parsed.List
+	}
+	var list []string
+	for _, pair := range strings.Split(out, "&") {
+		k, v, ok := strings.Cut(pair, "=")
+		if ok && k == "list[]" && v != "" {
+			list = append(list, v)
+		}
+	}
+	return list
 }
 
 // getSSLCert retrieves SSL certificate for a domain
