@@ -595,7 +595,7 @@ func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, out
 		// name" notice printed on every run, see mysqlQuery above) falls through to this
 		// command's own stderr instead, which RunCommand still captures into `out` below for
 		// the failure case; set -o pipefail keeps mysqldump's own exit code authoritative.
-		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", dbName, time.Now().Unix())
+		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", dbName, time.Now().UnixNano())
 		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s | gzip -1 > %s",
 			auth, shq(dbName), shq(remoteDump))
 		if out, err := da.sshClient.RunCommand(ctx, dumpCmd); err != nil {
@@ -632,11 +632,6 @@ func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, out
 func (da *DirectAdmin) ExportEmails(ctx context.Context, username string, outputDir string) ([]common.EmailAccount, error) {
 	if !da.connected {
 		return nil, fmt.Errorf("not connected")
-	}
-
-	emailDir := filepath.Join(outputDir, "emails")
-	if err := os.MkdirAll(emailDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create emails directory: %w", err)
 	}
 
 	// Get account's domain
@@ -684,28 +679,6 @@ func (da *DirectAdmin) ExportEmails(ctx context.Context, username string, output
 			Quota:     quota * 1024 * 1024, // Convert MB to bytes
 			QuotaUsed: usage,
 		})
-	}
-
-	// Export email data (maildir)
-	for _, email := range emails {
-		parts := strings.Split(email.Email, "@")
-		if len(parts) != 2 {
-			continue
-		}
-		emailUser := parts[0]
-
-		mailDir := fmt.Sprintf("/home/%s/imap/%s/%s", username, account.Domain, emailUser)
-		localMailDir := filepath.Join(emailDir, emailUser)
-
-		// Download maildir (mailbox contents are not imported yet; kept for future use)
-		if err := da.sshClient.DownloadDirectory(ctx, mailDir, localMailDir, nil); err != nil {
-			msg := err.Error()
-			if strings.Contains(msg, "does not exist") || strings.Contains(msg, "no such file") {
-				da.logf("info", "Mailbox %s has no stored mail on the source (nothing to copy)", email.Email)
-			} else {
-				da.logf("warn", "Mailbox contents of %s not downloaded: %v", email.Email, err)
-			}
-		}
 	}
 
 	return emails, nil

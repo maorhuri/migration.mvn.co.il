@@ -412,6 +412,15 @@ func (c *Client) downloadDirRecursive(ctx context.Context, sftpClient *sftp.Clie
 	}
 
 	for _, entry := range entries {
+		// A directory holding thousands of small files (a Maildir mailbox, say) would otherwise
+		// run to completion once entered, since the only other check is once per directory:
+		// cancelling mid-download could take as long as that one directory takes to finish.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		remoteFilePath := filepath.Join(remotePath, entry.Name())
 		localFilePath := filepath.Join(localPath, entry.Name())
 

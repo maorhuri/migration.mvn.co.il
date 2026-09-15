@@ -1173,9 +1173,9 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	}
 
 	// Upload dump to the node
-	remoteDump := fmt.Sprintf("/tmp/migration_%s_%d%s", base, time.Now().Unix(), strings.TrimPrefix(filepath.Ext(dumpFile), ""))
+	remoteDump := fmt.Sprintf("/tmp/migration_%s_%d%s", base, time.Now().UnixNano(), strings.TrimPrefix(filepath.Ext(dumpFile), ""))
 	if strings.HasSuffix(dumpFile, ".sql.gz") {
-		remoteDump = fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", base, time.Now().Unix())
+		remoteDump = fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", base, time.Now().UnixNano())
 	}
 	if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
 		return nil, fmt.Errorf("upload dump to node: %w", err)
