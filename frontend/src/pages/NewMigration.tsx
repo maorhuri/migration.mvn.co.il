@@ -72,6 +72,41 @@ const AGENTLESS_SKIPPED_STEPS = new Set(['export_emails', 'export_cron']);
 const buildSteps = (scan: boolean, agentless = false): MigrationStepStatus[] =>
   INITIAL_MIGRATION_STEPS.filter((st) => (scan || st.id !== 'scan_malware') && !(agentless && AGENTLESS_SKIPPED_STEPS.has(st.id)));
 
+/** Up to this many accounts migrate at once; the rest wait their turn as a pool slot frees up. */
+const MAX_CONCURRENT_MIGRATIONS = 4;
+
+/** Independent progress state for one selected account's migration -- there is one of these per
+ * selected account, updated by its own poll loop regardless of how many others are in flight. */
+interface AccountRun {
+  account: Account;
+  migrationId: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  steps: MigrationStepStatus[];
+  currentStepIndex: number;
+  overallProgress: number;
+  logs: MigrationLog[];
+  targetNode: string;
+  targetIp: string;
+  warnings: number;
+  scanReview: ScanReport | null;
+  startedAt: number | null;
+}
+
+/** Runs `worker` over `items` with at most `limit` in flight at once, returning results in the
+ * original order. A slot picks up the next queued item as soon as it frees up. */
+async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return results;
+}
+
 export default function NewMigration() {
   const t = useT();
   const navigate = useNavigate();
@@ -98,35 +133,31 @@ export default function NewMigration() {
   const [targetFilterType, setTargetFilterType] = useState<string>('all');
   const [clusterSearchTerm, setClusterSearchTerm] = useState('');
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
-  const [migrationSteps, setMigrationSteps] = useState<MigrationStepStatus[]>([]);
-  const [currentMigrationStep, setCurrentMigrationStep] = useState(0);
   const [hostsEntry, setHostsEntry] = useState<string>('');
   const [warningLogs, setWarningLogs] = useState<MigrationLog[]>([]);
   const [warningCount, setWarningCount] = useState(0);
-  const [targetNode, setTargetNode] = useState<string>('');
-  const [overallProgress, setOverallProgress] = useState(0);
   const [sortField, setSortField] = useState<string>('domain');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [refreshingAccounts, setRefreshingAccounts] = useState(false);
   const [emailModalAccount, setEmailModalAccount] = useState<Account | null>(null);
   const [dbModalAccount, setDbModalAccount] = useState<Account | null>(null);
 
-  // Live console + elapsed time for the migrating step (polled alongside the status loop).
-  const [activeMigrationId, setActiveMigrationId] = useState<string | null>(null);
-  // Malware scan waiting for the operator's decision (clean / skip / abort).
-  const [scanReview, setScanReview] = useState<{ id: string; report: ScanReport } | null>(null);
+  // One entry per selected account, driven independently by its own poll loop -- up to
+  // MAX_CONCURRENT_MIGRATIONS run at once instead of waiting for each to finish in turn.
+  const [runs, setRuns] = useState<AccountRun[]>([]);
+  // Kept in sync with `runs` on every update (no stale-closure risk) so the pool's completion
+  // handler can read the final state without waiting on a re-render.
+  const runsRef = useRef<AccountRun[]>([]);
+  // Username of the run shown in the detailed panel; null lets it auto-follow the first to start.
+  const [focusedUsername, setFocusedUsername] = useState<string | null>(null);
   const [decisionBusy, setDecisionBusy] = useState(false);
-  const [liveLogs, setLiveLogs] = useState<MigrationLog[]>([]);
-  const [migrationStartedAt, setMigrationStartedAt] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
+  // Ticks once a second while running so each run's live elapsed time (now - run.startedAt) recomputes.
+  const [now, setNow] = useState(() => Date.now());
+  // Wall-clock span of the whole batch (first account started to last one finished), for the completion screen.
+  const overallStartedAt = useRef<number | null>(null);
+  const [finalElapsedMs, setFinalElapsedMs] = useState(0);
   // Ids of the migrations that completed in this run (links to the detail pages on the completion screen).
   const [completedMigrationIds, setCompletedMigrationIds] = useState<string[]>([]);
-  // Wall-clock start of every step (by index) so per-step durations can be derived on completion.
-  const stepStartedAt = useRef<Record<number, number>>({});
-  const stepEndedAt = useRef<Record<number, number>>({});
-
-  // Username of the account whose migration is currently being polled (multi-account runs).
-  const [activeAccount, setActiveAccount] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     source_server_id: '',
@@ -232,43 +263,15 @@ export default function NewMigration() {
     }
   }, [formData.target_server_id]);
 
-  // Poll the live log of the migration currently running (every 2s while running,
-  // one final fetch when it stops). Cleared on completion/failure/unmount.
-  const logPollingActive = currentStep === 'migrating' && starting;
+  // Elapsed-time ticker: each run computes its own live duration from `now - run.startedAt`
+  // (runs start at staggered times, so there is no single shared clock while running).
   useEffect(() => {
-    if (!activeMigrationId) return;
-    let cancelled = false;
-    const migrationId = activeMigrationId;
-    const fetchLogs = async () => {
-      try {
-        const logs = await getMigrationLogs(migrationId);
-        if (cancelled) return;
-        setLiveLogs((prev: MigrationLog[]) => [...prev.filter((l: MigrationLog) => l.migration_id !== migrationId), ...logs]);
-      } catch (e) {
-        // keep the last good log lines
-      }
-    };
-    fetchLogs();
-    if (!logPollingActive) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    const interval = setInterval(fetchLogs, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [activeMigrationId, logPollingActive]);
-
-  // Elapsed-time ticker for the migrating header.
-  useEffect(() => {
-    if (!migrationStartedAt || !starting) return;
-    const tick = () => setElapsedMs(Date.now() - migrationStartedAt);
+    if (!starting) return;
+    const tick = () => setNow(Date.now());
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [migrationStartedAt, starting]);
+  }, [starting]);
 
   const handleSelectAllAccounts = () => {
     if (selectedAccounts.length === filteredAccounts.length) {
@@ -286,22 +289,228 @@ export default function NewMigration() {
     }
   };
 
-  const updateStepStatus = (stepIndex: number, status: MigrationStepStatus['status'], error?: string, duration?: number) => {
-    // Derive a per-step duration from the wall clock when the backend does not report one.
-    if (status === 'running' && stepStartedAt.current[stepIndex] === undefined) {
-      stepStartedAt.current[stepIndex] = Date.now();
-    }
-    if ((status === 'completed' || status === 'error') && duration === undefined) {
-      const start = stepStartedAt.current[stepIndex];
-      if (start !== undefined) {
-        const end = stepEndedAt.current[stepIndex] ?? Date.now();
-        stepEndedAt.current[stepIndex] = end;
-        duration = Math.round((end - start) / 1000);
+  /** Patches one run in place (by username) and keeps runsRef in sync for the pool's completion handler. */
+  const patchRun = (username: string, fn: (r: AccountRun) => AccountRun) => {
+    setRuns((prev) => {
+      const next = prev.map((r) => (r.account.username === username ? fn(r) : r));
+      runsRef.current = next;
+      return next;
+    });
+  };
+
+  /** Runs one account's migration end-to-end (start + poll to completion), updating only its own
+   * entry in `runs` (the authoritative final state read back from runsRef once the pool settles).
+   * Independent of every other concurrently-running account. */
+  const runOneAccount = async (account: Account, steps: MigrationStepStatus[]): Promise<void> => {
+    const username = account.username;
+    // Per-step wall-clock timestamps, local to this run (was a shared ref before; each run needs its own).
+    const stepStartedAt: Record<number, number> = {};
+    const stepEndedAt: Record<number, number> = {};
+    const stepIndexOf = (id: string) => steps.findIndex((st) => st.id === id);
+
+    const updateStep = (stepIndex: number, status: MigrationStepStatus['status'], error?: string, duration?: number) => {
+      if (stepIndex < 0) return;
+      if (status === 'running' && stepStartedAt[stepIndex] === undefined) {
+        stepStartedAt[stepIndex] = Date.now();
       }
+      if ((status === 'completed' || status === 'error') && duration === undefined) {
+        const start = stepStartedAt[stepIndex];
+        if (start !== undefined) {
+          const end = stepEndedAt[stepIndex] ?? Date.now();
+          stepEndedAt[stepIndex] = end;
+          duration = Math.round((end - start) / 1000);
+        }
+      }
+      patchRun(username, (r) => ({ ...r, steps: r.steps.map((step, idx) => (idx === stepIndex ? { ...step, status, error, duration } : step)) }));
+    };
+
+    let migration;
+    try {
+      migration = await startMigration({
+        source_server_id: formData.source_server_id,
+        target_server_id: formData.target_server_id,
+        target_cluster_server_id: formData.target_cluster_server_id || undefined,
+        username: account.username,
+        scan_malware: formData.scan_malware,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      updateStep(0, 'error', errorMessage);
+      patchRun(username, (r) => ({ ...r, status: 'failed' }));
+      return;
     }
-    setMigrationSteps((prev: MigrationStepStatus[]) => prev.map((step: MigrationStepStatus, idx: number) =>
-      idx === stepIndex ? { ...step, status, error, duration } : step
-    ));
+
+    patchRun(username, (r) => ({ ...r, migrationId: migration.id, status: 'running', startedAt: Date.now() }));
+    setFocusedUsername((prev) => prev ?? username); // the first run to start becomes the focused panel
+
+    try {
+      let completed = false;
+      const startTime = Date.now();
+      let lastStepIndex = -1;
+      updateStep(0, 'running');
+
+      while (!completed) {
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Poll every 1 second
+
+        try {
+          const status = await getMigration(migration.id);
+          // Keep this run's own log panel current alongside its status (fire-and-forget: a
+          // failed fetch just leaves last-known lines showing, same as the single-run version did).
+          getMigrationLogs(migration.id)
+            .then((logs) => patchRun(username, (r) => ({ ...r, logs })))
+            .catch(() => {});
+
+          if (status.target_ip) {
+            const label = status.target_node ? `${status.target_node} (${status.target_ip})` : status.target_ip;
+            patchRun(username, (r) => ({ ...r, targetNode: label, targetIp: status.target_ip! }));
+          }
+
+          // Map backend step names to UI step indices
+          const currentStepName = status.current_step || '';
+          const stepMapping: [string, string][] = [
+            // Export phase
+            ['Exporting domains', 'export_domains'],
+            ['Exporting databases', 'export_db'],
+            ['Exporting emails', 'export_emails'],
+            ['Exporting cron', 'export_cron'],
+            ['Exporting DNS', 'export_cron'],
+            ['Exporting files', 'export_files'],
+            ['Downloading files', 'export_files'],
+            ['Export completed', 'export_files'],
+            // Staging scan
+            ['Scanning for malware', 'scan_malware'],
+            ['Waiting for malware scan review', 'scan_malware'],
+            ['Cleaning malware findings', 'scan_malware'],
+            ['Malware scan reviewed', 'scan_malware'],
+            // Import phase
+            ['Starting import', 'connect_node'],
+            ['Connecting to cluster node', 'connect_node'],
+            ['Creating websites', 'create_website'],
+            ['Creating website', 'create_website'],
+            ['Uploading files', 'import_files'],
+            ['Importing files', 'import_files'],
+            ['Importing databases', 'import_db'],
+            ['Registering WordPress', 'import_db'],
+            ['WordPress cleanup', 'import_db'],
+            ['Configuring PHP', 'import_db'],
+            ['Importing email', 'import_emails'],
+            ['Importing cron', 'import_emails'],
+            ['Setting up SSL', 'import_emails'],
+            ['Fixing file permissions', 'fix_permissions'],
+            ['Fixing permissions', 'fix_permissions'],
+            ['Cleaning up', 'cleanup'],
+            ['Migration completed', 'cleanup'],
+          ];
+
+          // Find matching step and update UI
+          let matchedStepIndex = -1;
+          for (const [stepName, stepId] of stepMapping) {
+            if (currentStepName.toLowerCase().includes(stepName.toLowerCase())) {
+              matchedStepIndex = stepIndexOf(stepId);
+              break;
+            }
+          }
+
+          // Malware scan waiting for a decision: show the findings and hold the scan step.
+          if (status.status === 'awaiting_review' && status.scan_report) {
+            patchRun(username, (r) => (r.scanReview ? r : { ...r, scanReview: status.scan_report! }));
+            const scanIdx = stepIndexOf('scan_malware');
+            if (scanIdx >= 0) {
+              patchRun(username, (r) => ({
+                ...r,
+                steps: r.steps.map((st, idx) =>
+                  idx === scanIdx && st.status !== 'warning'
+                    ? { ...st, status: 'warning', details: `${status.scan_report!.findings.length} finding(s): waiting for your decision` }
+                    : st,
+                ),
+              }));
+            }
+          } else if (status.status === 'running') {
+            patchRun(username, (r) => (r.scanReview ? { ...r, scanReview: null } : r));
+          }
+
+          // Update steps if we moved forward
+          if (matchedStepIndex >= 0 && matchedStepIndex > lastStepIndex) {
+            for (let i = 0; i < matchedStepIndex; i++) updateStep(i, 'completed');
+            updateStep(matchedStepIndex, 'running');
+            lastStepIndex = matchedStepIndex;
+            patchRun(username, (r) => ({ ...r, currentStepIndex: matchedStepIndex, overallProgress: Math.round(((matchedStepIndex + 1) / steps.length) * 100) }));
+          }
+
+          if (status.status === 'completed') {
+            completed = true;
+            patchRun(username, (r) => ({ ...r, scanReview: null }));
+            for (let i = 0; i < steps.length; i++) updateStep(i, 'completed');
+            patchRun(username, (r) => ({ ...r, overallProgress: 100, status: 'completed', warnings: status.warnings || 0 }));
+            try {
+              const logs = await getMigrationLogs(migration.id);
+              patchRun(username, (r) => ({ ...r, logs }));
+            } catch (e) {
+              console.error('Failed to load migration logs', e);
+            }
+          } else if (status.status === 'failed' || status.status === 'cancelled') {
+            const errorMsg = status.error || t('newmigration.error.failed');
+
+            // Determine which step failed based on lastStepIndex and error message
+            let failedStep = lastStepIndex >= 0 ? lastStepIndex : 0;
+
+            if (errorMsg.toLowerCase().includes('malware') && stepIndexOf('scan_malware') >= 0) {
+              failedStep = stepIndexOf('scan_malware');
+            } else if (errorMsg.toLowerCase().includes('import')) {
+              // Export was successful, fail on appropriate import step
+              const lower = errorMsg.toLowerCase();
+              if (lower.includes('ssh') || lower.includes('node') || lower.includes('reachable')) {
+                failedStep = stepIndexOf('connect_node');
+              } else if (lower.includes('permission')) {
+                failedStep = stepIndexOf('fix_permissions');
+              } else if (lower.includes('database') || lower.includes('mysql')) {
+                failedStep = stepIndexOf('import_db');
+              } else if (lower.includes('email') || lower.includes('cron') || lower.includes('ssl')) {
+                failedStep = stepIndexOf('import_emails');
+              } else if (lower.includes('upload') || lower.includes('files')) {
+                failedStep = stepIndexOf('import_files');
+              } else {
+                failedStep = stepIndexOf('create_website');
+              }
+            }
+
+            // The failure cannot be earlier than the last step the backend reported: keep the heuristic
+            // only when it points past what was observed (a connection error before the import started).
+            failedStep = Math.max(failedStep, lastStepIndex);
+
+            for (let i = 0; i < failedStep; i++) updateStep(i, 'completed');
+            updateStep(failedStep, 'error', errorMsg);
+            patchRun(username, (r) => ({ ...r, currentStepIndex: failedStep, overallProgress: Math.round((failedStep / steps.length) * 100) }));
+            throw new Error(errorMsg);
+          }
+        } catch (pollError) {
+          // If it's a network error, continue polling
+          if (String(pollError).includes('Network')) {
+            continue;
+          }
+          throw pollError;
+        }
+
+        // Timeout after 30 minutes
+        if (Date.now() - startTime > 30 * 60 * 1000) {
+          throw new Error(t('newmigration.error.timeout'));
+        }
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Mark the step that was running as failed — unless the poll loop already
+      // marked a specific step with the error (keep that one).
+      patchRun(username, (r) => {
+        if (r.steps.some((step) => step.status === 'error')) return { ...r, status: 'failed' };
+        const runningIndex = r.steps.findIndex((step) => step.status === 'running');
+        const failedIndex = runningIndex >= 0 ? runningIndex : 0;
+        return {
+          ...r,
+          status: 'failed',
+          steps: r.steps.map((step, idx) => (idx === failedIndex ? { ...step, status: 'error', error: errorMessage } : step)),
+        };
+      });
+    }
   };
 
   const handleStartMigration = async () => {
@@ -310,242 +519,67 @@ export default function NewMigration() {
       return;
     }
 
-    // The step list of this run: the poll loop indexes into it, so the displayed list must be the same one.
+    // The step list of this run: every poll loop indexes into its own copy of this same list.
     const steps = buildSteps(formData.scan_malware, isAgentlessSource);
     setCurrentStep('migrating');
     setStarting(true);
-    setMigrationSteps(steps.map((st) => ({ ...st })));
-    setCurrentMigrationStep(0);
-    setOverallProgress(0);
     setWarningLogs([]);
     setWarningCount(0);
-    setTargetNode('');
-    setLiveLogs([]);
-    setActiveMigrationId(null);
-    setActiveAccount(null);
-    setElapsedMs(0);
-    setMigrationStartedAt(Date.now());
-    setScanReview(null);
     setCompletedMigrationIds([]);
-    stepStartedAt.current = {};
-    stepEndedAt.current = {};
-    let accumulatedWarnings = 0;
-    let accumulatedTargetIP = '';
+    setFocusedUsername(null);
+    overallStartedAt.current = Date.now();
+    setNow(Date.now());
+    const initialRuns: AccountRun[] = selectedAccounts.map((account) => ({
+      account,
+      migrationId: null,
+      status: 'queued',
+      steps: steps.map((st) => ({ ...st })),
+      currentStepIndex: 0,
+      overallProgress: 0,
+      logs: [],
+      targetNode: '',
+      targetIp: '',
+      warnings: 0,
+      scanReview: null,
+      startedAt: null,
+    }));
+    setRuns(initialRuns);
+    runsRef.current = initialRuns;
 
     try {
-      // Start migration for each selected account
-      for (const account of selectedAccounts) {
-        // Call the real API to start migration
-        const migration = await startMigration({
-          source_server_id: formData.source_server_id,
-          target_server_id: formData.target_server_id,
-          target_cluster_server_id: formData.target_cluster_server_id || undefined,
-          username: account.username,
-          scan_malware: formData.scan_malware,
-        });
-        setActiveMigrationId(migration.id);
-        setActiveAccount(account.username);
-        // Each account runs the full step list from the top.
-        setMigrationSteps(steps.map((st) => ({ ...st })));
-        setCurrentMigrationStep(0);
-        setOverallProgress(0);
-        stepStartedAt.current = {};
-        stepEndedAt.current = {};
+      // Every run catches its own errors internally (see runOneAccount) rather than aborting
+      // the rest of the batch -- one account failing should not stop the other 14 from trying.
+      await runWithConcurrency(selectedAccounts, MAX_CONCURRENT_MIGRATIONS, (account) => runOneAccount(account, steps));
 
-        // Poll for migration status
-        let completed = false;
-        const startTime = Date.now();
-        let lastStepIndex = -1;
-        let lastTargetIP = '';
+      const finalRuns = runsRef.current;
+      const anyFailed = finalRuns.some((r) => r.status === 'failed');
+      const succeeded = finalRuns.filter((r) => r.status === 'completed');
 
-        // Start first step as running
-        updateStepStatus(0, 'running');
-
-        while (!completed) {
-          await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every 1 second
-
-          try {
-            const status = await getMigration(migration.id);
-            if (status.target_ip) {
-              lastTargetIP = status.target_ip;
-              setTargetNode(status.target_node ? `${status.target_node} (${status.target_ip})` : status.target_ip);
-            }
-
-            // Update UI based on current step from backend
-            const currentStepName = status.current_step || '';
-
-            // Map backend step names to UI step indices
-            const stepMapping: [string, string][] = [
-              // Export phase
-              ['Exporting domains', 'export_domains'],
-              ['Exporting databases', 'export_db'],
-              ['Exporting emails', 'export_emails'],
-              ['Exporting cron', 'export_cron'],
-              ['Exporting DNS', 'export_cron'],
-              ['Exporting files', 'export_files'],
-              ['Downloading files', 'export_files'],
-              ['Export completed', 'export_files'],
-              // Staging scan
-              ['Scanning for malware', 'scan_malware'],
-              ['Waiting for malware scan review', 'scan_malware'],
-              ['Cleaning malware findings', 'scan_malware'],
-              ['Malware scan reviewed', 'scan_malware'],
-              // Import phase
-              ['Starting import', 'connect_node'],
-              ['Connecting to cluster node', 'connect_node'],
-              ['Creating websites', 'create_website'],
-              ['Creating website', 'create_website'],
-              ['Uploading files', 'import_files'],
-              ['Importing files', 'import_files'],
-              ['Importing databases', 'import_db'],
-              ['Registering WordPress', 'import_db'],
-              ['WordPress cleanup', 'import_db'],
-              ['Configuring PHP', 'import_db'],
-              ['Importing email', 'import_emails'],
-              ['Importing cron', 'import_emails'],
-              ['Setting up SSL', 'import_emails'],
-              ['Fixing file permissions', 'fix_permissions'],
-              ['Fixing permissions', 'fix_permissions'],
-              ['Cleaning up', 'cleanup'],
-              ['Migration completed', 'cleanup'],
-            ];
-            const stepIndexOf = (id: string) => steps.findIndex((st) => st.id === id);
-
-            // Find matching step and update UI
-            let matchedStepIndex = -1;
-            for (const [stepName, stepId] of stepMapping) {
-              if (currentStepName.toLowerCase().includes(stepName.toLowerCase())) {
-                matchedStepIndex = stepIndexOf(stepId);
-                break;
-              }
-            }
-
-            // Malware scan waiting for a decision: show the findings and hold the scan step.
-            if (status.status === 'awaiting_review' && status.scan_report) {
-              setScanReview((prev) => (prev && prev.id === migration.id ? prev : { id: migration.id, report: status.scan_report! }));
-              const scanIdx = stepIndexOf('scan_malware');
-              if (scanIdx >= 0) {
-                setMigrationSteps((prev: MigrationStepStatus[]) => prev.map((st: MigrationStepStatus, idx: number) =>
-                  idx === scanIdx && st.status !== 'warning'
-                    ? { ...st, status: 'warning', details: `${status.scan_report!.findings.length} finding(s): waiting for your decision` }
-                    : st
-                ));
-              }
-            } else if (status.status === 'running') {
-              setScanReview((prev) => (prev && prev.id === migration.id ? null : prev));
-            }
-
-            // Update steps if we moved forward
-            if (matchedStepIndex >= 0 && matchedStepIndex > lastStepIndex) {
-              // Mark all previous steps as completed
-              for (let i = 0; i < matchedStepIndex; i++) {
-                updateStepStatus(i, 'completed');
-              }
-              // Mark current step as running
-              updateStepStatus(matchedStepIndex, 'running');
-              lastStepIndex = matchedStepIndex;
-              setCurrentMigrationStep(matchedStepIndex);
-              setOverallProgress(Math.round(((matchedStepIndex + 1) / steps.length) * 100));
-            }
-
-            if (status.status === 'completed') {
-              completed = true;
-              setScanReview(null);
-              // Mark all steps as completed
-              for (let i = 0; i < steps.length; i++) {
-                updateStepStatus(i, 'completed');
-              }
-              setOverallProgress(100);
-              accumulatedWarnings += status.warnings || 0;
-              setWarningCount(accumulatedWarnings);
-              setCompletedMigrationIds((prev: string[]) => [...prev, migration.id]);
-              try {
-                const logs = await getMigrationLogs(migration.id);
-                const warns = logs.filter((l: MigrationLog) => l.level === 'warn');
-                setWarningLogs((prev: MigrationLog[]) => [...prev, ...warns]);
-              } catch (e) {
-                console.error('Failed to load migration logs', e);
-              }
-              if (lastTargetIP) accumulatedTargetIP = lastTargetIP;
-            } else if (status.status === 'failed' || status.status === 'cancelled') {
-              const errorMsg = status.error || t('newmigration.error.failed');
-
-              // Determine which step failed based on lastStepIndex and error message
-              let failedStep = lastStepIndex >= 0 ? lastStepIndex : 0;
-
-              if (errorMsg.toLowerCase().includes('malware') && stepIndexOf('scan_malware') >= 0) {
-                failedStep = stepIndexOf('scan_malware');
-              } else if (errorMsg.toLowerCase().includes('import')) {
-                // Export was successful, fail on appropriate import step
-                const lower = errorMsg.toLowerCase();
-                if (lower.includes('ssh') || lower.includes('node') || lower.includes('reachable')) {
-                  failedStep = stepIndexOf('connect_node'); // node connection
-                } else if (lower.includes('permission')) {
-                  failedStep = stepIndexOf('fix_permissions');
-                } else if (lower.includes('database') || lower.includes('mysql')) {
-                  failedStep = stepIndexOf('import_db');
-                } else if (lower.includes('email') || lower.includes('cron') || lower.includes('ssl')) {
-                  failedStep = stepIndexOf('import_emails');
-                } else if (lower.includes('upload') || lower.includes('files')) {
-                  failedStep = stepIndexOf('import_files');
-                } else {
-                  failedStep = stepIndexOf('create_website'); // website creation
-                }
-              }
-
-              // The failure cannot be earlier than the last step the backend reported: keep the heuristic
-              // only when it points past what was observed (a connection error before the import started).
-              failedStep = Math.max(failedStep, lastStepIndex);
-
-              // Mark all steps before failed as completed
-              for (let i = 0; i < failedStep; i++) {
-                updateStepStatus(i, 'completed');
-              }
-              // Mark only the failed step with error
-              updateStepStatus(failedStep, 'error', errorMsg);
-              setCurrentMigrationStep(failedStep);
-              setOverallProgress(Math.round((failedStep / steps.length) * 100));
-              throw new Error(errorMsg);
-            }
-
-          } catch (pollError) {
-            // If it's a network error, continue polling
-            if (String(pollError).includes('Network')) {
-              continue;
-            }
-            throw pollError;
-          }
-
-          // Timeout after 30 minutes
-          if (Date.now() - startTime > 30 * 60 * 1000) {
-            throw new Error(t('newmigration.error.timeout'));
-          }
-        }
-      }
-
-      // Generate hosts entry
       const targetServer = servers.find((s: Server) => s.id === formData.target_server_id);
       // A DirectAdmin domain pointer is the account's real, customer-facing domain -- a.domain
       // alone is often just the internal hosting hostname it was provisioned under, which is
       // not what actually got registered as the website's domain on the target.
       const domains = selectedAccounts.map((a: Account) => a.pointers?.[0] || a.domain).join(' ');
-      const hostsIP = accumulatedTargetIP || clusterServers.find((c: ClusterServer) => c.id === formData.target_cluster_server_id)?.ip || targetServer?.host || 'TARGET_IP';
+      const anyTargetIp = finalRuns.find((r) => r.targetIp)?.targetIp;
+      const hostsIP = anyTargetIp || clusterServers.find((c: ClusterServer) => c.id === formData.target_cluster_server_id)?.ip || targetServer?.host || 'TARGET_IP';
       setHostsEntry(`${hostsIP} ${domains}`);
+      setWarningCount(finalRuns.reduce((sum, r) => sum + r.warnings, 0));
+      setCompletedMigrationIds(succeeded.map((r) => r.migrationId).filter((id): id is string => !!id));
+      setWarningLogs(finalRuns.flatMap((r) => r.logs.filter((l) => l.level === 'warn')));
+      setFinalElapsedMs(overallStartedAt.current ? Date.now() - overallStartedAt.current : 0);
 
-      setCurrentStep('completed');
-      toast.success(t('newmigration.toast.completed'));
+      if (anyFailed) {
+        // Mixed or all-failed batch: stay on the migrating step, which now shows every run's
+        // final state (including the failed ones) rather than jumping to the all-succeeded
+        // completion screen, which has no concept of a failure.
+        const failedCount = finalRuns.length - succeeded.length;
+        toast.error(t('newmigration.toast.someFailed', { count: failedCount, total: finalRuns.length }));
+      } else {
+        setCurrentStep('completed');
+        toast.success(t('newmigration.toast.completed'));
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      // Mark the step that was running as failed — unless the poll loop already
-      // marked a specific step with the error (keep that one).
-      setMigrationSteps((prev: MigrationStepStatus[]) => {
-        if (prev.some((step: MigrationStepStatus) => step.status === 'error')) return prev;
-        const runningIndex = prev.findIndex((step: MigrationStepStatus) => step.status === 'running');
-        const failedIndex = runningIndex >= 0 ? runningIndex : 0;
-        return prev.map((step: MigrationStepStatus, idx: number) =>
-          idx === failedIndex ? { ...step, status: 'error', error: errorMessage } : step
-        );
-      });
       toast.error(t('newmigration.toast.failed', { error: errorMessage }));
     } finally {
       setStarting(false);
@@ -660,16 +694,13 @@ export default function NewMigration() {
   const handleResetWizard = () => {
     setCurrentStep('select_source');
     setSelectedAccounts([]);
-    setMigrationSteps([]);
-    setOverallProgress(0);
+    setRuns([]);
+    runsRef.current = [];
+    setFocusedUsername(null);
     setWarningLogs([]);
     setWarningCount(0);
-    setTargetNode('');
-    setLiveLogs([]);
-    setActiveMigrationId(null);
-    setActiveAccount(null);
-    setMigrationStartedAt(null);
-    setElapsedMs(0);
+    overallStartedAt.current = null;
+    setFinalElapsedMs(0);
     setCompletedMigrationIds([]);
     setFormData({
       source_server_id: '',
@@ -685,13 +716,18 @@ export default function NewMigration() {
   const targetClusterNode = clusterServers.find((s: ClusterServer) => s.id === formData.target_cluster_server_id);
   const selectedUsernames = new Set(selectedAccounts.map((a: Account) => a.username));
   const allFilteredSelected = filteredAccounts.length > 0 && selectedAccounts.length === filteredAccounts.length;
+  // The run currently awaiting an operator decision on its malware scan findings (if any --
+  // with several accounts migrating at once, more than one could need review; the rest just wait).
+  const pendingReview = runs.find((r) => r.scanReview);
   const submitDecision = async (action: 'clean' | 'skip' | 'abort') => {
-    if (!scanReview) return;
+    if (!pendingReview || !pendingReview.migrationId) return;
+    const migrationId = pendingReview.migrationId;
+    const username = pendingReview.account.username;
     setDecisionBusy(true);
     try {
-      await submitScanDecision(scanReview.id, action);
+      await submitScanDecision(migrationId, action);
       toast.success(action === 'clean' ? t('newmigration.toast.cleaning') : action === 'skip' ? t('newmigration.toast.skipping') : t('newmigration.toast.aborted'));
-      if (action !== 'abort') setScanReview(null);
+      if (action !== 'abort') patchRun(username, (r) => ({ ...r, scanReview: null }));
     } catch (error) {
       const msg = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || t('newmigration.toast.decisionFailed');
       toast.error(msg);
@@ -700,7 +736,7 @@ export default function NewMigration() {
     }
   };
 
-  const migrationFailed = currentStep === 'migrating' && !starting && migrationSteps.some((s: MigrationStepStatus) => s.status === 'error');
+  const migrationFailed = currentStep === 'migrating' && !starting && runs.some((r) => r.status === 'failed');
   const wizardIndex = currentStep === 'completed' ? WIZARD_ORDER.length - 1 : WIZARD_ORDER.indexOf(currentStep);
   const wizardCompletedUpTo = currentStep === 'completed' ? WIZARD_ORDER.length - 1 : wizardIndex - 1;
   const wizardNavigable = currentStep !== 'migrating' && currentStep !== 'completed';
@@ -1035,38 +1071,76 @@ export default function NewMigration() {
       )}
 
       {/* Step 5: Migrating */}
-      {currentStep === 'migrating' && (
-        <div key={currentStep} className="space-y-6 motion-safe:animate-rise">
-          {scanReview && (
-            <ScanReportPanel
-              report={scanReview.report}
-              decision={{
-                busy: decisionBusy,
-                onClean: () => submitDecision('clean'),
-                onSkip: () => submitDecision('skip'),
-                onAbort: () => submitDecision('abort'),
-              }}
-            />
-          )}
+      {currentStep === 'migrating' && (() => {
+        const focusedRun = runs.find((r) => r.account.username === focusedUsername) ?? runs.find((r) => r.migrationId) ?? runs[0];
+        const doneCount = runs.filter((r) => r.status === 'completed' || r.status === 'failed').length;
+        const runTone = (status: AccountRun['status']) =>
+          status === 'completed' ? 'success' : status === 'failed' ? 'danger' : status === 'running' ? 'brand' : 'neutral';
+        return (
+          <div key={currentStep} className="space-y-6 motion-safe:animate-rise">
+            {pendingReview && pendingReview.scanReview && (
+              <ScanReportPanel
+                report={pendingReview.scanReview}
+                decision={{
+                  busy: decisionBusy,
+                  onClean: () => submitDecision('clean'),
+                  onSkip: () => submitDecision('skip'),
+                  onAbort: () => submitDecision('abort'),
+                }}
+              />
+            )}
 
-          <MigrationProgress
-            steps={migrationSteps}
-            currentStepIndex={currentMigrationStep}
-            overallProgress={overallProgress}
-            elapsedMs={elapsedMs}
-            running={starting}
-            failed={migrationFailed}
-            logs={liveLogs}
-            accounts={selectedAccounts}
-            activeAccount={activeAccount}
-            targetNode={targetNode}
-            sourceName={sourceServer?.name}
-            targetName={targetClusterNode?.friendly_name || targetClusterNode?.hostname || targetServer?.name}
-            onBackToReview={() => setCurrentStep('review')}
-            onViewMigrations={() => navigate('/migrations')}
-          />
-        </div>
-      )}
+            {runs.length > 1 && (
+              <Card>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="me-1 text-xs font-medium text-slate-500 dark:text-slate-400" dir="ltr">
+                    {doneCount} / {runs.length}
+                  </span>
+                  {runs.map((run) => (
+                    <button
+                      key={run.account.username}
+                      type="button"
+                      disabled={run.status === 'queued'}
+                      onClick={() => setFocusedUsername(run.account.username)}
+                      className="rounded-full disabled:cursor-default"
+                    >
+                      <Badge
+                        tone={runTone(run.status)}
+                        size="sm"
+                        mono
+                        dot
+                        pulse={run.status === 'running'}
+                        className={run.account.username === focusedRun?.account.username ? 'ring-2 ring-offset-1' : undefined}
+                      >
+                        {run.account.pointers?.[0] || run.account.domain || run.account.username}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {focusedRun && (
+              <MigrationProgress
+                steps={focusedRun.steps}
+                currentStepIndex={focusedRun.currentStepIndex}
+                overallProgress={focusedRun.overallProgress}
+                elapsedMs={focusedRun.startedAt ? now - focusedRun.startedAt : 0}
+                running={focusedRun.status === 'running' || focusedRun.status === 'queued'}
+                failed={focusedRun.status === 'failed'}
+                logs={focusedRun.logs}
+                accounts={[focusedRun.account]}
+                activeAccount={focusedRun.account.username}
+                targetNode={focusedRun.targetNode}
+                sourceName={sourceServer?.name}
+                targetName={targetClusterNode?.friendly_name || targetClusterNode?.hostname || targetServer?.name}
+                onBackToReview={() => setCurrentStep('review')}
+                onViewMigrations={() => navigate('/migrations')}
+              />
+            )}
+          </div>
+        );
+      })()}
 
       {/* Step 6: Completed */}
       {currentStep === 'completed' && (
@@ -1074,13 +1148,13 @@ export default function NewMigration() {
           <MigrationComplete
             warningCount={warningCount}
             warningLogs={warningLogs}
-            targetNode={targetNode}
+            targetNode={runs.find((r) => r.targetNode)?.targetNode ?? ''}
             accounts={selectedAccounts}
             hostsEntry={hostsEntry}
-            logs={liveLogs}
+            logs={runs.flatMap((r) => r.logs)}
             migrationIds={completedMigrationIds}
             agentlessSource={isAgentlessSource}
-            elapsedMs={elapsedMs}
+            elapsedMs={finalElapsedMs}
             onStartNew={handleResetWizard}
             onViewAll={() => navigate('/migrations')}
           />
