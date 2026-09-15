@@ -73,7 +73,7 @@ const buildSteps = (scan: boolean, agentless = false): MigrationStepStatus[] =>
   INITIAL_MIGRATION_STEPS.filter((st) => (scan || st.id !== 'scan_malware') && !(agentless && AGENTLESS_SKIPPED_STEPS.has(st.id)));
 
 /** Up to this many accounts migrate at once; the rest wait their turn as a pool slot frees up. */
-const MAX_CONCURRENT_MIGRATIONS = 4;
+const MAX_CONCURRENT_MIGRATIONS = 5;
 
 /** Independent progress state for one selected account's migration -- there is one of these per
  * selected account, updated by its own poll loop regardless of how many others are in flight. */
