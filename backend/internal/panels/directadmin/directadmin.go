@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -221,7 +222,7 @@ echo "---SEPARATOR---"
 API_URL=$(/usr/local/directadmin/directadmin api-url --user="$USER" 2>/dev/null)
 if [ -n "$API_URL" ] && [ -f "$DOMAINS_LIST" ]; then
     for d in $(cat "$DOMAINS_LIST" 2>/dev/null); do
-        resp=$(curl -sk -m 10 "$API_URL/CMD_API_DOMAIN_POINTER?domain=$d&json=yes" 2>/dev/null)
+        resp=$(curl -sk -m 10 "$API_URL/CMD_API_DOMAIN_POINTER?domain=$d" 2>/dev/null)
         [ -n "$resp" ] && echo "$d|$resp"
     done
 fi
@@ -847,39 +848,60 @@ func (da *DirectAdmin) exportDomains(ctx context.Context, username string) ([]co
 // called as the domain's owner) which domain pointers exist for the given domain. Best-effort:
 // on any failure it returns an error for the caller to log and continue past, since this is a
 // visibility/correctness nicety, not something worth failing an export over.
+//
+// json=yes must NOT be added here: verified live (srv2.mrvns.com) that it makes this specific
+// endpoint return an empty "{}" and silently discard the real data. Without it, a domain with
+// pointer(s) returns urlencoded "key=value" pairs, one per pointer, keyed by the pointer's own
+// (percent-encoded) domain name with its type as the value -- e.g. a domain "solarm.s2.mrvsn.com"
+// with pointer "solarmoon.net" returns exactly "solarmoon%2Enet=alias". A domain with none
+// returns a plain empty body; an unrecognized domain returns "error=1&text=...&details=...".
 func (da *DirectAdmin) getDomainPointers(ctx context.Context, username, domain string) ([]string, error) {
 	script := fmt.Sprintf(
-		`url=$(/usr/local/directadmin/directadmin api-url --user=%s 2>/dev/null) && [ -n "$url" ] && curl -sk -m 15 "$url/CMD_API_DOMAIN_POINTER?domain=%s&json=yes"`,
+		`url=$(/usr/local/directadmin/directadmin api-url --user=%s 2>/dev/null) && [ -n "$url" ] && curl -sk -m 15 "$url/CMD_API_DOMAIN_POINTER?domain=%s"`,
 		shq(username), shq(domain),
 	)
 	out, err := da.sshClient.RunCommand(ctx, script)
 	if err != nil {
 		return nil, err
 	}
+	if apiErr := domainPointerAPIError(out); apiErr != "" {
+		return nil, fmt.Errorf("DirectAdmin API: %s", apiErr)
+	}
 	return parseDomainPointerResponse(out), nil
 }
 
-// parseDomainPointerResponse parses a CMD_API_DOMAIN_POINTER response, JSON (json=yes) or the
-// legacy urlencoded body ("list[]=a.com&list[]=b.com") some DA builds return regardless.
+// domainPointerAPIError returns the raw "error=1&..." body when a CMD_API_DOMAIN_POINTER
+// response reports one (an unrecognized domain), or "" otherwise.
+func domainPointerAPIError(out string) string {
+	out = strings.TrimSpace(out)
+	if strings.HasPrefix(out, "error=1") {
+		return out
+	}
+	return ""
+}
+
+// parseDomainPointerResponse parses a successful CMD_API_DOMAIN_POINTER response: urlencoded
+// "key=value" pairs, one per pointer, keyed by the pointer's own (percent-encoded) domain name
+// -- e.g. a domain with pointer "solarmoon.net" returns exactly "solarmoon%2Enet=alias". A
+// domain with none returns an empty body.
 func parseDomainPointerResponse(out string) []string {
 	out = strings.TrimSpace(out)
-	if out == "" || strings.Contains(out, `"error":1`) || strings.HasPrefix(out, "error=1") {
+	if out == "" || domainPointerAPIError(out) != "" {
 		return nil
 	}
-	var parsed struct {
-		List []string `json:"list"`
-	}
-	if err := json.Unmarshal([]byte(out), &parsed); err == nil {
-		return parsed.List
-	}
-	var list []string
+	var pointers []string
 	for _, pair := range strings.Split(out, "&") {
-		k, v, ok := strings.Cut(pair, "=")
-		if ok && k == "list[]" && v != "" {
-			list = append(list, v)
+		key, _, ok := strings.Cut(pair, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			pointers = append(pointers, decoded)
+		} else {
+			pointers = append(pointers, key)
 		}
 	}
-	return list
+	return pointers
 }
 
 // getSSLCert retrieves SSL certificate for a domain
