@@ -856,9 +856,15 @@ func (da *DirectAdmin) exportDomains(ctx context.Context, username string) ([]co
 // with pointer "solarmoon.net" returns exactly "solarmoon%2Enet=alias". A domain with none
 // returns a plain empty body; an unrecognized domain returns "error=1&text=...&details=...".
 func (da *DirectAdmin) getDomainPointers(ctx context.Context, username, domain string) ([]string, error) {
+	// domain is interpolated raw (not shq-quoted): it sits inside the curl argument's own
+	// double quotes (needed so "$url" still expands), and shq's single-quoting, embedded
+	// there, becomes LITERAL quote characters DirectAdmin's API then sees as part of the
+	// domain -- confirmed live: DA rejected "'solarm.s2.mrvsn.com'" as a domain it does not
+	// own, even though the account's own main domain, unquoted, works fine. Safe unquoted:
+	// domain names are always letters/digits/hyphens/dots, never shell metacharacters.
 	script := fmt.Sprintf(
 		`url=$(/usr/local/directadmin/directadmin api-url --user=%s 2>/dev/null) && [ -n "$url" ] && curl -sk -m 15 "$url/CMD_API_DOMAIN_POINTER?domain=%s"`,
-		shq(username), shq(domain),
+		shq(username), domain,
 	)
 	out, err := da.sshClient.RunCommand(ctx, script)
 	if err != nil {
