@@ -135,13 +135,16 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 	}
 
 	// Run in background with a context that outlives the HTTP request
-	go e.runMigration(context.Background(), migrationID, sourceServer, targetServer, req, migrationDir)
+	go e.runMigration(context.Background(), migrationID, sourceServer, targetServer, req, migrationDir, nil)
 
 	return result, nil
 }
 
-// runMigration executes the migration process
-func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceServer, targetServer *storage.Server, req *MigrationRequest, workDir string) {
+// runMigration executes the migration process. resumeExportData, when non-nil, is the export
+// from a previous failed/cancelled attempt at this same migrationID: phase 1 (export from
+// source) is skipped entirely and the run goes straight to phase 2 (import), reusing workDir's
+// already-staged files/dumps -- see ResumeMigration.
+func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceServer, targetServer *storage.Server, req *MigrationRequest, workDir string, resumeExportData *common.ExportData) {
 	progressChan := make(chan common.MigrationProgress, 100)
 	consumerDone := make(chan struct{})
 	lastTotalSteps := 0
@@ -183,7 +186,16 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		e.failMigration(ctx, migrationID, msg)
 	}
 
+	// Only clean up the staged export on success: a failed or cancelled run keeps its
+	// already-downloaded files and DB dumps on disk so "try again from where it got stuck"
+	// (ResumeMigration) can skip re-exporting from the source entirely. Superseding it with a
+	// fresh "start from scratch" run, or deleting the migration record, cleans this up instead
+	// (see RerunMigration / DeleteMigration / ClearFinishedMigrations).
+	succeeded := false
 	defer func() {
+		if !succeeded {
+			return
+		}
 		if err := os.RemoveAll(workDir); err != nil {
 			e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Local cleanup warning: %v", err), nil)
 		}
@@ -199,92 +211,102 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		e.db.SetMigrationWarnings(ctx, migrationID, warnings)
 	}
 
-	// Phase 1: export
-	migrationLog("info", fmt.Sprintf("Starting export from %s (%s)", sourceServer.Name, sourceServer.PanelType))
-	exportData, err := e.exportFromSource(workCtx, sourceServer, req.Username, workDir, progressChan, migrationLog)
-	if err != nil {
-		fail(fmt.Sprintf("export failed: %v", err))
-		return
-	}
-	exportJSON, _ := json.Marshal(exportData)
-	e.db.SetMigrationExportData(ctx, migrationID, exportJSON)
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Export completed", map[string]interface{}{
-		"domains":   len(exportData.Domains),
-		"databases": len(exportData.Databases),
-		"emails":    len(exportData.Emails),
-		"cron_jobs": len(exportData.CronJobs),
-	})
-	if len(exportData.Databases) == 0 && len(exportData.Account.Databases) > 0 {
-		fail(fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
-		return
-	}
-
-	// Phase 1b: optional malware scan on the staging copy, with an operator decision when something is found
-	if req.ScanMalware {
-		progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Scanning for malware"}
-		report, err := security.Scan(workCtx, exportData, security.Options{
-			CacheDir: filepath.Join(e.workDir, ".cache"),
-			Log:      migrationLog,
-		})
+	var exportData *common.ExportData
+	if resumeExportData != nil {
+		// Resuming a previous attempt: its export (files, DB dumps, already staged in workDir)
+		// is reused as-is -- no reason to hit the source again, and any malware-scan decision
+		// was already made before the earlier attempt ever reached the import phase that failed.
+		exportData = resumeExportData
+		migrationLog("info", "Resuming from the previous export (skipping re-export from the source)")
+	} else {
+		// Phase 1: export
+		migrationLog("info", fmt.Sprintf("Starting export from %s (%s)", sourceServer.Name, sourceServer.PanelType))
+		exported, err := e.exportFromSource(workCtx, sourceServer, req.Username, workDir, progressChan, migrationLog)
 		if err != nil {
-			fail(fmt.Sprintf("malware scan failed: %v", err))
+			fail(fmt.Sprintf("export failed: %v", err))
 			return
 		}
-		storeReport := func() {
-			if enc, err := json.Marshal(report); err == nil {
-				e.db.SetMigrationScanReport(ctx, migrationID, enc)
-			}
+		exportData = exported
+		exportJSON, _ := json.Marshal(exportData)
+		e.db.SetMigrationExportData(ctx, migrationID, exportJSON)
+		e.db.AddMigrationLog(ctx, migrationID, "info", "Export completed", map[string]interface{}{
+			"domains":   len(exportData.Domains),
+			"databases": len(exportData.Databases),
+			"emails":    len(exportData.Emails),
+			"cron_jobs": len(exportData.CronJobs),
+		})
+		if len(exportData.Databases) == 0 && len(exportData.Account.Databases) > 0 {
+			fail(fmt.Sprintf("export found no database dumps although the account has databases (%s)", strings.Join(exportData.Account.Databases, ", ")))
+			return
 		}
-		storeReport()
-		migrationLog("info", "Malware scan: "+report.Summary()+"; ClamAV: "+report.ClamAV)
-		for _, f := range report.Findings {
-			level := "warn"
-			if f.Severity == security.SevInfo {
-				level = "info"
-			}
-			migrationLog(level, fmt.Sprintf("[%s] %s %s: %s", strings.ToUpper(string(f.Severity)), f.Category, f.Path, f.Evidence))
-		}
-		if report.NeedsReview() {
-			progressChan <- common.MigrationProgress{Status: "awaiting_review", CurrentStep: "Waiting for malware scan review"}
-			migrationLog("warn", fmt.Sprintf("Waiting for your decision: %d finding(s), %d can be cleaned automatically (quarantined on the staging server, core files restored from wordpress.org)", len(report.Findings), report.Cleanable))
-			decision, ok := e.waitScanDecision(workCtx, migrationID, 4*time.Hour)
-			if !ok {
-				if workCtx.Err() != nil {
-					fail("cancelled while waiting for the malware scan review")
-				} else {
-					fail("no decision on the malware scan findings within 4 hours")
-				}
+
+		// Phase 1b: optional malware scan on the staging copy, with an operator decision when something is found
+		if req.ScanMalware {
+			progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Scanning for malware"}
+			report, err := security.Scan(workCtx, exportData, security.Options{
+				CacheDir: filepath.Join(e.workDir, ".cache"),
+				Log:      migrationLog,
+			})
+			if err != nil {
+				fail(fmt.Sprintf("malware scan failed: %v", err))
 				return
 			}
-			e.db.SetMigrationScanDecision(ctx, migrationID, decision)
-			switch decision {
-			case "clean":
-				progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Cleaning malware findings"}
-				res := security.Clean(workCtx, exportData, report, security.Options{CacheDir: filepath.Join(e.workDir, ".cache"), Log: migrationLog})
-				storeReport()
-				migrationLog("info", fmt.Sprintf("Cleanup: %d quarantined, %d core file(s) restored, %d config file(s) stripped, %d skipped, %d error(s); quarantine kept at %s on the staging server",
-					len(res.Quarantined), len(res.Restored), len(res.LinesRemoved), len(res.Skipped), len(res.Errors), res.QuarantineDir))
-				for _, e := range res.Errors {
-					warn("Cleanup error: %s", e)
+			storeReport := func() {
+				if enc, err := json.Marshal(report); err == nil {
+					e.db.SetMigrationScanReport(ctx, migrationID, enc)
 				}
-				remaining := 0
-				for _, f := range report.Findings {
-					if !f.Cleaned && f.Severity != security.SevInfo {
-						remaining++
+			}
+			storeReport()
+			migrationLog("info", "Malware scan: "+report.Summary()+"; ClamAV: "+report.ClamAV)
+			for _, f := range report.Findings {
+				level := "warn"
+				if f.Severity == security.SevInfo {
+					level = "info"
+				}
+				migrationLog(level, fmt.Sprintf("[%s] %s %s: %s", strings.ToUpper(string(f.Severity)), f.Category, f.Path, f.Evidence))
+			}
+			if report.NeedsReview() {
+				progressChan <- common.MigrationProgress{Status: "awaiting_review", CurrentStep: "Waiting for malware scan review"}
+				migrationLog("warn", fmt.Sprintf("Waiting for your decision: %d finding(s), %d can be cleaned automatically (quarantined on the staging server, core files restored from wordpress.org)", len(report.Findings), report.Cleanable))
+				decision, ok := e.waitScanDecision(workCtx, migrationID, 4*time.Hour)
+				if !ok {
+					if workCtx.Err() != nil {
+						fail("cancelled while waiting for the malware scan review")
+					} else {
+						fail("no decision on the malware scan findings within 4 hours")
 					}
+					return
 				}
-				if remaining > 0 {
-					warn("%d finding(s) need manual review after import (database items and report-only files)", remaining)
+				e.db.SetMigrationScanDecision(ctx, migrationID, decision)
+				switch decision {
+				case "clean":
+					progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Cleaning malware findings"}
+					res := security.Clean(workCtx, exportData, report, security.Options{CacheDir: filepath.Join(e.workDir, ".cache"), Log: migrationLog})
+					storeReport()
+					migrationLog("info", fmt.Sprintf("Cleanup: %d quarantined, %d core file(s) restored, %d config file(s) stripped, %d skipped, %d error(s); quarantine kept at %s on the staging server",
+						len(res.Quarantined), len(res.Restored), len(res.LinesRemoved), len(res.Skipped), len(res.Errors), res.QuarantineDir))
+					for _, e := range res.Errors {
+						warn("Cleanup error: %s", e)
+					}
+					remaining := 0
+					for _, f := range report.Findings {
+						if !f.Cleaned && f.Severity != security.SevInfo {
+							remaining++
+						}
+					}
+					if remaining > 0 {
+						warn("%d finding(s) need manual review after import (database items and report-only files)", remaining)
+					}
+				case "skip":
+					warn("Malware findings were NOT cleaned (operator chose to continue); %d finding(s) will be uploaded as-is", len(report.Findings))
+				default: // abort
+					e.cancelMigrationRecord(ctx, migrationID, "aborted after the malware scan")
+					return
 				}
-			case "skip":
-				warn("Malware findings were NOT cleaned (operator chose to continue); %d finding(s) will be uploaded as-is", len(report.Findings))
-			default: // abort
-				e.cancelMigrationRecord(ctx, migrationID, "aborted after the malware scan")
-				return
+				progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Malware scan reviewed"}
+			} else {
+				migrationLog("info", "Malware scan: nothing suspicious found")
 			}
-			progressChan <- common.MigrationProgress{Status: "running", CurrentStep: "Malware scan reviewed"}
-		} else {
-			migrationLog("info", "Malware scan: nothing suspicious found")
 		}
 	}
 
@@ -341,6 +363,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		warn("Source cleanup warning: %v", err)
 	}
 
+	succeeded = true
 	drain()
 	now := time.Now()
 	e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
@@ -836,8 +859,38 @@ func (e *Engine) RecoverInterrupted(ctx context.Context) int {
 	return n
 }
 
+// resolveClusterServerID returns the Enhance cluster node a migration should import into,
+// falling back (for older rows that never recorded it) to probing the node of the website if it
+// already exists on the target.
+func (e *Engine) resolveClusterServerID(ctx context.Context, m *storage.Migration) (string, error) {
+	if m.TargetClusterServerID.String != "" {
+		return m.TargetClusterServerID.String, nil
+	}
+	target, err := e.db.GetServer(ctx, m.TargetServerID)
+	if err == nil && common.PanelType(target.PanelType) == common.PanelTypeEnhance {
+		domain := ""
+		if accounts, err := e.db.GetServerAccounts(ctx, m.SourceServerID); err == nil {
+			for _, a := range accounts {
+				if a.Username == m.AccountUsername {
+					domain = a.Domain
+				}
+			}
+		}
+		if domain != "" {
+			apiKey, _ := e.db.GetServerAPIKey(ctx, target.ID)
+			probe := enhance.New()
+			if err := probe.ConnectAPI(ctx, e.db.ToConnectionConfig(target), apiKey); err == nil {
+				if site, err := probe.FindWebsite(ctx, domain); err == nil && site.AppServerID != "" {
+					return site.AppServerID, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("this migration did not record its cluster node; start it again from New migration and pick the node")
+}
+
 // RerunMigration starts a new migration with the same source, target, node and options as a
-// failed or cancelled one.
+// failed or cancelled one, redoing every step from scratch.
 func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*MigrationResult, error) {
 	m, err := e.db.GetMigration(ctx, migrationID)
 	if err != nil {
@@ -846,40 +899,92 @@ func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*Migra
 	if m.Status != "failed" && m.Status != "cancelled" {
 		return nil, fmt.Errorf("only failed or cancelled migrations can be run again (status: %s)", m.Status)
 	}
+	clusterServerID, err := e.resolveClusterServerID(ctx, m)
+	if err != nil {
+		return nil, err
+	}
 	req := &MigrationRequest{
 		SourceServerID:        m.SourceServerID,
 		TargetServerID:        m.TargetServerID,
-		TargetClusterServerID: m.TargetClusterServerID.String,
+		TargetClusterServerID: clusterServerID,
 		Username:              m.AccountUsername,
 		ScanMalware:           m.ScanRequested,
 	}
-	if req.TargetClusterServerID == "" {
-		// Older rows did not record the node: reuse the node of the website if it already exists.
-		if target, err := e.db.GetServer(ctx, m.TargetServerID); err == nil && common.PanelType(target.PanelType) == common.PanelTypeEnhance {
-			domain := ""
-			if accounts, err := e.db.GetServerAccounts(ctx, m.SourceServerID); err == nil {
-				for _, a := range accounts {
-					if a.Username == m.AccountUsername {
-						domain = a.Domain
-					}
-				}
-			}
-			if domain != "" {
-				apiKey, _ := e.db.GetServerAPIKey(ctx, target.ID)
-				probe := enhance.New()
-				if err := probe.ConnectAPI(ctx, e.db.ToConnectionConfig(target), apiKey); err == nil {
-					if site, err := probe.FindWebsite(ctx, domain); err == nil && site.AppServerID != "" {
-						req.TargetClusterServerID = site.AppServerID
-					}
-				}
-			}
-		}
-		if req.TargetClusterServerID == "" {
-			return nil, fmt.Errorf("this migration did not record its cluster node; start it again from New migration and pick the node")
-		}
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Start from scratch requested; a new migration was started", nil)
+	result, err := e.StartMigration(ctx, req)
+	if err == nil {
+		// The old attempt's staged export/dumps are superseded by the fresh one; best-effort only.
+		os.RemoveAll(filepath.Join(e.workDir, migrationID))
 	}
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Run again requested; a new migration was started", nil)
-	return e.StartMigration(ctx, req)
+	return result, err
+}
+
+// ResumeMigration continues a failed or cancelled migration from the step it got stuck on,
+// instead of redoing steps that already finished: it reuses the export staged on the previous
+// attempt (source files and DB dumps already on disk under workDir, no re-fetch from the source)
+// and hands off to runMigration's resumeExportData path, which in turn relies on the
+// already-idempotent create-website/create-database calls and the file-upload skip check to
+// avoid duplicating anything that made it to the target before the failure.
+func (e *Engine) ResumeMigration(ctx context.Context, migrationID string) (*MigrationResult, error) {
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "failed" && m.Status != "cancelled" {
+		return nil, fmt.Errorf("only failed or cancelled migrations can be resumed (status: %s)", m.Status)
+	}
+	if !m.ExportData.Valid || len(m.ExportData.Data) == 0 {
+		return nil, fmt.Errorf("nothing to resume from yet (it failed before finishing the export); use \"start from scratch\" instead")
+	}
+	var exportData common.ExportData
+	if err := json.Unmarshal(m.ExportData.Data, &exportData); err != nil {
+		return nil, fmt.Errorf("stored export data is unreadable: %w", err)
+	}
+	workDir := filepath.Join(e.workDir, migrationID)
+	if info, statErr := os.Stat(workDir); statErr != nil || !info.IsDir() {
+		return nil, fmt.Errorf("the exported files are no longer on disk (likely cleaned up already); use \"start from scratch\" instead")
+	}
+	clusterServerID, err := e.resolveClusterServerID(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	req := &MigrationRequest{
+		SourceServerID:        m.SourceServerID,
+		TargetServerID:        m.TargetServerID,
+		TargetClusterServerID: clusterServerID,
+		Username:              m.AccountUsername,
+		ScanMalware:           m.ScanRequested,
+	}
+	sourceServer, err := e.db.GetServer(ctx, req.SourceServerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source server: %w", err)
+	}
+	targetServer, err := e.db.GetServer(ctx, req.TargetServerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target server: %w", err)
+	}
+
+	now := time.Now()
+	if err := e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
+		ID: migrationID, Status: "running", CurrentStep: "Resuming from the previous attempt", StartedAt: now,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to reset migration status: %w", err)
+	}
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Try again requested (operator action); continuing from where it got stuck instead of redoing finished steps", nil)
+
+	result := &MigrationResult{
+		ID:              migrationID,
+		SourceServerID:  req.SourceServerID,
+		TargetServerID:  req.TargetServerID,
+		AccountUsername: req.Username,
+		Status:          "running",
+		StartedAt:       now,
+		Progress:        &common.MigrationProgress{ID: migrationID, Status: "running", StartedAt: now},
+	}
+
+	go e.runMigration(context.Background(), migrationID, sourceServer, targetServer, req, workDir, &exportData)
+
+	return result, nil
 }
 
 // RepairWordPress re-runs the WordPress registration, PHP version and ownership steps for a
@@ -1038,9 +1143,15 @@ func (e *Engine) cancelMigrationRecord(ctx context.Context, migrationID, detail 
 	e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Migration cancelled by user (%s).", detail), nil)
 }
 
-// ClearFinishedMigrations deletes every completed, failed or cancelled migration with its logs.
+// ClearFinishedMigrations deletes every completed, failed or cancelled migration with its logs,
+// and their staged workdirs (kept on disk for failed/cancelled runs so ResumeMigration can reuse
+// them -- once the record is gone, resuming it is no longer possible, so nothing is lost).
 func (e *Engine) ClearFinishedMigrations(ctx context.Context) (int64, error) {
-	return e.db.DeleteFinishedMigrations(ctx)
+	ids, err := e.db.DeleteFinishedMigrations(ctx)
+	for _, id := range ids {
+		os.RemoveAll(filepath.Join(e.workDir, id))
+	}
+	return int64(len(ids)), err
 }
 
 // DeleteMigration deletes a migration record
@@ -1052,7 +1163,11 @@ func (e *Engine) DeleteMigration(ctx context.Context, migrationID string) error 
 	if migration.Status == "running" {
 		return fmt.Errorf("cannot delete running migration")
 	}
-	return e.db.DeleteMigration(ctx, migrationID)
+	if err := e.db.DeleteMigration(ctx, migrationID); err != nil {
+		return err
+	}
+	os.RemoveAll(filepath.Join(e.workDir, migrationID))
+	return nil
 }
 
 // CheckCompatibility checks if a migration is compatible

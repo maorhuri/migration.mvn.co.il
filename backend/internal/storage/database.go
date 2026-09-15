@@ -830,13 +830,10 @@ func (d *Database) DeleteMigration(ctx context.Context, id string) error {
 }
 
 // DeleteFinishedMigrations removes all completed/failed/cancelled migrations (logs cascade).
-func (d *Database) DeleteFinishedMigrations(ctx context.Context) (int64, error) {
-	res, err := d.db.ExecContext(ctx, "DELETE FROM migrations WHERE status IN ('completed','failed','cancelled')")
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
+func (d *Database) DeleteFinishedMigrations(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := d.db.SelectContext(ctx, &ids, "DELETE FROM migrations WHERE status IN ('completed','failed','cancelled') RETURNING id")
+	return ids, err
 }
 
 // GetServerAccounts gets cached accounts for a server

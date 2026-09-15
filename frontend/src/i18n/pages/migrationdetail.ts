@@ -26,7 +26,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'השעה את המקור',
     'migrationdetail.actions.unsuspend': 'בטל השעיה',
     'migrationdetail.actions.repair': 'תקן WordPress',
-    'migrationdetail.actions.rerun': 'הרץ מחדש',
+    'migrationdetail.actions.rerun': 'התחל מהתחלה',
+    'migrationdetail.actions.resume': 'נסה שוב מאיפה שנתקע',
 
     'migrationdetail.toast.clean': 'מנקה את העותק בשרת הביניים וממשיך',
     'migrationdetail.toast.skip': 'ממשיך בלי ניקוי',
@@ -34,6 +35,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.decisionFailed': 'שליחת ההחלטה נכשלה',
     'migrationdetail.toast.rerunStarted': 'מיגרציה חדשה הופעלה עבור {account}',
     'migrationdetail.toast.rerunFailed': 'ההרצה מחדש נכשלה',
+    'migrationdetail.toast.resumeStarted': 'ממשיך את המיגרציה של {account} מאיפה שנתקעה',
+    'migrationdetail.toast.resumeFailed': 'לא הצלחנו להמשיך מאיפה שנתקע',
     'migrationdetail.toast.repairNothing': 'לא נדרשו שינויים',
     'migrationdetail.toast.repairFailed': 'התיקון נכשל',
     'migrationdetail.toast.cancelRequested': 'הביטול התקבל; השלב הנוכחי נעצר',
@@ -61,11 +64,16 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.repair.message':
       'מריץ שוב את השלבים שאחרי הייבוא ביעד: מגדיר את גרסת ה-PHP לפי המקור, מעביר התקנות WordPress ישנות שמסד הנתונים שלהן לא קיים אל מחוץ ל-web root (הן נשמרות תחת {leftovers}, לא נמחקות), מסיר רשומות אפליקציה ישנות, מפעיל שוב את זיהוי ה-WordPress של Enhance ומתקן בעלות על קבצים. מתאים כשכפתור ההתחברות ל-WP או רשימת המשתמשים ב-Enhance לא עובדים. ההתקדמות נכתבת לקונסולה למטה.',
     'migrationdetail.confirm.repair.confirm': 'תקן',
-    'migrationdetail.confirm.rerun.title': 'להריץ את המיגרציה מחדש?',
+    'migrationdetail.confirm.rerun.title': 'להתחיל את המיגרציה מהתחלה?',
     'migrationdetail.confirm.rerun.message':
-      'מיגרציה חדשה תתחיל עבור {account} עם אותו מקור, אותו צומת יעד ואותן אפשרויות{scan}. אתר שכבר קיים על הצומת ישמש מחדש. הריצה הזו נשארת בהיסטוריה.',
+      'מיגרציה חדשה תתחיל עבור {account} עם אותו מקור, אותו צומת יעד ואותן אפשרויות{scan} — כולל שלב הייצוא מהמקור מחדש. אתר שכבר קיים על הצומת ישמש מחדש. אם המיגרציה נכשלה אחרי שהייצוא הסתיים בהצלחה, אפשר במקום זה להמשיך מאיפה שנתקעה בלי לחזור על השלבים שכבר בוצעו. הריצה הזו נשארת בהיסטוריה.',
     'migrationdetail.confirm.rerun.withScan': ' (כולל סריקת מלוור)',
-    'migrationdetail.confirm.rerun.confirm': 'הרץ מחדש',
+    'migrationdetail.confirm.rerun.confirm': 'התחל מהתחלה',
+
+    'migrationdetail.confirm.resume.title': 'להמשיך מאיפה שהמיגרציה נתקעה?',
+    'migrationdetail.confirm.resume.message':
+      'המיגרציה של {account} תמשיך מהשלב שבו נכשלה, בלי לחזור על מה שכבר בוצע: הקבצים ומסדי הנתונים שכבר יוצאו מהמקור לא יורדו שוב, ואתר/מסד נתונים שכבר נוצרו ביעד ישמשו כפי שהם (עם בדיקה שלא ייווצרו כפילות ושלא יועלו קבצים שכבר הועלו במלואם).',
+    'migrationdetail.confirm.resume.confirm': 'המשך מאיפה שנתקע',
 
     'migrationdetail.hero.runningLabel': 'המיגרציה רצה',
     'migrationdetail.hero.completed': '{domain} פועל על {node}',
@@ -154,7 +162,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'Suspend source',
     'migrationdetail.actions.unsuspend': 'Unsuspend source',
     'migrationdetail.actions.repair': 'Repair WordPress',
-    'migrationdetail.actions.rerun': 'Run again',
+    'migrationdetail.actions.rerun': 'Start from scratch',
+    'migrationdetail.actions.resume': 'Try again from where it got stuck',
 
     'migrationdetail.toast.clean': 'Cleaning the staging copy, then continuing',
     'migrationdetail.toast.skip': 'Continuing without cleaning',
@@ -162,6 +171,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.decisionFailed': 'Failed to submit the decision',
     'migrationdetail.toast.rerunStarted': 'New migration started for {account}',
     'migrationdetail.toast.rerunFailed': 'Could not start the migration again',
+    'migrationdetail.toast.resumeStarted': 'Resuming the migration for {account} from where it got stuck',
+    'migrationdetail.toast.resumeFailed': 'Could not resume from where it got stuck',
     'migrationdetail.toast.repairNothing': 'Nothing needed changing',
     'migrationdetail.toast.repairFailed': 'Repair failed',
     'migrationdetail.toast.cancelRequested': 'Cancellation requested; the current step is being aborted',
@@ -189,11 +200,16 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.repair.message':
       'Re-runs the post-import steps on the target: sets the PHP version to match the source, moves old WordPress installs whose database does not exist out of the web root (kept under {leftovers}, not deleted), removes stale app records, triggers the WordPress discovery of Enhance again and fixes file ownership. Use it when the WP login button or the user list in Enhance does not work. Progress is written to the console below.',
     'migrationdetail.confirm.repair.confirm': 'Repair',
-    'migrationdetail.confirm.rerun.title': 'Run this migration again?',
+    'migrationdetail.confirm.rerun.title': 'Start this migration from scratch?',
     'migrationdetail.confirm.rerun.message':
-      'A new migration starts for {account} with the same source, target node and options{scan}. A website that already exists on the node is reused. This run stays in the history.',
+      'A new migration starts for {account} with the same source, target node and options{scan}, including re-exporting from the source. A website that already exists on the node is reused. If this migration failed after the export finished, you can instead resume from where it got stuck without redoing the steps already done. This run stays in the history.',
     'migrationdetail.confirm.rerun.withScan': ' (including the malware scan)',
-    'migrationdetail.confirm.rerun.confirm': 'Run again',
+    'migrationdetail.confirm.rerun.confirm': 'Start from scratch',
+
+    'migrationdetail.confirm.resume.title': 'Resume from where it got stuck?',
+    'migrationdetail.confirm.resume.message':
+      'The migration for {account} continues from the step that failed, without redoing what already finished: files and database dumps already exported from the source are not downloaded again, and a website/database already created on the target are reused as-is (checked to avoid duplicates and to skip files that were already fully uploaded).',
+    'migrationdetail.confirm.resume.confirm': 'Resume from where it got stuck',
 
     'migrationdetail.hero.runningLabel': 'Migration running',
     'migrationdetail.hero.completed': '{domain} is live on {node}',

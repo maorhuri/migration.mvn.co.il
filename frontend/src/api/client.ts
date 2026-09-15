@@ -170,9 +170,15 @@ export const deleteMigration = async (id: string): Promise<void> => {
   await api.delete(`/migrations/${id}`);
 };
 
-/** Start a new migration with the same source, target node and options as a failed/cancelled one. */
+/** Start a new migration with the same source, target node and options as a failed/cancelled one ("start from scratch"). */
 export const rerunMigration = async (id: string): Promise<Migration> => {
   const { data } = await api.post(`/migrations/${id}/rerun`);
+  return data;
+};
+
+/** Continue a failed/cancelled migration from the step it got stuck on ("try again from where it got stuck"). */
+export const resumeMigration = async (id: string): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/resume`);
   return data;
 };
 

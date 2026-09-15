@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { cancelMigration, getMigration, getMigrationLogsPage, getServer, repairMigrationWordPress, rerunMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cancelMigration, getMigration, getMigrationLogsPage, getServer, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -68,6 +68,8 @@ export default function MigrationDetail() {
   const [repairOpen, setRepairOpen] = useState(false);
   const [rerunOpen, setRerunOpen] = useState(false);
   const [rerunning, setRerunning] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [repairing, setRepairing] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
   const [jumpToId, setJumpToId] = useState<string | null>(null);
@@ -254,6 +256,20 @@ export default function MigrationDetail() {
     }
   };
 
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      await resumeMigration(migration.id);
+      toast.success(t('migrationdetail.toast.resumeStarted', { account: migration.account_username }));
+      setResumeOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, t('migrationdetail.toast.resumeFailed')));
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const handleRepair = async () => {
     setRepairing(true);
     try {
@@ -351,8 +367,18 @@ export default function MigrationDetail() {
                   {t('migrationdetail.actions.repair')}
                 </Button>
               )}
+              {(migration.status === 'failed' || migration.status === 'cancelled') && !!migration.export_data && (
+                <Button variant="primary" leftIcon={<PlayIcon />} onClick={() => setResumeOpen(true)} loading={resuming}>
+                  {t('migrationdetail.actions.resume')}
+                </Button>
+              )}
               {(migration.status === 'failed' || migration.status === 'cancelled') && (
-                <Button variant="primary" leftIcon={<PlayIcon />} onClick={() => setRerunOpen(true)} loading={rerunning}>
+                <Button
+                  variant={migration.export_data ? 'outline' : 'primary'}
+                  leftIcon={<PlayIcon />}
+                  onClick={() => setRerunOpen(true)}
+                  loading={rerunning}
+                >
                   {t('migrationdetail.actions.rerun')}
                 </Button>
               )}
@@ -505,6 +531,18 @@ export default function MigrationDetail() {
         })}
         confirmLabel={t('migrationdetail.confirm.rerun.confirm')}
         onConfirm={handleRerun}
+      />
+
+      <ConfirmDialog
+        open={resumeOpen}
+        onClose={() => setResumeOpen(false)}
+        tone="brand"
+        title={t('migrationdetail.confirm.resume.title')}
+        message={t.rich('migrationdetail.confirm.resume.message', {
+          account: <Mono>{migration.account_username}</Mono>,
+        })}
+        confirmLabel={t('migrationdetail.confirm.resume.confirm')}
+        onConfirm={handleResume}
       />
     </div>
   );

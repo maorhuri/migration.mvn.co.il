@@ -759,6 +759,18 @@ type createdWebsite struct {
 	orgID, id, domain string
 }
 
+// wasCreatedThisRun reports whether createWebsite created (rather than reused) the given
+// website during this run -- a freshly created website is always empty and must be uploaded to;
+// a reused one might already hold everything from an earlier attempt (see uploadFiles's caller).
+func (e *Enhance) wasCreatedThisRun(websiteID string) bool {
+	for _, cw := range e.createdWebsiteIDs {
+		if cw.id == websiteID {
+			return true
+		}
+	}
+	return false
+}
+
 // RollbackCreatedWebsites deletes every website createWebsite created (not reused) during this
 // run -- used when a migration is cancelled, so an aborted run doesn't leave a half-imported
 // website behind. Never touches a website that existed before this run (createWebsite's re-run
@@ -941,6 +953,17 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		if _, err := os.Stat(localDocRoot); err != nil {
 			return nil, fmt.Errorf("exported files for %s not found at %s", d.Name, localDocRoot)
 		}
+		// A reused website (this run didn't create it -- see resume/rerun) may already hold
+		// everything from an earlier attempt at this same migration. A cheap remote file count
+		// against the export tells apart "already fully uploaded, skip the transfer" from
+		// "partial or missing, upload (or re-upload) it"; a fresh website is always empty, so
+		// there's nothing to check for one.
+		if !e.wasCreatedThisRun(ws.ID) {
+			if already, remoteFiles, localFiles := e.filesAlreadyUploaded(ctx, ws, localDocRoot); already {
+				e.logf("info", "%s: %d files already on the target (export has %d); skipping re-upload", d.Name, remoteFiles, localFiles)
+				continue
+			}
+		}
 		if err := e.uploadFiles(ctx, ws, localDocRoot, progress); err != nil {
 			return nil, fmt.Errorf("failed to upload files for %s: %w", d.Name, err)
 		}
@@ -1077,15 +1100,40 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 	return result, nil
 }
 
-// uploadFiles uploads a document root to the website's document root on the node and verifies it.
-func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocRoot string, progress chan<- common.MigrationProgress) error {
-	localFiles := 0
+// countLocalFiles counts the plain files (not directories) under a local document root.
+func countLocalFiles(localDocRoot string) int {
+	n := 0
 	filepath.Walk(localDocRoot, func(_ string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
-			localFiles++
+			n++
 		}
 		return nil
 	})
+	return n
+}
+
+// filesAlreadyUploaded reports whether a website's document root on the node already holds at
+// least as many files as the export (a cheap, best-effort stand-in for "this was already
+// uploaded successfully" -- not a byte-for-byte check, but good enough to skip a redundant
+// re-transfer on resume/rerun without risking leaving a genuinely partial upload in place: on
+// any doubt -- the node command fails, or the count comes up short -- this returns false and
+// the normal upload just runs).
+func (e *Enhance) filesAlreadyUploaded(ctx context.Context, ws *EnhanceWebsite, localDocRoot string) (already bool, remoteFiles, localFiles int) {
+	localFiles = countLocalFiles(localDocRoot)
+	if localFiles == 0 {
+		return false, 0, 0
+	}
+	out, err := e.nodeRun(ctx, fmt.Sprintf("find %s -type f 2>/dev/null | wc -l", shq(ws.DocRoot)))
+	if err != nil {
+		return false, 0, localFiles
+	}
+	remoteFiles, _ = strconv.Atoi(strings.TrimSpace(out))
+	return remoteFiles >= localFiles, remoteFiles, localFiles
+}
+
+// uploadFiles uploads a document root to the website's document root on the node and verifies it.
+func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocRoot string, progress chan<- common.MigrationProgress) error {
+	localFiles := countLocalFiles(localDocRoot)
 	if progress != nil {
 		progress <- common.MigrationProgress{Status: "running", CurrentStep: fmt.Sprintf("Uploading files to %s", ws.Domain.Domain)}
 	}
