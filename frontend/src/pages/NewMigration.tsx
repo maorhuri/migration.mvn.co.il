@@ -595,7 +595,12 @@ export default function NewMigration() {
 
   const suspendedCount = accounts.filter((acc: Account) => acc.suspended).length;
   const existingDomainsSet = new Set(existingDomains.map((d) => d.toLowerCase()));
-  const isAlreadyMigrated = (acc: Account) => !!acc.domain && existingDomainsSet.has(acc.domain.toLowerCase());
+  // A migrated account's website on the target is registered under its domain pointer when it
+  // has one (the real, customer-facing domain), not acc.domain (often just the internal hosting
+  // hostname) -- so a repeat run must also match against acc.pointers, not acc.domain alone.
+  const isAlreadyMigrated = (acc: Account) =>
+    (!!acc.domain && existingDomainsSet.has(acc.domain.toLowerCase())) ||
+    !!acc.pointers?.some((p) => existingDomainsSet.has(p.toLowerCase()));
   const migratedCount = existingDomainsSet.size > 0 ? accounts.filter(isAlreadyMigrated).length : 0;
   const filteredAccounts = accounts
     .filter((acc: Account) => showSuspended || !acc.suspended)
