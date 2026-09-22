@@ -16,6 +16,7 @@ const (
 	PanelTypeCPanel      PanelType = "cpanel"
 	PanelTypeFTP         PanelType = "ftp"       // agentless: FTP login + uploaded PHP helper
 	PanelTypeWordPress   PanelType = "wordpress" // agentless: wp-admin login + helper plugin
+	PanelTypeCloudways   PanelType = "cloudways" // Cloudways server via its master SSH credentials
 )
 
 // ConnectionConfig holds connection details for a server

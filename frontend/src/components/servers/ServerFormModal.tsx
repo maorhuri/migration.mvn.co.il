@@ -269,8 +269,19 @@ export function ServerFormModal({ open, onClose, mode, form, onChange, onSubmit,
   const set = <K extends keyof ServerFormData>(key: K, value: ServerFormData[K]) => onChange({ ...form, [key]: value });
   const kind = kindOf(form.panel_type);
   const isEnhance = form.panel_type === 'enhance';
+  const isCloudways = form.panel_type === 'cloudways';
   const isEdit = mode === 'edit';
   const agentless = kind !== 'server';
+  // Cloudways is reached with its master SSH credentials only (password, or a key installed for that user).
+  const serverAuthOptions = isCloudways ? authOptions.filter((o) => o.value !== 'api_key') : authOptions;
+
+  const selectPanelType = (next: Server['panel_type']) => {
+    let username = form.username;
+    if (next === 'cloudways' && username === 'root') username = '';
+    else if (form.panel_type === 'cloudways' && next !== 'cloudways' && username === '') username = 'root';
+    const auth_method = next === 'cloudways' && form.auth_method === 'api_key' ? 'password' : form.auth_method;
+    onChange({ ...form, panel_type: next, username, auth_method });
+  };
 
   const selectKind = (next: ServerKind) => {
     if (next === kind) return;
@@ -351,7 +362,7 @@ export function ServerFormModal({ open, onClose, mode, form, onChange, onSubmit,
                   <Input type="text" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder={t('servers.form.name.placeholder')} required autoFocus />
                 </Field>
                 <Field label={t('servers.form.panelType')}>
-                  <Select value={form.panel_type} onChange={(e) => set('panel_type', e.target.value as Server['panel_type'])} options={panelOptions} />
+                  <Select value={form.panel_type} onChange={(e) => selectPanelType(e.target.value as Server['panel_type'])} options={panelOptions} />
                 </Field>
               </div>
             </Section>
@@ -359,19 +370,25 @@ export function ServerFormModal({ open, onClose, mode, form, onChange, onSubmit,
             <Divider />
 
             <Section
-              title={isEnhance ? t('servers.form.section.connectionEnhance') : t('servers.form.section.connection')}
-              description={isEnhance ? t('servers.form.section.connectionEnhance.hint') : t('servers.form.section.connection.hint')}
+              title={isEnhance ? t('servers.form.section.connectionEnhance') : isCloudways ? t('servers.form.section.connectionCloudways') : t('servers.form.section.connection')}
+              description={
+                isEnhance
+                  ? t('servers.form.section.connectionEnhance.hint')
+                  : isCloudways
+                    ? t('servers.form.section.connectionCloudways.hint')
+                    : t('servers.form.section.connection.hint')
+              }
             >
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label={t('servers.form.host')} required className="sm:col-span-2">
-                  <Input mono type="text" value={form.host} onChange={(e) => set('host', e.target.value)} placeholder="server.example.com" required />
+                  <Input mono type="text" value={form.host} onChange={(e) => set('host', e.target.value)} placeholder={isCloudways ? '139.59.0.0' : 'server.example.com'} required />
                 </Field>
                 <Field label={t('servers.form.port')} hint={t('servers.form.port.hint')}>
                   <Input mono type="number" inputMode="numeric" value={form.port} onChange={(e) => set('port', parseInt(e.target.value))} />
                 </Field>
               </div>
-              <Field label={t('servers.form.username')} required>
-                <Input mono type="text" value={form.username} onChange={(e) => set('username', e.target.value)} required autoComplete="off" />
+              <Field label={t('servers.form.username')} required hint={isCloudways ? t('servers.form.username.cloudways.hint') : undefined}>
+                <Input mono type="text" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder={isCloudways ? 'master_xxxxxxxxxx' : undefined} required autoComplete="off" />
               </Field>
             </Section>
 
@@ -379,7 +396,7 @@ export function ServerFormModal({ open, onClose, mode, form, onChange, onSubmit,
 
             <Section title={t('servers.form.section.auth')} description={t('servers.form.section.auth.hint')}>
               <Field label={t('servers.form.authMethod')}>
-                <Select value={form.auth_method} onChange={(e) => set('auth_method', e.target.value as Server['auth_method'])} options={authOptions} />
+                <Select value={form.auth_method} onChange={(e) => set('auth_method', e.target.value as Server['auth_method'])} options={serverAuthOptions} />
               </Field>
 
               {form.auth_method === 'password' && (

@@ -119,7 +119,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.next.suspend.done': 'הושעה {when}',
     'migrationdetail.next.suspend.undo': 'בטל השעיה',
     'migrationdetail.next.disable.title': 'כיבוי האתר הישן ידנית',
-    'migrationdetail.next.disable.description': 'רק אחרי שהאתר נטען מהשרת החדש. כבה אותו אצל הספק הקודם או מחק את הקבצים; ממקור FTP או WordPress הכלי לא יכול להשעות אותו.',
+    'migrationdetail.next.disable.description': 'רק אחרי שהאתר נטען מהשרת החדש. כבה אותו אצל הספק הקודם או מחק את הקבצים; ממקור FTP, WordPress או Cloudways הכלי לא יכול להשעות אותו.',
 
     'migrationdetail.timeline.title': 'ציר הריצה',
     'migrationdetail.timeline.description': 'משך כל שלב, לפי היומן.',
@@ -255,7 +255,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.next.suspend.done': 'Suspended {when}',
     'migrationdetail.next.suspend.undo': 'Unsuspend',
     'migrationdetail.next.disable.title': 'Disable the old site manually',
-    'migrationdetail.next.disable.description': 'Only once the site loads from the new server. Turn it off at the previous host or delete its files; the tool cannot suspend an FTP or WordPress source.',
+    'migrationdetail.next.disable.description': 'Only once the site loads from the new server. Turn it off at the previous host or delete its files; the tool cannot suspend an FTP, WordPress or Cloudways source.',
 
     'migrationdetail.timeline.title': 'Run timeline',
     'migrationdetail.timeline.description': 'Per-step durations, from the log.',

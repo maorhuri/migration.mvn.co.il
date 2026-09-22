@@ -21,6 +21,7 @@ var knownPanelTypes = map[string]bool{
 	string(common.PanelTypeCPanel):      true,
 	string(common.PanelTypeFTP):         true,
 	string(common.PanelTypeWordPress):   true,
+	string(common.PanelTypeCloudways):   true,
 }
 
 // defaultPort is the port used when a server request leaves it empty.
@@ -39,7 +40,7 @@ func defaultPort(panelType string) int {
 func validateServerRequest(req *CreateServerRequest, isNew bool) error {
 	req.PanelType = strings.ToLower(strings.TrimSpace(req.PanelType))
 	if !knownPanelTypes[req.PanelType] {
-		return fmt.Errorf("unknown panel type %q (directadmin, enhance, cpanel, ftp or wordpress)", req.PanelType)
+		return fmt.Errorf("unknown panel type %q (directadmin, enhance, cpanel, cloudways, ftp or wordpress)", req.PanelType)
 	}
 	if req.AuthMethod == "ssh_key" && req.SSHKeyID == "" {
 		return fmt.Errorf("select an SSH key when the authentication method is SSH key")

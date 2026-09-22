@@ -16,7 +16,7 @@ export interface GettingStartedCardProps {
  */
 export function GettingStartedCard({ servers, className }: GettingStartedCardProps) {
   const t = useT();
-  const hasSource = servers.some((s) => s.panel_type === 'directadmin');
+  const hasSource = servers.some((s) => s.panel_type !== 'enhance');
   const hasTarget = servers.some((s) => s.panel_type === 'enhance');
 
   const steps = [

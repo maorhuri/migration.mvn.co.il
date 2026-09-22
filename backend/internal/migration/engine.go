@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/agentless"
+	"github.com/migration-tool/backend/internal/panels/cloudways"
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
@@ -491,6 +492,25 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 		node.FriendlyName, nodeIP, strings.Join(failures, "; "), nodeIP)
 }
 
+// connectCloudways opens a Cloudways server with its stored master credentials.
+func (e *Engine) connectCloudways(ctx context.Context, server *storage.Server, password string, logFn func(level, message string)) (*cloudways.Cloudways, error) {
+	config := e.db.ToConnectionConfig(server)
+	if password == "" {
+		password, _ = e.db.GetServerPassword(ctx, server.ID)
+	}
+	var privateKey []byte
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+	}
+	cw := cloudways.New()
+	cw.SetLogger(logFn)
+	if err := cw.Connect(ctx, config, password, privateKey); err != nil {
+		return nil, fmt.Errorf("Cloudways SSH connection to %s as %s failed: %w", server.Host, server.Username, err)
+	}
+	return cw, nil
+}
+
 // exportFromSource exports data from the source server
 func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, username, workDir string, progress chan<- common.MigrationProgress, logFn func(level, message string)) (*common.ExportData, error) {
 	switch common.PanelType(server.PanelType) {
@@ -504,6 +524,13 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 			return nil, fmt.Errorf("DirectAdmin connection test failed: %w", err)
 		}
 		return da.ExportAccount(ctx, username, workDir, progress)
+	case common.PanelTypeCloudways:
+		cw, err := e.connectCloudways(ctx, server, "", logFn)
+		if err != nil {
+			return nil, err
+		}
+		defer cw.Disconnect()
+		return cw.ExportAccount(ctx, username, workDir, progress)
 	case common.PanelTypeFTP, common.PanelTypeWordPress:
 		password, _ := e.db.GetServerPassword(ctx, server.ID)
 		return agentless.Export(ctx, server, password, workDir, progress, logFn)
@@ -528,6 +555,9 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	}
 	if agentless.IsAgentless(server.PanelType) {
 		return nil, fmt.Errorf("%s source %s has no panel to suspend; disable the old site manually (for example rename index.php or point the old vhost to a holding page) after the DNS switch", server.PanelType, server.Name)
+	}
+	if common.PanelType(server.PanelType) == common.PanelTypeCloudways {
+		return nil, fmt.Errorf("a Cloudways application cannot be suspended from here; after the DNS switch, stop or delete the application in the Cloudways console (or remove its domain there)")
 	}
 	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
 		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
@@ -644,6 +674,13 @@ func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server
 		}
 		defer da.Disconnect()
 		return da.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
+	case common.PanelTypeCloudways:
+		cw, err := e.connectCloudways(ctx, server, "", nil)
+		if err != nil {
+			return err
+		}
+		defer cw.Disconnect()
+		return cw.CleanupTempFiles(ctx)
 	default:
 		return nil
 	}
@@ -1077,8 +1114,12 @@ func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int
 	if err != nil {
 		return 0, err
 	}
-	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin && !agentless.IsAgentless(server.PanelType) {
-		return 0, nil
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeDirectAdmin, common.PanelTypeCloudways:
+	default:
+		if !agentless.IsAgentless(server.PanelType) {
+			return 0, nil
+		}
 	}
 	password, _ := e.db.GetDecryptedPassword(ctx, serverID)
 	accounts, err := e.GetServerAccounts(ctx, server, password)
@@ -1186,6 +1227,7 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 
 	supportedPaths := map[common.PanelType][]common.PanelType{
 		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance},
+		common.PanelTypeCloudways:   {common.PanelTypeEnhance},
 		common.PanelTypeFTP:         {common.PanelTypeEnhance},
 		common.PanelTypeWordPress:   {common.PanelTypeEnhance},
 	}
@@ -1208,6 +1250,15 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 			"Emails, cron jobs and DNS records are not available from an FTP/WordPress-only source; recreate them manually",
 			"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
 			"The old site cannot be suspended by the tool after the switch; disable it manually",
+		)
+		return result, nil
+	}
+	if sourceType == common.PanelTypeCloudways {
+		result.Warnings = append(result.Warnings,
+			"Cloudways hosts no mailboxes; cron jobs and the app's SSL certificate are not readable with master credentials, so none of those are migrated (recreate cron jobs manually; the target issues its own certificate)",
+			"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
+			"The Cloudways Redis object-cache drop-in (wp-content/object-cache.php) is disabled in the copy; re-enable it only if the target node runs Redis",
+			"The old application cannot be stopped by the tool after the switch; stop it in the Cloudways console",
 		)
 		return result, nil
 	}
@@ -1437,6 +1488,31 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 				SSLExpiry:     acc.SSLExpiry,
 				IsWordPress:   acc.IsWordPress,
 				DBSize:        acc.DBSize,
+			})
+		}
+		return result, nil
+
+	case common.PanelTypeCloudways:
+		cw, err := e.connectCloudways(ctx, server, password, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer cw.Disconnect()
+		accounts, err := cw.ListAccounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list applications: %w", err)
+		}
+		var result []AccountInfo
+		for _, acc := range accounts {
+			result = append(result, AccountInfo{
+				Username:     acc.Username,
+				Domain:       acc.Domain,
+				DiskUsed:     acc.DiskUsage,
+				PHPVersion:   acc.PHPVersion,
+				Databases:    acc.Databases,
+				AddonDomains: acc.AddonDomains,
+				IsWordPress:  acc.IsWordPress,
+				DBSize:       acc.DBSize,
 			})
 		}
 		return result, nil

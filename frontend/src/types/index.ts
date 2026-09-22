@@ -1,7 +1,7 @@
 export interface Server {
   id: string;
   name: string;
-  panel_type: 'directadmin' | 'enhance' | 'cpanel' | 'cloudpanel' | 'ftp' | 'wordpress';
+  panel_type: 'directadmin' | 'enhance' | 'cpanel' | 'cloudpanel' | 'cloudways' | 'ftp' | 'wordpress';
   host: string;
   port: number;
   username: string;

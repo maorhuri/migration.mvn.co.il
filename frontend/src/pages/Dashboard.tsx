@@ -76,7 +76,7 @@ export default function Dashboard() {
 
   const stats = {
     totalServers: servers.length,
-    directAdminServers: servers.filter(s => s.panel_type === 'directadmin').length,
+    directAdminServers: servers.filter(s => s.panel_type !== 'enhance').length,
     enhanceServers: servers.filter(s => s.panel_type === 'enhance').length,
     totalMigrations: migrations.length,
     completedMigrations: migrations.filter(m => m.status === 'completed').length,

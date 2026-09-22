@@ -12,13 +12,14 @@ export const PANEL_TONES: Record<string, BadgeTone> = {
   directadmin: 'blue',
   cpanel: 'orange',
   cloudpanel: 'info',
+  cloudways: 'success',
   ftp: 'lime',
   wordpress: 'cyan',
 };
 
-export const PANEL_TYPES = ['directadmin', 'enhance', 'cpanel', 'cloudpanel', 'ftp', 'wordpress'] as const;
-/** Control panels reached with root (the "Server" kind of the add-target form). */
-export const SERVER_PANEL_TYPES = ['directadmin', 'enhance', 'cpanel'] as const;
+export const PANEL_TYPES = ['directadmin', 'enhance', 'cpanel', 'cloudpanel', 'cloudways', 'ftp', 'wordpress'] as const;
+/** Control panels reached over SSH (the "Server" kind of the add-target form). */
+export const SERVER_PANEL_TYPES = ['directadmin', 'enhance', 'cpanel', 'cloudways'] as const;
 
 export function panelTone(panelType: string | null | undefined): BadgeTone {
   return PANEL_TONES[panelType ?? ''] ?? 'neutral';

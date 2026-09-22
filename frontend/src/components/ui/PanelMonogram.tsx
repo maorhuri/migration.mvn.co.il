@@ -13,6 +13,7 @@ const LETTERS: Record<string, string> = {
   enhance: 'EN',
   cpanel: 'cP',
   cloudpanel: 'CP',
+  cloudways: 'CW',
   ftp: 'FTP',
   wordpress: 'WP',
 };

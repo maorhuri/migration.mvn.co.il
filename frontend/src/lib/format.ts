@@ -178,6 +178,7 @@ export const PANEL_LABELS: Record<string, string> = {
   enhance: 'Enhance',
   cpanel: 'cPanel',
   cloudpanel: 'CloudPanel',
+  cloudways: 'Cloudways',
   ftp: 'FTP Only',
   wordpress: 'WordPress Only',
 };

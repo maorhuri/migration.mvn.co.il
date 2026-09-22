@@ -11,7 +11,7 @@ export const dashboard: PageDict = {
     'dashboard.addServer': 'הוסף שרת',
 
     'dashboard.stats.servers': 'שרתים',
-    'dashboard.stats.serversHint': '{da}\u00A0DirectAdmin\u00A0· {en}\u00A0Enhance',
+    'dashboard.stats.serversHint': '{da}\u00A0מקורות\u00A0· {en}\u00A0Enhance',
     'dashboard.stats.serversNone': 'עדיין לא חוברו שרתים',
     'dashboard.stats.unavailable': 'לא זמין כרגע',
     'dashboard.stats.running': 'בתהליך',
@@ -86,7 +86,7 @@ export const dashboard: PageDict = {
     'dashboard.addServer': 'Add server',
 
     'dashboard.stats.servers': 'Servers',
-    'dashboard.stats.serversHint': '{da}\u00A0DirectAdmin\u00A0· {en}\u00A0Enhance',
+    'dashboard.stats.serversHint': '{da}\u00A0sources\u00A0· {en}\u00A0Enhance',
     'dashboard.stats.serversNone': 'No servers connected yet',
     'dashboard.stats.unavailable': 'Unavailable right now',
     'dashboard.stats.running': 'Running',

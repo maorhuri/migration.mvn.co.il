@@ -223,8 +223,9 @@ export default function MigrationDetail() {
   const isCompleted = migration.status === 'completed';
   const sourceSuspended = !!migration.source_suspended_at;
   // FTP / WordPress source: nothing to suspend from here; the old site is disabled by hand after DNS.
-  const agentlessSource = isAgentlessPanel(sourceServer?.panel_type);
-  const canSuspend = isCompleted && !agentlessSource;
+  // Sources the tool cannot suspend after the switch (no panel to do it through): the operator disables the old site by hand.
+  const manualSourceDisable = isAgentlessPanel(sourceServer?.panel_type) || sourceServer?.panel_type === 'cloudways';
+  const canSuspend = isCompleted && !manualSourceDisable;
   const apiError = (error: unknown, fallback: string) =>
     (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
   const submitDecision = async (action: 'clean' | 'skip' | 'abort') => {
@@ -406,7 +407,7 @@ export default function MigrationDetail() {
               domains={domains}
               onSuspend={() => setSuspendOpen(true)}
               onUnsuspend={() => setUnsuspendOpen(true)}
-              manualSourceDisable={agentlessSource}
+              manualSourceDisable={manualSourceDisable}
               className={RISE}
               style={stagger(2)}
             />
