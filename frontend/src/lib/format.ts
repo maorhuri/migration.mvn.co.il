@@ -160,6 +160,20 @@ export function parseSizeToBytes(size?: string | null): number {
   return num * (multipliers[u] || 1);
 }
 
+/** A typed domain as a bare lowercase host: "https://www.Example.com/" -> "example.com" ("" stays ""). */
+export function normalizeDomainInput(value: string): string {
+  let s = value.trim().toLowerCase();
+  s = s.replace(/^[a-z]+:\/\//, '');
+  s = s.replace(/[/?#].*$/, '');
+  s = s.replace(/^www\./, '');
+  return s.replace(/^\.+|\.+$/g, '');
+}
+
+/** Platform-owned hostnames a site is only ever provisioned under (never the customer's real domain). */
+export function isPlatformHostname(domain: string | null | undefined): boolean {
+  return /\.cloudwaysapps\.com$/i.test(domain ?? '');
+}
+
 /** First 8 chars of an id (uuid-friendly) for compact display. */
 export function shortId(id: string | null | undefined, length = 8): string {
   if (!id) return '';

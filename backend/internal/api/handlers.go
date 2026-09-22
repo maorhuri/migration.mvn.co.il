@@ -740,6 +740,7 @@ type StartMigrationRequest struct {
 	TargetClusterServerID string `json:"target_cluster_server_id,omitempty"` // Enhance: which cluster server hosts the website
 	Username              string `json:"username" binding:"required"`
 	NewPassword           string `json:"new_password,omitempty"`
+	TargetDomain          string `json:"target_domain,omitempty"` // register the site under this domain instead of the source's name
 }
 
 type CheckCompatibilityRequest struct {
@@ -771,6 +772,7 @@ func (h *Handler) startMigration(c *gin.Context) {
 		TargetClusterServerID: req.TargetClusterServerID,
 		Username:              req.Username,
 		NewPassword:           req.NewPassword,
+		TargetDomain:          req.TargetDomain,
 	})
 	if err != nil {
 		if errors.Is(err, migration.ErrClusterServerRequired) {

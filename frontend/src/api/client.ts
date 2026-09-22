@@ -138,6 +138,8 @@ export const startMigration = async (params: {
   username: string;
   new_password?: string;
   scan_malware?: boolean;
+  /** Register the site under this domain instead of the source's name (WordPress URLs are rewritten to it). */
+  target_domain?: string;
 }): Promise<Migration> => {
   const { data } = await api.post('/migrations', params);
   return data;

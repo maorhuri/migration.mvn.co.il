@@ -66,6 +66,11 @@ export const newmigration: PageDict = {
 
     // Accounts table
     'newmigration.table.domain': 'דומיין',
+    'newmigration.table.targetDomain': 'דומיין ביעד',
+    'newmigration.toast.targetDomainRequired': 'הקלד דומיין ביעד לאפליקציות שיש להן רק כתובת cloudwaysapps.com: {accounts}',
+    'newmigration.review.targetDomain.placeholderRequired': 'הקלד את הדומיין האמיתי',
+    'newmigration.review.targetDomain.hint':
+      'השאר ריק כדי לרשום את האתר ביעד תחת הדומיין שמופיע (או ה-pointer שלו ב-DirectAdmin). הקלד דומיין אחר כדי לרשום את האתר תחתיו — לאתר WordPress יבוצע אחרי ייבוא ה-DB search-replace מה-URL הישן לחדש (כולל home/siteurl). לאפליקציה שיש לה רק כתובת cloudwaysapps.com חובה להקליד דומיין.',
     'newmigration.table.php': 'PHP',
     'newmigration.table.disk': 'נפח',
     'newmigration.table.dbSize': 'גודל DB',
@@ -294,6 +299,11 @@ export const newmigration: PageDict = {
 
     // Accounts table
     'newmigration.table.domain': 'Domain',
+    'newmigration.table.targetDomain': 'Domain on target',
+    'newmigration.toast.targetDomainRequired': 'Type a target domain for the apps that only have a cloudwaysapps.com address: {accounts}',
+    'newmigration.review.targetDomain.placeholderRequired': 'Type the real domain',
+    'newmigration.review.targetDomain.hint':
+      'Leave empty to register the site on the target under the domain shown (or its DirectAdmin pointer). Type another domain to register it under that one — a WordPress site gets a search-replace from the old URL to the new one (home/siteurl included) after the database import. An app that only has a cloudwaysapps.com address needs a domain typed here.',
     'newmigration.table.php': 'PHP',
     'newmigration.table.disk': 'Disk',
     'newmigration.table.dbSize': 'DB size',

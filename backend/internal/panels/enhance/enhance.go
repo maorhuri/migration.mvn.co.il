@@ -990,6 +990,11 @@ func (e *Enhance) ImportAccount(ctx context.Context, data *common.ExportData, pr
 		if err := e.updateWPConfigs(ctx, result.Databases); err != nil {
 			return nil, err
 		}
+		for _, d := range data.Domains {
+			if ws := e.websites[strings.ToLower(d.Name)]; ws != nil {
+				e.replaceSiteURL(ctx, ws, d)
+			}
+		}
 	} else {
 		e.logf("info", "No databases in export; skipping database import")
 	}
@@ -1839,6 +1844,89 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 		return fmt.Errorf("%s", strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// wpCLI runs a WP-CLI command for a website as its unix user (plugins/themes skipped so a broken
+// plugin cannot abort it); "" and nil when WP-CLI is not installed on the node.
+func (e *Enhance) wpCLI(ctx context.Context, ws *EnhanceWebsite, args string) (string, error) {
+	if _, err := e.nodeRun(ctx, "test -x /usr/bin/wp-cli"); err != nil {
+		return "", nil
+	}
+	cmd := fmt.Sprintf("cd %s && sudo -u %s -H /usr/bin/wp-cli %s --path=%s --skip-plugins --skip-themes --skip-packages 2>&1",
+		shq(ws.HomeDir), shq(ws.UnixUser), args, shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, cmd)
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "unable to resolve host") || strings.TrimSpace(l) == "" {
+			continue
+		}
+		lines = append(lines, l)
+	}
+	return strings.Join(lines, "\n"), err
+}
+
+// urlHost returns the lowercase host of a URL or bare hostname.
+func urlHost(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.Index(s, ":"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.ToLower(s)
+}
+
+// replaceSiteURL rewrites a migrated WordPress site's URLs when it was registered on Enhance
+// under a different name than its database still refers to (d.TargetDomain set: a DirectAdmin
+// pointer, or the domain the operator chose for a Cloudways app that only ever had its
+// *.cloudwaysapps.com hostname). Only a source-side name (the source's own domain or one of its
+// aliases) is rewritten; a home URL pointing anywhere else was set on purpose and is left alone.
+// Uses WP-CLI search-replace, which keeps serialized data intact, on the bare old host so every
+// scheme and the www. variant are covered in one pass.
+func (e *Enhance) replaceSiteURL(ctx context.Context, ws *EnhanceWebsite, d common.Domain) {
+	if d.TargetDomain == "" {
+		return
+	}
+	newHost := strings.ToLower(d.TargetDomain)
+	if _, err := e.nodeRun(ctx, "test -f "+shq(ws.DocRoot+"/wp-config.php")); err != nil {
+		return
+	}
+	home, err := e.wpCLI(ctx, ws, "option get home")
+	if err != nil || home == "" {
+		if err == nil {
+			return // no WP-CLI on this node
+		}
+		e.warnf("%s: could not read the WordPress home URL (%s); if the site still points at %s, run: wp search-replace %s %s", newHost, firstLine(home), d.Name, d.Name, newHost)
+		return
+	}
+	oldHost := urlHost(home)
+	oldBare := strings.TrimPrefix(oldHost, "www.")
+	if oldBare == newHost {
+		e.logf("info", "%s: WordPress home URL is already %s", newHost, strings.TrimSpace(home))
+		return
+	}
+	sourceNames := map[string]bool{strings.ToLower(d.Name): true}
+	for _, a := range d.Aliases {
+		sourceNames[strings.ToLower(a)] = true
+	}
+	if !sourceNames[oldBare] {
+		e.warnf("%s: WordPress home URL is %s, which is not one of the source's own names (%s); left unchanged -- if it should follow the new domain, run: wp search-replace %s %s", newHost, strings.TrimSpace(home), d.Name, oldBare, newHost)
+		return
+	}
+	out, err := e.wpCLI(ctx, ws, fmt.Sprintf("search-replace %s %s --all-tables-with-prefix --skip-columns=guid --report-changed-only", shq(oldBare), shq(newHost)))
+	if err != nil {
+		e.warnf("%s: rewriting the WordPress URLs from %s failed: %s -- run it by hand: wp search-replace %s %s", newHost, oldBare, lastLines(out, 3), oldBare, newHost)
+		return
+	}
+	// WP_HOME / WP_SITEURL in wp-config.php override the database, if present.
+	e.nodeRun(ctx, fmt.Sprintf(`grep -qE "WP_HOME|WP_SITEURL" %s && sed -i -E "/WP_HOME|WP_SITEURL/ s|%s|%s|g" %s || true`, shq(ws.DocRoot+"/wp-config.php"), regexp.QuoteMeta(oldBare), newHost, shq(ws.DocRoot+"/wp-config.php")))
+	e.wpCLI(ctx, ws, "cache flush")
+	after, _ := e.wpCLI(ctx, ws, "option get home")
+	e.logf("info", "%s: WordPress URLs rewritten from %s to %s (home is now %s). %s", newHost, oldBare, newHost, strings.TrimSpace(firstLine(after)), lastLines(out, 1))
 }
 
 // probeWPConfig runs the same check Enhance's discovery uses (wp-cli config get DB_NAME as the

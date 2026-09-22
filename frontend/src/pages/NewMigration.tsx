@@ -30,6 +30,7 @@ import { AccountsTable } from '../components/newmigration/AccountsTable';
 import { SiteFactsCard } from '../components/newmigration/SiteFactsCard';
 import { DatabasesModal, EmailAccountsModal } from '../components/newmigration/AccountListModals';
 import { ReviewStep } from '../components/newmigration/ReviewStep';
+import { isPlatformHostname, normalizeDomainInput } from '../lib/format';
 import { MigrationProgress } from '../components/newmigration/MigrationProgress';
 import { MigrationComplete } from '../components/newmigration/MigrationComplete';
 import { ScanReportPanel } from '../components/migrations/ScanReportPanel';
@@ -165,6 +166,9 @@ export default function NewMigration() {
     target_cluster_server_id: '',
     scan_malware: false,
   });
+  // Per account (by username): the domain to register the site under on the target instead of
+  // the source's name; empty = automatic (the source domain, or its DirectAdmin pointer).
+  const [targetDomains, setTargetDomains] = useState<Record<string, string>>({});
   // FTP / WordPress source: one site, no mail / cron / DNS, and the old site is disabled by hand after DNS.
   const isAgentlessSource = isAgentlessPanel(servers.find((s: Server) => s.id === formData.source_server_id)?.panel_type);
 
@@ -326,12 +330,14 @@ export default function NewMigration() {
 
     let migration;
     try {
+      const chosenDomain = normalizeDomainInput(targetDomains[account.username] ?? '');
       migration = await startMigration({
         source_server_id: formData.source_server_id,
         target_server_id: formData.target_server_id,
         target_cluster_server_id: formData.target_cluster_server_id || undefined,
         username: account.username,
         scan_malware: formData.scan_malware,
+        target_domain: chosenDomain && chosenDomain !== account.domain?.toLowerCase() ? chosenDomain : undefined,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -516,6 +522,12 @@ export default function NewMigration() {
   const handleStartMigration = async () => {
     if (selectedAccounts.length === 0) {
       toast.error(t('newmigration.toast.selectOne'));
+      return;
+    }
+    // A site that only has its platform hostname cannot be registered under it on the target.
+    const missingDomain = selectedAccounts.filter((a: Account) => isPlatformHostname(a.domain) && !normalizeDomainInput(targetDomains[a.username] ?? ''));
+    if (missingDomain.length > 0) {
+      toast.error(t('newmigration.toast.targetDomainRequired', { accounts: missingDomain.map((a: Account) => a.username).join(', ') }));
       return;
     }
 
@@ -1063,6 +1075,8 @@ export default function NewMigration() {
             plan={buildSteps(formData.scan_malware, isAgentlessSource)}
             scanMalware={formData.scan_malware}
             onScanMalwareChange={(value) => setFormData({ ...formData, scan_malware: value })}
+            targetDomains={targetDomains}
+            onTargetDomainChange={(username, value) => setTargetDomains((prev) => ({ ...prev, [username]: value }))}
             starting={starting}
             onStart={handleStartMigration}
             onBack={() => setCurrentStep('select_accounts')}

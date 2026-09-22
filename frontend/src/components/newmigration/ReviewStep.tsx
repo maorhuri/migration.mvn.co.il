@@ -7,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
   Checkbox,
+  Input,
   KeyValue,
   Mono,
   PanelBadge,
@@ -23,6 +24,7 @@ import {
 } from '../ui';
 import { useT } from '../../lib/i18n';
 import { isAgentlessPanel } from '../../lib/agentless';
+import { isPlatformHostname, normalizeDomainInput } from '../../lib/format';
 import type { ClusterServer } from '../../api/client';
 import type { Account, Server } from '../../types';
 import type { MigrationStepStatus } from './types';
@@ -79,6 +81,9 @@ export interface ReviewStepProps {
   /** Scan the staged export for malware on the middle server before uploading. */
   scanMalware: boolean;
   onScanMalwareChange: (value: boolean) => void;
+  /** Per username: the domain to register the site under on the target; empty = automatic. */
+  targetDomains: Record<string, string>;
+  onTargetDomainChange: (username: string, value: string) => void;
   starting: boolean;
   onStart: () => void;
   onBack: () => void;
@@ -114,8 +119,12 @@ function PlanColumn({ title, steps, offset }: PlanColumnProps) {
 }
 
 /** Final confirmation before the migration starts. */
-export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, scanMalware, onScanMalwareChange, starting, onStart, onBack }: ReviewStepProps) {
+export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, plan, scanMalware, onScanMalwareChange, targetDomains, onTargetDomainChange, starting, onStart, onBack }: ReviewStepProps) {
   const t = useT();
+  // What the site would be registered as when the operator types nothing: the source domain, or
+  // its single DirectAdmin pointer (the customer-facing name); a platform hostname has no default.
+  const automaticDomain = (account: Account) =>
+    isPlatformHostname(account.domain) ? '' : account.pointers?.length === 1 ? account.pointers[0] : (account.domain ?? '');
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
   const targetName = targetNode?.friendly_name || targetNode?.hostname || targetServer?.name || t('newmigration.review.targetFallback');
@@ -140,6 +149,7 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
           <THead>
             <TR hoverable={false}>
               <TH>{t('newmigration.table.domain')}</TH>
+              <TH>{t('newmigration.table.targetDomain')}</TH>
               <TH>{t('newmigration.table.username')}</TH>
               <TH numeric>{t('newmigration.table.disk')}</TH>
               <TH numeric>{t('newmigration.table.databases')}</TH>
@@ -147,17 +157,40 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
             </TR>
           </THead>
           <TBody>
-            {accounts.map((account) => (
-              <TR key={account.username}>
-                <TDPrimary>{account.domain ? <Mono className="text-[13px]">{account.domain}</Mono> : '—'}</TDPrimary>
-                <TD mono>{account.username}</TD>
-                <TD numeric>{account.disk_used ? <Mono className="text-[13px]">{account.disk_used}</Mono> : '—'}</TD>
-                <TD numeric>{account.databases?.length ?? 0}</TD>
-                <TD numeric>{account.email_accounts?.length ?? 0}</TD>
-              </TR>
-            ))}
+            {accounts.map((account) => {
+              const platform = isPlatformHostname(account.domain);
+              const value = targetDomains[account.username] ?? '';
+              return (
+                <TR key={account.username}>
+                  <TDPrimary>{account.domain ? <Mono className="text-[13px]">{account.domain}</Mono> : '—'}</TDPrimary>
+                  <TD>
+                    <Input
+                      mono
+                      size="sm"
+                      type="text"
+                      value={value}
+                      onChange={(e) => onTargetDomainChange(account.username, e.target.value)}
+                      onBlur={() => value.trim() && onTargetDomainChange(account.username, normalizeDomainInput(value))}
+                      placeholder={platform ? t('newmigration.review.targetDomain.placeholderRequired') : automaticDomain(account)}
+                      invalid={platform && !value.trim()}
+                      aria-label={t('newmigration.table.targetDomain')}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="min-w-[14rem]"
+                    />
+                  </TD>
+                  <TD mono>{account.username}</TD>
+                  <TD numeric>{account.disk_used ? <Mono className="text-[13px]">{account.disk_used}</Mono> : '—'}</TD>
+                  <TD numeric>{account.databases?.length ?? 0}</TD>
+                  <TD numeric>{account.email_accounts?.length ?? 0}</TD>
+                </TR>
+              );
+            })}
           </TBody>
         </Table>
+        <p className="border-t border-slate-200 px-5 py-3 text-xs leading-relaxed text-slate-500 dark:border-white/[0.08] dark:text-slate-400">
+          {t('newmigration.review.targetDomain.hint')}
+        </p>
       </Card>
 
       {agentless && (

@@ -50,6 +50,10 @@ type MigrationRequest struct {
 	Username              string `json:"username"`
 	NewPassword           string `json:"new_password,omitempty"` // Password for new account
 	ScanMalware           bool   `json:"scan_malware"`           // scan the staged export for malware before importing
+	// TargetDomain, when set, is the domain the site gets registered under on the target instead
+	// of whatever the source calls it (an app that only ever had its platform hostname, e.g. on
+	// Cloudways). A WordPress site's URLs are rewritten to it after the database import.
+	TargetDomain string `json:"target_domain,omitempty"`
 }
 
 // MigrationResult represents the state of a migration as exposed by the API
@@ -94,6 +98,10 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 	if req.TargetClusterServerID != "" {
 		e.db.SetMigrationClusterServer(ctx, migrationID, req.TargetClusterServerID)
 	}
+	req.TargetDomain = normalizeDomain(req.TargetDomain)
+	if req.TargetDomain != "" {
+		e.db.SetMigrationTargetDomain(ctx, migrationID, req.TargetDomain)
+	}
 
 	result := &MigrationResult{
 		ID:              migrationID,
@@ -127,6 +135,7 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		"target":                   targetServer.Name,
 		"target_cluster_server_id": req.TargetClusterServerID,
 		"username":                 req.Username,
+		"target_domain":            req.TargetDomain,
 	})
 
 	migrationDir := filepath.Join(e.workDir, migrationID)
@@ -228,6 +237,7 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 			return
 		}
 		exportData = exported
+		applyTargetDomain(exportData, req.TargetDomain, migrationLog)
 		exportJSON, _ := json.Marshal(exportData)
 		e.db.SetMigrationExportData(ctx, migrationID, exportJSON)
 		e.db.AddMigrationLog(ctx, migrationID, "info", "Export completed", map[string]interface{}{
@@ -490,6 +500,69 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 	}
 	return nil, fmt.Errorf("could not open root SSH to node %s (%s). Tried %s. Fix: in SSH Keys generate a key, mark it as default and run its install command on the node as root; or add a server entry for host %s with working root credentials",
 		node.FriendlyName, nodeIP, strings.Join(failures, "; "), nodeIP)
+}
+
+// normalizeDomain turns whatever the operator typed into a bare lowercase hostname
+// ("https://www.Example.com/" -> "example.com"); "" stays "".
+func normalizeDomain(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimPrefix(s, "www.")
+	return strings.Trim(s, ".")
+}
+
+// applyTargetDomain makes the operator's chosen domain the one the account's main site is
+// registered under on the target (common.Domain.TargetDomain), demoting whatever would have been
+// used otherwise to an alias. The main site is the domain matching the account's domain, else
+// the first one; addon domains are left alone.
+func applyTargetDomain(data *common.ExportData, target string, logFn func(level, message string)) {
+	target = normalizeDomain(target)
+	if target == "" || len(data.Domains) == 0 {
+		return
+	}
+	i := 0
+	for j := range data.Domains {
+		if strings.EqualFold(data.Domains[j].Name, data.Account.Domain) || strings.EqualFold(data.Domains[j].TargetDomain, data.Account.Domain) {
+			i = j
+			break
+		}
+	}
+	d := &data.Domains[i]
+	was := d.Name
+	if d.TargetDomain != "" {
+		was = d.TargetDomain
+	}
+	if strings.EqualFold(was, target) {
+		logFn("info", fmt.Sprintf("Target domain %s is what %s would be registered as anyway", target, d.Name))
+		return
+	}
+	var aliases []string
+	for _, a := range append([]string{was}, d.Aliases...) {
+		if !strings.EqualFold(a, target) && !strings.EqualFold(a, d.Name) && !containsFold(aliases, a) {
+			aliases = append(aliases, a)
+		}
+	}
+	d.Aliases = aliases
+	if strings.EqualFold(d.Name, target) {
+		d.TargetDomain = ""
+	} else {
+		d.TargetDomain = target
+	}
+	logFn("info", fmt.Sprintf("Registering %s on the target as %s (operator's choice; it would have been %s). A WordPress site's URLs are rewritten to %s after the database import.", d.Name, target, was, target))
+}
+
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // connectCloudways opens a Cloudways server with its stored master credentials.
@@ -946,6 +1019,7 @@ func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*Migra
 		TargetClusterServerID: clusterServerID,
 		Username:              m.AccountUsername,
 		ScanMalware:           m.ScanRequested,
+		TargetDomain:          m.TargetDomain.String,
 	}
 	e.db.AddMigrationLog(ctx, migrationID, "info", "Start from scratch requested; a new migration was started", nil)
 	result, err := e.StartMigration(ctx, req)
@@ -991,6 +1065,7 @@ func (e *Engine) ResumeMigration(ctx context.Context, migrationID string) (*Migr
 		TargetClusterServerID: clusterServerID,
 		Username:              m.AccountUsername,
 		ScanMalware:           m.ScanRequested,
+		TargetDomain:          m.TargetDomain.String,
 	}
 	sourceServer, err := e.db.GetServer(ctx, req.SourceServerID)
 	if err != nil {

@@ -186,6 +186,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_report JSONB`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_decision VARCHAR(16)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_cluster_server_id VARCHAR(64)`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_domain VARCHAR(255)`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -305,6 +306,7 @@ type Migration struct {
 	ScanReport            NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
 	ScanDecision          NullString     `db:"scan_decision" json:"scan_decision"`
 	TargetClusterServerID NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
+	TargetDomain          NullString     `db:"target_domain" json:"target_domain"`
 	StartedAt             sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt           sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
 	CreatedAt             time.Time      `db:"created_at" json:"created_at"`
@@ -723,6 +725,12 @@ func (d *Database) SetMigrationExportData(ctx context.Context, id string, export
 // SetMigrationClusterServer records the Enhance cluster server chosen for the import (for re-runs).
 func (d *Database) SetMigrationClusterServer(ctx context.Context, id, clusterServerID string) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET target_cluster_server_id = $2 WHERE id = $1", id, clusterServerID)
+	return err
+}
+
+// SetMigrationTargetDomain records the operator's choice of domain to register the site under on the target.
+func (d *Database) SetMigrationTargetDomain(ctx context.Context, id, domain string) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET target_domain = $2 WHERE id = $1", id, domain)
 	return err
 }
 
