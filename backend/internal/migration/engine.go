@@ -1107,6 +1107,179 @@ func (e *Engine) RepairWordPress(ctx context.Context, migrationID string) (*Migr
 	return status, summary, err
 }
 
+// RemigrateDatabases re-copies only the database(s) of a completed migration: exported again
+// from the source and loaded over the databases that already exist on the target website, in
+// place (nothing dropped or recreated, credentials kept). For a site whose full migration took
+// long enough that the source kept collecting orders/content afterwards. Runs in the
+// background; the migration is marked running meanwhile so the page follows the log live, and
+// returns to completed at the end whatever the outcome (the outcome itself is in the log).
+func (e *Engine) RemigrateDatabases(ctx context.Context, migrationID string) (*MigrationResult, error) {
+	m, err := e.db.GetMigration(ctx, migrationID)
+	if err != nil {
+		return nil, fmt.Errorf("migration not found: %w", err)
+	}
+	if m.Status != "completed" {
+		return nil, fmt.Errorf("only completed migrations can re-migrate their database (status: %s)", m.Status)
+	}
+	sourceServer, err := e.db.GetServer(ctx, m.SourceServerID)
+	if err != nil {
+		return nil, fmt.Errorf("source server not found: %w", err)
+	}
+	targetServer, err := e.db.GetServer(ctx, m.TargetServerID)
+	if err != nil {
+		return nil, fmt.Errorf("target server not found: %w", err)
+	}
+	if agentless.IsAgentless(sourceServer.PanelType) {
+		return nil, fmt.Errorf("re-migrating only the database is not available for an FTP/WordPress source; run the migration again")
+	}
+	if common.PanelType(targetServer.PanelType) != common.PanelTypeEnhance {
+		return nil, fmt.Errorf("database re-migration is only implemented for Enhance targets")
+	}
+	var export common.ExportData
+	if m.ExportData.Valid && len(m.ExportData.Data) > 0 {
+		_ = json.Unmarshal(m.ExportData.Data, &export)
+	}
+	if len(export.Databases) == 0 {
+		return nil, fmt.Errorf("this migration did not migrate any database")
+	}
+	domain := export.Account.Domain
+	if len(export.Domains) > 0 {
+		domain = export.Domains[0].Name
+		if export.Domains[0].TargetDomain != "" {
+			domain = export.Domains[0].TargetDomain
+		}
+	}
+	if domain == "" {
+		return nil, fmt.Errorf("no domain is recorded for this migration")
+	}
+	clusterServerID, err := e.resolveClusterServerID(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+
+	var completedAt *time.Time
+	if m.CompletedAt.Valid {
+		t := m.CompletedAt.Time
+		completedAt = &t
+	}
+	restore := &common.MigrationProgress{ID: migrationID, Status: "completed", CurrentStep: "Completed", BytesTransferred: m.BytesTransferred, TotalBytes: m.TotalBytes, StartedAt: m.StartedAt.Time, CompletedAt: completedAt}
+	if err := e.db.UpdateMigrationProgress(ctx, migrationID, &common.MigrationProgress{
+		ID: migrationID, Status: "running", CurrentStep: "Re-migrating the database", BytesTransferred: m.BytesTransferred, TotalBytes: m.TotalBytes, StartedAt: m.StartedAt.Time,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to update migration status: %w", err)
+	}
+	e.db.AddMigrationLog(ctx, migrationID, "info", fmt.Sprintf("Database re-migration requested (operator action): %s is exported again from %s and loaded over the existing database of %s on the target; files are not touched", strings.Join(dbNames(export.Databases), ", "), sourceServer.Name, domain), nil)
+
+	go e.runDatabaseRemigration(migrationID, sourceServer, targetServer, clusterServerID, &export, domain, restore)
+
+	return e.GetMigrationStatus(ctx, migrationID)
+}
+
+func dbNames(dbs []common.Database) []string {
+	names := make([]string, 0, len(dbs))
+	for _, db := range dbs {
+		names = append(names, db.Name)
+	}
+	return names
+}
+
+func (e *Engine) runDatabaseRemigration(migrationID string, sourceServer, targetServer *storage.Server, clusterServerID string, export *common.ExportData, domain string, restore *common.MigrationProgress) {
+	ctx := context.Background()
+	workCtx, cancelWork := context.WithCancel(ctx)
+	e.mu.Lock()
+	e.cancels[migrationID] = cancelWork
+	e.mu.Unlock()
+	defer func() {
+		cancelWork()
+		e.mu.Lock()
+		delete(e.cancels, migrationID)
+		e.mu.Unlock()
+	}()
+	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
+	finish := func(step string) {
+		p := *restore
+		p.CurrentStep = step
+		e.db.UpdateMigrationProgress(ctx, migrationID, &p)
+	}
+	fail := func(msg string) {
+		if workCtx.Err() != nil {
+			logFn("warn", "Database re-migration cancelled by user. If the reload had already started, the target database may hold a mix of old and new tables: restore it from the backup noted above, or run the database re-migration again")
+			finish("Database re-migration cancelled")
+			return
+		}
+		logFn("error", "Database re-migration failed: "+msg)
+		finish("Database re-migration failed")
+	}
+
+	tmpDir := filepath.Join(e.workDir, migrationID+"-db")
+	os.RemoveAll(tmpDir)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		fail(fmt.Sprintf("failed to create work directory: %v", err))
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// 1. Export the database(s) again from the source
+	logFn("info", fmt.Sprintf("Exporting the database again from %s (%s)", sourceServer.Name, sourceServer.PanelType))
+	var dbs []common.Database
+	switch common.PanelType(sourceServer.PanelType) {
+	case common.PanelTypeDirectAdmin:
+		da, err := e.connectDirectAdmin(workCtx, sourceServer, "", logFn)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer da.Disconnect()
+		dbs, err = da.ExportDatabases(workCtx, export.Account.Username, tmpDir)
+		da.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
+		if err != nil {
+			fail(fmt.Sprintf("export failed: %v", err))
+			return
+		}
+	case common.PanelTypeCloudways:
+		cw, err := e.connectCloudways(workCtx, sourceServer, "", logFn)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer cw.Disconnect()
+		dbs, err = cw.ExportDatabases(workCtx, export.Account.Username, tmpDir)
+		if err != nil {
+			fail(fmt.Sprintf("export failed: %v", err))
+			return
+		}
+	default:
+		fail(fmt.Sprintf("unsupported source panel type: %s", sourceServer.PanelType))
+		return
+	}
+	if len(dbs) == 0 {
+		fail(fmt.Sprintf("no database found on the source for %s", export.Account.Username))
+		return
+	}
+
+	// 2. Load them over the existing databases on the target
+	en, err := e.connectEnhanceTarget(workCtx, migrationID, targetServer, clusterServerID, logFn)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	defer en.Disconnect()
+	summary, err := en.ReimportDatabases(workCtx, domain, dbs, filepath.Join(tmpDir, "databases"), export.Account.Username)
+	if err != nil {
+		fail(err.Error())
+		return
+	}
+	if len(summary) == 0 {
+		logFn("warn", "Database re-migration finished but nothing was reloaded; see the lines above")
+	} else {
+		logFn("info", "Database re-migration finished: "+strings.Join(summary, "; "))
+	}
+	if n := len(en.Warnings()); n > 0 {
+		logFn("warn", fmt.Sprintf("Database re-migration finished with %d warning(s); see the lines above", n))
+	}
+	finish("Database re-migrated")
+}
+
 // RefreshAccountsCache re-reads the account list of a source server and stores it, so the
 // New Migration page shows suspended/changed accounts without a manual Refresh.
 func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int, error) {

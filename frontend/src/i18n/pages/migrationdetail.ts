@@ -26,6 +26,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'השעה את המקור',
     'migrationdetail.actions.unsuspend': 'בטל השעיה',
     'migrationdetail.actions.repair': 'תקן WordPress',
+    'migrationdetail.actions.remigrateDb': 'העבר שוב רק את ה-DB',
     'migrationdetail.actions.rerun': 'התחל מהתחלה',
     'migrationdetail.actions.resume': 'נסה שוב מאיפה שנתקע',
 
@@ -38,6 +39,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.resumeStarted': 'ממשיך את המיגרציה של {account} מאיפה שנתקעה',
     'migrationdetail.toast.resumeFailed': 'לא הצלחנו להמשיך מאיפה שנתקע',
     'migrationdetail.toast.repairNothing': 'לא נדרשו שינויים',
+    'migrationdetail.toast.remigrateDbStarted': 'העברת ה-DB התחילה ברקע; ההתקדמות בקונסולה',
+    'migrationdetail.toast.remigrateDbFailed': 'לא הצלחנו להתחיל את העברת ה-DB',
     'migrationdetail.toast.repairFailed': 'התיקון נכשל',
     'migrationdetail.toast.cancelRequested': 'הביטול התקבל; השלב הנוכחי נעצר',
     'migrationdetail.toast.cancelFailed': 'ביטול המיגרציה נכשל',
@@ -64,6 +67,10 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.repair.message':
       'מריץ שוב את השלבים שאחרי הייבוא ביעד: מגדיר את גרסת ה-PHP לפי המקור, מעביר התקנות WordPress ישנות שמסד הנתונים שלהן לא קיים אל מחוץ ל-web root (הן נשמרות תחת {leftovers}, לא נמחקות), מסיר רשומות אפליקציה ישנות, מפעיל שוב את זיהוי ה-WordPress של Enhance ומתקן בעלות על קבצים. מתאים כשכפתור ההתחברות ל-WP או רשימת המשתמשים ב-Enhance לא עובדים. ההתקדמות נכתבת לקונסולה למטה.',
     'migrationdetail.confirm.repair.confirm': 'תקן',
+    'migrationdetail.confirm.remigrateDb.title': 'להעביר שוב רק את מסד הנתונים?',
+    'migrationdetail.confirm.remigrateDb.message':
+      'מסד הנתונים של {account} ייוצא שוב מהמקור וייטען על גבי מסד הנתונים שכבר קיים ביעד — באותו מסד ובאותם פרטי התחברות, בלי למחוק וליצור מחדש (ב-wp-config.php לא משתנה כלום). הקבצים לא נוגעים בהם. מתאים כשהאתר עבר, ומאז נכנסו הזמנות/תוכן במקור. לפני הטעינה נשמר גיבוי של מסד הנתונים הנוכחי ביעד תחת {leftovers}. הריצה מתבצעת ברקע והתקדמותה מופיעה בקונסולה למטה; הסטטוס יחזור ל"הושלם" בסיום.',
+    'migrationdetail.confirm.remigrateDb.confirm': 'העבר שוב את ה-DB',
     'migrationdetail.confirm.rerun.title': 'להתחיל את המיגרציה מהתחלה?',
     'migrationdetail.confirm.rerun.message':
       'מיגרציה חדשה תתחיל עבור {account} עם אותו מקור, אותו צומת יעד ואותן אפשרויות{scan} — כולל שלב הייצוא מהמקור מחדש. אתר שכבר קיים על הצומת ישמש מחדש. אם המיגרציה נכשלה אחרי שהייצוא הסתיים בהצלחה, אפשר במקום זה להמשיך מאיפה שנתקעה בלי לחזור על השלבים שכבר בוצעו. הריצה הזו נשארת בהיסטוריה.',
@@ -162,6 +169,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'Suspend source',
     'migrationdetail.actions.unsuspend': 'Unsuspend source',
     'migrationdetail.actions.repair': 'Repair WordPress',
+    'migrationdetail.actions.remigrateDb': 'Re-migrate DB only',
     'migrationdetail.actions.rerun': 'Start from scratch',
     'migrationdetail.actions.resume': 'Try again from where it got stuck',
 
@@ -174,6 +182,8 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.resumeStarted': 'Resuming the migration for {account} from where it got stuck',
     'migrationdetail.toast.resumeFailed': 'Could not resume from where it got stuck',
     'migrationdetail.toast.repairNothing': 'Nothing needed changing',
+    'migrationdetail.toast.remigrateDbStarted': 'Database re-migration started in the background; follow the console',
+    'migrationdetail.toast.remigrateDbFailed': 'Could not start the database re-migration',
     'migrationdetail.toast.repairFailed': 'Repair failed',
     'migrationdetail.toast.cancelRequested': 'Cancellation requested; the current step is being aborted',
     'migrationdetail.toast.cancelFailed': 'Failed to cancel the migration',
@@ -200,6 +210,10 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.repair.message':
       'Re-runs the post-import steps on the target: sets the PHP version to match the source, moves old WordPress installs whose database does not exist out of the web root (kept under {leftovers}, not deleted), removes stale app records, triggers the WordPress discovery of Enhance again and fixes file ownership. Use it when the WP login button or the user list in Enhance does not work. Progress is written to the console below.',
     'migrationdetail.confirm.repair.confirm': 'Repair',
+    'migrationdetail.confirm.remigrateDb.title': 'Re-migrate only the database?',
+    'migrationdetail.confirm.remigrateDb.message':
+      'The database of {account} is exported again from the source and loaded over the database that already exists on the target — same database, same credentials, nothing dropped or recreated (wp-config.php is left untouched). Files are not touched. For a site that was migrated and has collected orders/content on the source since. The current target database is backed up under {leftovers} first. It runs in the background and its progress shows in the console below; the status returns to "completed" when done.',
+    'migrationdetail.confirm.remigrateDb.confirm': 'Re-migrate the DB',
     'migrationdetail.confirm.rerun.title': 'Start this migration from scratch?',
     'migrationdetail.confirm.rerun.message':
       'A new migration starts for {account} with the same source, target node and options{scan}, including re-exporting from the source. A website that already exists on the node is reused. If this migration failed after the export finished, you can instead resume from where it got stuck without redoing the steps already done. This run stays in the history.',

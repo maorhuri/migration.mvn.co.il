@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { cancelMigration, getMigration, getMigrationLogsPage, getServer, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { ArrowPathIcon, CircleStackIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
+import { cancelMigration, getMigration, getMigrationLogsPage, getServer, remigrateMigrationDatabases, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -71,6 +71,8 @@ export default function MigrationDetail() {
   const [resumeOpen, setResumeOpen] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [remigrateDbOpen, setRemigrateDbOpen] = useState(false);
+  const [remigratingDb, setRemigratingDb] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
   const [jumpToId, setJumpToId] = useState<string | null>(null);
   const deepLinkedRef = useRef(false);
@@ -271,6 +273,20 @@ export default function MigrationDetail() {
     }
   };
 
+  const handleRemigrateDb = async () => {
+    setRemigratingDb(true);
+    try {
+      await remigrateMigrationDatabases(migration.id);
+      toast.success(t('migrationdetail.toast.remigrateDbStarted'), { duration: 6000 });
+      setRemigrateDbOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, t('migrationdetail.toast.remigrateDbFailed')));
+    } finally {
+      setRemigratingDb(false);
+    }
+  };
+
   const handleRepair = async () => {
     setRepairing(true);
     try {
@@ -366,6 +382,11 @@ export default function MigrationDetail() {
               {isCompleted && (
                 <Button variant="outline" leftIcon={<WrenchScrewdriverIcon />} onClick={() => setRepairOpen(true)} loading={repairing}>
                   {t('migrationdetail.actions.repair')}
+                </Button>
+              )}
+              {isCompleted && !isAgentlessPanel(sourceServer?.panel_type) && (migration.export_data?.account?.databases?.length ?? 0) > 0 && (
+                <Button variant="outline" leftIcon={<CircleStackIcon />} onClick={() => setRemigrateDbOpen(true)} loading={remigratingDb}>
+                  {t('migrationdetail.actions.remigrateDb')}
                 </Button>
               )}
               {(migration.status === 'failed' || migration.status === 'cancelled') && !!migration.export_data && (
@@ -519,6 +540,19 @@ export default function MigrationDetail() {
         message={t.rich('migrationdetail.confirm.repair.message', { leftovers: <Mono>migration-leftovers</Mono> })}
         confirmLabel={t('migrationdetail.confirm.repair.confirm')}
         onConfirm={handleRepair}
+      />
+
+      <ConfirmDialog
+        open={remigrateDbOpen}
+        onClose={() => setRemigrateDbOpen(false)}
+        tone="warning"
+        title={t('migrationdetail.confirm.remigrateDb.title')}
+        message={t.rich('migrationdetail.confirm.remigrateDb.message', {
+          account: <Mono>{migration.account_username}</Mono>,
+          leftovers: <Mono>migration-leftovers</Mono>,
+        })}
+        confirmLabel={t('migrationdetail.confirm.remigrateDb.confirm')}
+        onConfirm={handleRemigrateDb}
       />
 
       <ConfirmDialog

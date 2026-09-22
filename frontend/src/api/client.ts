@@ -188,6 +188,12 @@ export const repairMigrationWordPress = async (id: string): Promise<{ migration:
   return data;
 };
 
+/** Re-copy only the database(s) of a completed migration over the existing ones on the target (background; follow the log). */
+export const remigrateMigrationDatabases = async (id: string): Promise<Migration> => {
+  const { data } = await api.post(`/migrations/${id}/remigrate/databases`);
+  return data;
+};
+
 /** Operator decision on malware-scan findings while the migration waits: clean | skip | abort. */
 export const submitScanDecision = async (id: string, action: 'clean' | 'skip' | 'abort'): Promise<Migration> => {
   const { data } = await api.post(`/migrations/${id}/scan/decision`, { action });

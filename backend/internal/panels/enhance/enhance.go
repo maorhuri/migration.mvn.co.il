@@ -1178,14 +1178,7 @@ func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocR
 
 // importDatabase creates the database and user via the API and loads the dump on the node.
 func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceWebsite, db common.Database, dumpDir, sourceUser string) (*DBResult, error) {
-	base := strings.ToLower(db.Name)
-	if sourceUser != "" {
-		base = strings.TrimPrefix(base, strings.ToLower(sourceUser)+"_")
-	}
-	base = dbNameSanitizer.ReplaceAllString(base, "_")
-	if base == "" {
-		base = "db"
-	}
+	base := dbBaseName(db.Name, sourceUser)
 
 	// Create DB (409 = already exists, reuse)
 	dbEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, ws.ID)
@@ -1267,10 +1260,6 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	}
 	e.tmpPaths = append(e.tmpPaths, remoteDump)
 
-	reader := "cat " + shq(remoteDump)
-	if strings.HasSuffix(remoteDump, ".gz") {
-		reader = "zcat " + shq(remoteDump)
-	}
 	// Enhance provisions the MySQL objects through appcd on the node, asynchronously and not always
 	// successfully; make sure they really exist and learn which host accepts the user before
 	// streaming the dump.
@@ -1278,17 +1267,50 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	if err != nil {
 		return nil, err
 	}
-	hostFlag := ""
 	res.Host = "localhost"
 	if host != "" {
-		hostFlag = " -h " + shq(host)
 		res.Host = host
+	}
+	tables, err := e.loadDump(ctx, remoteDump, db.Name, actualDB, actualUser, password, host)
+	if err != nil {
+		return nil, err
+	}
+	res.Tables = tables
+	return res, nil
+}
+
+// dbBaseName is the name a source database gets on Enhance: the source's "<user>_" prefix
+// dropped, lowercased and sanitised (Enhance itself prefixes it with the website's user).
+func dbBaseName(name, sourceUser string) string {
+	base := strings.ToLower(name)
+	if sourceUser != "" {
+		base = strings.TrimPrefix(base, strings.ToLower(sourceUser)+"_")
+	}
+	base = dbNameSanitizer.ReplaceAllString(base, "_")
+	if base == "" {
+		base = "db"
+	}
+	return base
+}
+
+// loadDump streams a dump already uploaded to the node (remoteDump, .sql or .sql.gz) into the
+// existing database actualDB with the given credentials (host "" = the local socket) and
+// returns the table count afterwards. Used by the first import and by a database re-migration.
+func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB, actualUser, password, host string) (int, error) {
+	reader := "cat " + shq(remoteDump)
+	if strings.HasSuffix(remoteDump, ".gz") {
+		reader = "zcat " + shq(remoteDump)
+	}
+	hostFlag, hostLabel := "", "localhost"
+	if host != "" {
+		hostFlag = " -h " + shq(host)
+		hostLabel = host
 	}
 	// DEFINER clauses need SUPER when the definer user does not exist here; CREATE DATABASE/USE
 	// lines in the dump would target the source database name. Both fail with "Access denied"
 	// part-way through the import, so they are stripped and counted for the log.
 	if counts, err := e.nodeRun(ctx, fmt.Sprintf("%s | grep -aEc 'DEFINER=`|^(CREATE DATABASE|USE )' || true", reader)); err == nil && lastInt(counts) > 0 {
-		e.logf("info", "Dump of %s contains %d DEFINER / CREATE DATABASE / USE line(s); stripped before import", db.Name, lastInt(counts))
+		e.logf("info", "Dump of %s contains %d DEFINER / CREATE DATABASE / USE line(s); stripped before import", sourceName, lastInt(counts))
 	}
 	filter := "sed -E -e '/^(CREATE DATABASE|USE )/d' -e 's/DEFINER=`[^`]*`@`[^`]*`//g'"
 
@@ -1301,7 +1323,7 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	longest, _ := strconv.ParseInt(strings.TrimSpace(mustStr(e.nodeRun(ctx, fmt.Sprintf("%s | %s | awk '{ if (length($0) > m) m = length($0) } END { print m+0 }'", reader, filter)))), 10, 64)
 	if maxPacket > 0 && longest > maxPacket {
 		e.warnf("Database %s contains at least one row (or statement) of %s, larger than this node's MariaDB max_allowed_packet (%s); the import will very likely fail with \"server has gone away\". This is a server setting (common with page-builder content such as Elementor templates), not something this tool can change on its own: ask whoever administers the node's MariaDB to raise max_allowed_packet (for example to 512M) and run the migration again.",
-			db.Name, humanBytes(longest), humanBytes(maxPacket))
+			sourceName, humanBytes(longest), humanBytes(maxPacket))
 	}
 
 	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
@@ -1316,30 +1338,162 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 			if maxPacket > 0 {
 				limit = humanBytes(maxPacket)
 			}
-			return nil, fmt.Errorf("mysql import of %s failed on node (host %s): the connection dropped while sending data (%s). This node's MariaDB max_allowed_packet is %s and %s; a single database row or statement almost certainly exceeded it (common with page-builder content). Ask the node's MariaDB administrator to raise max_allowed_packet (for example to 512M) and run the migration again. Last output: %s",
-				actualDB, res.Host, tail, limit, detail, tail)
+			return 0, fmt.Errorf("mysql import of %s failed on node (host %s): the connection dropped while sending data (%s). This node's MariaDB max_allowed_packet is %s and %s; a single database row or statement almost certainly exceeded it (common with page-builder content). Ask the node's MariaDB administrator to raise max_allowed_packet (for example to 512M) and run the migration again. Last output: %s",
+				actualDB, hostLabel, tail, limit, detail, tail)
 		}
-		return nil, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, res.Host, tail)
+		return 0, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, hostLabel, tail)
 	}
 
 	// Verify with the same host that worked for the import; MariaDB's client prints a
 	// deprecation notice on stderr, so drop stderr and read only the last line.
-	verifyHost := ""
-	if res.Host != "" && res.Host != "localhost" {
-		verifyHost = " -h " + shq(res.Host)
-	}
-	countOut, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e %s 2>/dev/null", verifyHost, shq(actualUser), shq(password),
+	countOut, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e %s 2>/dev/null", hostFlag, shq(actualUser), shq(password),
 		shq(fmt.Sprintf("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='%s'", actualDB))))
 	if err != nil {
-		return nil, fmt.Errorf("could not verify database %s after import: %v %s", actualDB, err, countOut)
+		return 0, fmt.Errorf("could not verify database %s after import: %v %s", actualDB, err, countOut)
 	}
-	res.Tables = lastInt(countOut)
-	if res.Tables == 0 {
-		return nil, fmt.Errorf("database %s has no tables after import (verification output: %q)", actualDB, countOut)
+	tables := lastInt(countOut)
+	if tables == 0 {
+		return 0, fmt.Errorf("database %s has no tables after import (verification output: %q)", actualDB, countOut)
 	}
 	e.nodeRun(ctx, "rm -f "+shq(remoteDump))
-	e.logf("info", "Database %s imported on node: %d tables (user %s, host %s)", actualDB, res.Tables, actualUser, res.Host)
-	return res, nil
+	e.logf("info", "Database %s imported on node: %d tables (user %s, host %s)", actualDB, tables, actualUser, hostLabel)
+	return tables, nil
+}
+
+var wpConfigDefineRe = regexp.MustCompile(`define\(\s*['"](DB_NAME|DB_USER|DB_PASSWORD|DB_HOST)['"]\s*,\s*['"]([^'"]*)['"]`)
+
+// readWPConfigDB returns the DB_* credentials a website's wp-config.php on the node holds right
+// now (nil when there is no wp-config.php or it lacks a name/user).
+func (e *Enhance) readWPConfigDB(ctx context.Context, ws *EnhanceWebsite) map[string]string {
+	out, err := e.nodeRun(ctx, fmt.Sprintf(`grep -hE "DB_NAME|DB_USER|DB_PASSWORD|DB_HOST" %s 2>/dev/null`, shq(ws.DocRoot+"/wp-config.php")))
+	if err != nil {
+		return nil
+	}
+	creds := map[string]string{}
+	for _, m := range wpConfigDefineRe.FindAllStringSubmatch(out, -1) {
+		creds[m[1]] = m[2]
+	}
+	if creds["DB_NAME"] == "" || creds["DB_USER"] == "" {
+		return nil
+	}
+	return creds
+}
+
+// ReimportDatabases loads fresh dumps of an already-migrated website's databases over the
+// databases that exist on Enhance, in place: nothing is dropped or recreated and, for a
+// WordPress site, the credentials in its wp-config.php are reused as-is so the site keeps
+// working throughout (a non-WordPress site gets its database user's password reset, since the
+// tool has no other way to log in). The current content of each database is dumped to the
+// website's migration-leftovers directory first. dumpDir holds <source db name>.sql(.gz); a
+// source database that has no counterpart on the website yet is skipped with a warning.
+func (e *Enhance) ReimportDatabases(ctx context.Context, domain string, dbs []common.Database, dumpDir, sourceUser string) ([]string, error) {
+	orgID, err := e.orgID()
+	if err != nil {
+		return nil, err
+	}
+	if e.node == nil {
+		return nil, fmt.Errorf("not connected to the cluster node")
+	}
+	ws, err := e.getWebsiteByDomain(ctx, orgID, domain)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.resolveWebsitePaths(ctx, ws); err != nil {
+		return nil, err
+	}
+	wpCreds := e.readWPConfigDB(ctx, ws)
+	dbEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, ws.ID)
+	userEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-users", orgID, ws.ID)
+
+	var summary []string
+	for _, db := range dbs {
+		base := dbBaseName(db.Name, sourceUser)
+		actualDB, err := e.findMySQLName(ctx, dbEndpoint, base, ws.UnixUser)
+		if err != nil {
+			e.warnf("%s: source database %s has no counterpart (%s) on the website yet, skipped; run a full migration to create it", domain, db.Name, base)
+			continue
+		}
+		dumpFile := ""
+		for _, cand := range []string{db.Name + ".sql.gz", db.Name + ".sql"} {
+			if _, err := os.Stat(filepath.Join(dumpDir, cand)); err == nil {
+				dumpFile = filepath.Join(dumpDir, cand)
+				break
+			}
+		}
+		if dumpFile == "" {
+			return nil, fmt.Errorf("dump for %s not found in %s", db.Name, dumpDir)
+		}
+
+		var user, password, host string
+		if wpCreds != nil && wpCreds["DB_NAME"] == actualDB {
+			user, password = wpCreds["DB_USER"], wpCreds["DB_PASSWORD"]
+			if h := wpCreds["DB_HOST"]; h != "" && h != "localhost" && !strings.HasPrefix(h, "localhost:") {
+				host = h
+			}
+			e.logf("info", "%s: reusing the credentials of %s from wp-config.php (user %s, host %s); nothing in the site's configuration changes", domain, actualDB, user, orLocalhost(host))
+		} else {
+			userBase := base
+			if len(userBase) > 16 {
+				userBase = userBase[:16]
+			}
+			actualUser, err := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
+			if err != nil {
+				return nil, fmt.Errorf("database user for %s not found on the website: %w", actualDB, err)
+			}
+			password = randomPassword(24)
+			if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("%s/%s", userEndpoint, actualUser), map[string]interface{}{"password": password}); err != nil {
+				return nil, fmt.Errorf("reset password of database user %s: %w", actualUser, err)
+			}
+			privEndpoint := fmt.Sprintf("%s/%s/privileges", userEndpoint, actualUser)
+			host, err = e.waitForDatabase(ctx, ws, userEndpoint, privEndpoint, actualDB, actualUser, password, 2*time.Minute)
+			if err != nil {
+				return nil, err
+			}
+			user = actualUser
+			e.warnf("%s: no wp-config.php referencing %s, so the password of database user %s was reset to log in; update the application's configuration: user=%s password=%s host=%s", domain, actualDB, user, user, password, orLocalhost(host))
+		}
+		hostFlag := ""
+		if host != "" {
+			hostFlag = " -h " + shq(host)
+		}
+		if out, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e 'SELECT 1' %s 2>&1", hostFlag, shq(user), shq(password), shq(actualDB))); err != nil {
+			return nil, fmt.Errorf("cannot log in to %s as %s with the site's current credentials: %s", actualDB, user, lastLines(out, 2))
+		}
+
+		// Safety net before overwriting: keep what is there now.
+		backupDir := ws.HomeDir + "/migration-leftovers"
+		backup := fmt.Sprintf("%s/db-backup-%s-%s.sql.gz", backupDir, actualDB, time.Now().Format("20060102-150405"))
+		backupCmd := fmt.Sprintf("mkdir -p %s && set -o pipefail 2>/dev/null; mysqldump%s -u %s -p%s --single-transaction --quick --skip-lock-tables --routines --triggers --default-character-set=utf8mb4 %s 2>/dev/null | gzip -1 > %s && chown -R %s:%s %s",
+			shq(backupDir), hostFlag, shq(user), shq(password), shq(actualDB), shq(backup), shq(ws.UnixUser), shq(ws.UnixUser), shq(backupDir))
+		if out, err := e.nodeRun(ctx, backupCmd); err != nil {
+			e.warnf("%s: could not back up the current content of %s before reloading it (%s); continuing without a backup", domain, actualDB, lastLines(out, 2))
+			e.nodeRun(ctx, "rm -f "+shq(backup))
+		} else {
+			e.logf("info", "%s: current content of %s saved to %s before the reload", domain, actualDB, backup)
+		}
+
+		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql", actualDB, time.Now().UnixNano())
+		if strings.HasSuffix(dumpFile, ".sql.gz") {
+			remoteDump += ".gz"
+		}
+		if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
+			return nil, fmt.Errorf("upload dump to node: %w", err)
+		}
+		e.tmpPaths = append(e.tmpPaths, remoteDump)
+		tables, err := e.loadDump(ctx, remoteDump, db.Name, actualDB, user, password, host)
+		if err != nil {
+			return nil, err
+		}
+		summary = append(summary, fmt.Sprintf("%s: %s reloaded from %s (%d tables)", domain, actualDB, db.Name, tables))
+	}
+	return summary, nil
+}
+
+func orLocalhost(host string) string {
+	if host == "" {
+		return "localhost"
+	}
+	return host
 }
 
 // lastInt returns the integer on the last non-empty line of a command output (0 if none)

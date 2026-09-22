@@ -65,6 +65,17 @@ func (h *Handler) repairWordPress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"migration": result, "summary": summary})
 }
 
+// remigrateDatabases re-copies only the database(s) of a completed migration over the ones
+// already on the target (runs in the background; progress goes to the migration log).
+func (h *Handler) remigrateDatabases(c *gin.Context) {
+	result, err := h.engine.RemigrateDatabases(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusAccepted, result)
+}
+
 // rerunMigration starts a new migration with the settings of a failed or cancelled one,
 // redoing every step from scratch ("start from scratch").
 func (h *Handler) rerunMigration(c *gin.Context) {
