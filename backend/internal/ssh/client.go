@@ -1099,6 +1099,18 @@ func (c *Client) rsyncSSH() (sshCmd string, env []string, cleanup func(), err er
 			os.Remove(f)
 		}
 	}
+	// askpass answers ssh's prompt (the account password, or the passphrase of an encrypted key).
+	askpassEnv := func(secret string) ([]string, error) {
+		askpass, err := writeTemp("migration_askpass_*", []byte("#!/bin/sh\nprintf '%s\\n' "+shellQuote(secret)+"\n"))
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, askpass)
+		if err := os.Chmod(askpass, 0700); err != nil {
+			return nil, err
+		}
+		return []string{"SSH_ASKPASS=" + askpass, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=:0"}, nil
+	}
 	switch {
 	case config.AuthMethod == common.AuthMethodSSHKey && len(config.PrivateKey) > 0:
 		keyFile, err := writeTemp("migration_key_*", config.PrivateKey)
@@ -1106,18 +1118,15 @@ func (c *Client) rsyncSSH() (sshCmd string, env []string, cleanup func(), err er
 			return "", nil, cleanup, err
 		}
 		files = append(files, keyFile)
-		return base + " -i " + keyFile + " -o IdentitiesOnly=yes -o BatchMode=yes", nil, cleanup, nil
+		sshCmd = base + " -i " + keyFile + " -o IdentitiesOnly=yes"
+		if password == "" {
+			return sshCmd + " -o BatchMode=yes", nil, cleanup, nil
+		}
+		env, err = askpassEnv(password) // the key's passphrase
+		return sshCmd, env, cleanup, err
 	case config.AuthMethod == common.AuthMethodPassword && password != "":
-		askpass, err := writeTemp("migration_askpass_*", []byte("#!/bin/sh\nprintf '%s\\n' "+shellQuote(password)+"\n"))
-		if err != nil {
-			return "", nil, cleanup, err
-		}
-		files = append(files, askpass)
-		if err := os.Chmod(askpass, 0700); err != nil {
-			return "", nil, cleanup, err
-		}
-		env = []string{"SSH_ASKPASS=" + askpass, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=:0"}
-		return base + " -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1", env, cleanup, nil
+		env, err = askpassEnv(password)
+		return base + " -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1", env, cleanup, err
 	default:
 		return "", nil, cleanup, fmt.Errorf("no credentials available for rsync (%s auth)", config.AuthMethod)
 	}
