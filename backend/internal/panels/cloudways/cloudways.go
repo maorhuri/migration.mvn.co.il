@@ -82,6 +82,7 @@ func (c *Cloudways) logf(level, format string, args ...interface{}) {
 // installed for the master user, an SSH key) and checks that ~/applications exists.
 func (c *Cloudways) Connect(ctx context.Context, config *common.ConnectionConfig, password string, privateKey []byte) error {
 	client := ssh.NewClient()
+	client.SetLogger(c.logFn)
 	if err := client.Connect(ctx, config, password, privateKey); err != nil {
 		return err
 	}

@@ -122,6 +122,7 @@ func (e *Enhance) ConnectWithCredentials(ctx context.Context, config *common.Con
 // ConnectNode opens root SSH (+SFTP) to the cluster node that hosts the website.
 func (e *Enhance) ConnectNode(ctx context.Context, nodeConfig *common.ConnectionConfig, password string, privateKey []byte) error {
 	client := ssh.NewClient()
+	client.SetLogger(func(level, msg string) { e.logf(level, "%s", msg) })
 	if err := client.Connect(ctx, nodeConfig, password, privateKey); err != nil {
 		return fmt.Errorf("SSH to node %s failed: %w", nodeConfig.Host, err)
 	}

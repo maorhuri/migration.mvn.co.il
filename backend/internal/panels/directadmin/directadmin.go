@@ -28,7 +28,10 @@ type DirectAdmin struct {
 }
 
 // SetLogger routes module log lines to the given function (in addition to stdout)
-func (da *DirectAdmin) SetLogger(fn func(level, message string)) { da.logFn = fn }
+func (da *DirectAdmin) SetLogger(fn func(level, message string)) {
+	da.logFn = fn
+	da.sshClient.SetLogger(fn)
+}
 
 func (da *DirectAdmin) logf(level, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
