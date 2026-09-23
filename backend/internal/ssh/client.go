@@ -197,7 +197,9 @@ func (c *Client) ConnectSFTP() error {
 		return fmt.Errorf("SSH connection not established")
 	}
 
-	sftpClient, err := sftp.NewClient(c.sshClient)
+	// Bigger packets and writes in flight: with the defaults (32 KB, one request at a time) a
+	// single-file SFTP transfer crawls at well under 1 MB/s on a link with real latency.
+	sftpClient, err := sftp.NewClient(c.sshClient, sftp.MaxPacketUnchecked(256*1024), sftp.UseConcurrentWrites(true), sftp.UseConcurrentReads(true))
 	if err != nil {
 		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
@@ -275,12 +277,23 @@ func (c *Client) RunCommandWithStdin(ctx context.Context, command string, stdin 
 // Upload uploads a file via SFTP
 func (c *Client) Upload(ctx context.Context, localPath, remotePath string) error {
 	c.mu.Lock()
-	if c.sftpClient == nil {
-		c.mu.Unlock()
-		return fmt.Errorf("SFTP connection not established")
-	}
+	config := c.config
 	sftpClient := c.sftpClient
 	c.mu.Unlock()
+
+	// rsync over OpenSSH first (same reasons as for directories: many times faster than SFTP
+	// through this process, and a retry resumes a partial file); SFTP if rsync is unusable.
+	if config != nil {
+		if err, attempted := c.rsyncFirst(ctx, localPath, fmt.Sprintf("%s@%s:%s", config.Username, config.Host, remotePath), nil); attempted {
+			if err == nil || ctx.Err() != nil {
+				return err
+			}
+			c.logFn("warn", fmt.Sprintf("rsync of %s to %s failed (%v); falling back to SFTP, which is slower", filepath.Base(localPath), config.Host, err))
+		}
+	}
+	if sftpClient == nil {
+		return fmt.Errorf("SFTP connection not established")
+	}
 
 	localFile, err := os.Open(localPath)
 	if err != nil {
@@ -311,12 +324,24 @@ func (c *Client) Upload(ctx context.Context, localPath, remotePath string) error
 // Download downloads a file via SFTP
 func (c *Client) Download(ctx context.Context, remotePath, localPath string) error {
 	c.mu.Lock()
-	if c.sftpClient == nil {
-		c.mu.Unlock()
-		return fmt.Errorf("SFTP connection not established")
-	}
+	config := c.config
 	sftpClient := c.sftpClient
 	c.mu.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+		return fmt.Errorf("failed to create local directory: %w", err)
+	}
+	if config != nil {
+		if err, attempted := c.rsyncFirst(ctx, fmt.Sprintf("%s@%s:%s", config.Username, config.Host, remotePath), localPath, nil); attempted {
+			if err == nil || ctx.Err() != nil {
+				return err
+			}
+			c.logFn("warn", fmt.Sprintf("rsync of %s from %s failed (%v); falling back to SFTP, which is slower", filepath.Base(remotePath), config.Host, err))
+		}
+	}
+	if sftpClient == nil {
+		return fmt.Errorf("SFTP connection not established")
+	}
 
 	remoteFile, err := sftpClient.Open(remotePath)
 	if err != nil {

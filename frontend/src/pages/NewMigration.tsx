@@ -354,7 +354,6 @@ export default function NewMigration() {
 
     try {
       let completed = false;
-      const startTime = Date.now();
       let lastStepIndex = -1;
       updateStep(0, 'running');
 
@@ -501,11 +500,9 @@ export default function NewMigration() {
           }
           throw pollError;
         }
-
-        // Timeout after 30 minutes
-        if (Date.now() - startTime > 30 * 60 * 1000) {
-          throw new Error(t('newmigration.error.timeout'));
-        }
+        // No client-side timeout: the backend is the source of truth and a large site takes
+        // as long as it takes (a 30-minute cap here used to send the wizard to the completion
+        // screen while the migration was still importing).
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -1265,10 +1265,9 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	if strings.HasSuffix(dumpFile, ".sql.gz") {
 		remoteDump = fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", base, time.Now().UnixNano())
 	}
-	if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
-		return nil, fmt.Errorf("upload dump to node: %w", err)
+	if err := e.uploadDump(ctx, dumpFile, remoteDump, db.Name); err != nil {
+		return nil, err
 	}
-	e.tmpPaths = append(e.tmpPaths, remoteDump)
 
 	// Enhance provisions the MySQL objects through appcd on the node, asynchronously and not always
 	// successfully; make sure they really exist and learn which host accepts the user before
@@ -1306,6 +1305,53 @@ func dbBaseName(name, sourceUser string) string {
 // loadDump streams a dump already uploaded to the node (remoteDump, .sql or .sql.gz) into the
 // existing database actualDB with the given credentials (host "" = the local socket) and
 // returns the table count afterwards. Used by the first import and by a database re-migration.
+// uploadDump copies a database dump to the node's /tmp (remembered for cleanup) and logs how
+// big it was and how long it took, since a large dump is the longest silent stretch of the
+// database step.
+func (e *Enhance) uploadDump(ctx context.Context, dumpFile, remoteDump, sourceName string) error {
+	size := int64(0)
+	if st, err := os.Stat(dumpFile); err == nil {
+		size = st.Size()
+	}
+	e.logf("info", "Uploading the dump of %s (%s) to the node", sourceName, humanBytes(size))
+	start := time.Now()
+	if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
+		return fmt.Errorf("upload dump to node: %w", err)
+	}
+	e.tmpPaths = append(e.tmpPaths, remoteDump)
+	e.logf("info", "Dump of %s uploaded in %s", sourceName, time.Since(start).Round(time.Second))
+	return nil
+}
+
+// pollTableCount logs how many tables the database holds every 30s until stop is called, so a
+// long MySQL load of a big dump is visibly moving.
+func (e *Enhance) pollTableCount(ctx context.Context, hostFlag, user, password, db string) (stop func()) {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				out, err := e.nodeRun(ctx, fmt.Sprintf("mysql%s -u %s -p%s -N -e %s 2>/dev/null", hostFlag, shq(user), shq(password),
+					shq(fmt.Sprintf("SELECT COUNT(*), COALESCE(ROUND(SUM(data_length+index_length)/1048576),0) FROM information_schema.tables WHERE table_schema='%s'", db))))
+				if err == nil {
+					if f := strings.Fields(out); len(f) >= 2 {
+						e.logf("info", "Loading %s: %s tables, %s MB so far", db, f[0], f[1])
+					}
+				}
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
+}
+
 func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB, actualUser, password, host string) (int, error) {
 	reader := "cat " + shq(remoteDump)
 	if strings.HasSuffix(remoteDump, ".gz") {
@@ -1316,6 +1362,7 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 		hostFlag = " -h " + shq(host)
 		hostLabel = host
 	}
+	e.logf("info", "Checking the dump of %s before loading (DEFINER clauses, statement sizes)", sourceName)
 	// DEFINER clauses need SUPER when the definer user does not exist here; CREATE DATABASE/USE
 	// lines in the dump would target the source database name. Both fail with "Access denied"
 	// part-way through the import, so they are stripped and counted for the log.
@@ -1336,8 +1383,13 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 			sourceName, humanBytes(longest), humanBytes(maxPacket))
 	}
 
+	e.logf("info", "Loading the dump of %s into %s (host %s); the table count is logged every 30s until it finishes", sourceName, actualDB, hostLabel)
+	loadStart := time.Now()
+	stopPoll := e.pollTableCount(ctx, hostFlag, actualUser, password, actualDB)
 	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
-	if out, err := e.nodeRun(ctx, cmd); err != nil {
+	out, err := e.nodeRun(ctx, cmd)
+	stopPoll()
+	if err != nil {
 		tail := lastLines(out, 3)
 		if strings.Contains(tail, "gone away") || strings.Contains(tail, "Lost connection") || strings.Contains(tail, "max_allowed_packet") {
 			detail := "the exact statement size on the node was not measured"
@@ -1366,7 +1418,7 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 		return 0, fmt.Errorf("database %s has no tables after import (verification output: %q)", actualDB, countOut)
 	}
 	e.nodeRun(ctx, "rm -f "+shq(remoteDump))
-	e.logf("info", "Database %s imported on node: %d tables (user %s, host %s)", actualDB, tables, actualUser, hostLabel)
+	e.logf("info", "Database %s imported on node in %s: %d tables (user %s, host %s)", actualDB, time.Since(loadStart).Round(time.Second), tables, actualUser, hostLabel)
 	return tables, nil
 }
 
@@ -1486,10 +1538,9 @@ func (e *Enhance) ReimportDatabases(ctx context.Context, domain string, dbs []co
 		if strings.HasSuffix(dumpFile, ".sql.gz") {
 			remoteDump += ".gz"
 		}
-		if err := e.node.Upload(ctx, dumpFile, remoteDump); err != nil {
-			return nil, fmt.Errorf("upload dump to node: %w", err)
+		if err := e.uploadDump(ctx, dumpFile, remoteDump, db.Name); err != nil {
+			return nil, err
 		}
-		e.tmpPaths = append(e.tmpPaths, remoteDump)
 		tables, err := e.loadDump(ctx, remoteDump, db.Name, actualDB, user, password, host)
 		if err != nil {
 			return nil, err
