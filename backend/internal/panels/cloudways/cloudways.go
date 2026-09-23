@@ -702,20 +702,28 @@ func (c *Cloudways) exportFiles(ctx context.Context, a *App, outputDir string, p
 	if err := os.MkdirAll(localDocRoot, 0755); err != nil {
 		return fmt.Errorf("failed to create local directory: %w", err)
 	}
+	const step = "Downloading files"
 	if progress != nil {
-		progress <- common.MigrationProgress{Status: "running", CurrentStep: "Downloading files"}
+		progress <- common.MigrationProgress{Status: "running", CurrentStep: step}
 	}
 	remote := c.appDir(a.Slug) + "/public_html"
-	err := c.sshClient.RsyncDownloadWithKey(ctx, remote, localDocRoot)
+	total, sizeErr := c.sshClient.RemoteDirSize(ctx, remote)
+	if sizeErr != nil {
+		c.logf("warn", "Could not measure %s up front (%v); progress is reported without a total", remote, shortErr(sizeErr))
+	}
+	reporter := common.NewTransferReporter(step, total, progress, func(level, msg string) { c.logf(level, "%s", msg) })
+	reporter.Start()
+	err := c.sshClient.RsyncDownloadWithKey(ctx, remote, localDocRoot, reporter.Feed())
 	var partial *ssh.RsyncPartialError
 	if asPartial(err, &partial) {
 		c.logf("warn", "Some files changed or vanished on the source while copying; running a second pass. %s", partial.Tail)
-		err = c.sshClient.RsyncDownloadWithKey(ctx, remote, localDocRoot)
+		err = c.sshClient.RsyncDownloadWithKey(ctx, remote, localDocRoot, reporter.Feed())
 		if asPartial(err, &partial) {
 			c.logf("warn", "Files are still being rewritten on the source (cache/temp files); continuing with what was copied. %s", partial.Tail)
 			err = nil
 		}
 	}
+	reporter.Finish()
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", remote, err)
 	}

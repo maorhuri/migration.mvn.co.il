@@ -1150,7 +1150,11 @@ func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocR
 	}
 
 	start := time.Now()
-	if err := e.node.RsyncUploadWithKey(ctx, localDocRoot, ws.DocRoot); err != nil {
+	reporter := common.NewTransferReporter(fmt.Sprintf("Uploading files to %s", ws.Domain.Domain), ssh.LocalDirSize(localDocRoot), progress, func(level, msg string) { e.logf(level, "%s", msg) })
+	reporter.Start()
+	err := e.node.RsyncUploadWithKey(ctx, localDocRoot, ws.DocRoot, reporter.Feed())
+	reporter.Finish()
+	if err != nil {
 		return err
 	}
 	// rsync -a preserves the source uid; hand the files to the website user right away

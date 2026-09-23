@@ -293,6 +293,17 @@ export function MigrationHero({ migration, logs, inventory, warningCount, timeli
             </span>
           </div>
           <ProgressBar value={progress} showValue live tone="brand" size="md" label={t('a11y.progress')} />
+          {(migration.progress?.total_bytes ?? 0) > 0 && (migration.progress?.bytes_transferred ?? 0) > 0 && (
+            <div className="space-y-1 pt-1">
+              <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span>{t('migrationdetail.hero.transfer')}</span>
+                <span className="tabular" dir="ltr">
+                  {formatBytes(migration.progress?.bytes_transferred ?? 0)} / {formatBytes(migration.progress?.total_bytes ?? 0)}
+                </span>
+              </div>
+              <ProgressBar value={percent(migration.progress?.bytes_transferred ?? 0, migration.progress?.total_bytes ?? 0)} tone="brand" size="sm" label={t('migrationdetail.hero.transfer')} />
+            </div>
+          )}
         </div>
       )}
 

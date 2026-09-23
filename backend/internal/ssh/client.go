@@ -2,15 +2,19 @@
 package ssh
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -20,6 +24,87 @@ import (
 
 // execCommand is a variable to allow mocking in tests
 var execCommand = exec.Command
+
+// countingReader adds every byte read through it to n.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 && c.n != nil {
+		c.n.Add(int64(n))
+	}
+	return n, err
+}
+
+// reportCounter forwards the growth of counter to progress as byte deltas every half second,
+// and once more when the returned stop function runs. A nil progress means no reporting.
+func reportCounter(ctx context.Context, counter *atomic.Int64, progress chan<- int64) func() {
+	if progress == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		sent := int64(0)
+		flush := func() bool {
+			n := counter.Load()
+			if n > sent {
+				select {
+				case progress <- n - sent:
+					sent = n
+				case <-ctx.Done():
+					return false
+				}
+			}
+			return true
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				flush()
+				return
+			case <-ticker.C:
+				if !flush() {
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
+}
+
+// RemoteDirSize returns the apparent size in bytes of a directory on the server (du -sb).
+func (c *Client) RemoteDirSize(ctx context.Context, remotePath string) (int64, error) {
+	out, err := c.RunCommand(ctx, fmt.Sprintf("du -sb %s 2>/dev/null | cut -f1", shellQuote(remotePath)))
+	if err != nil {
+		return 0, err
+	}
+	n, perr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if perr != nil {
+		return 0, fmt.Errorf("unexpected du output %q", strings.TrimSpace(out))
+	}
+	return n, nil
+}
+
+// LocalDirSize returns the total size in bytes of the regular files under a local directory.
+func LocalDirSize(root string) int64 {
+	var total int64
+	filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err == nil && info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
 
 // shellQuote wraps a path in single quotes for safe use in a remote/local shell command
 // (paths on a hosting account can contain spaces and other shell-special characters).
@@ -574,33 +659,20 @@ func (c *Client) FastDownloadDirectory(ctx context.Context, remotePath, localPat
 		return fmt.Errorf("failed to create local directory: %w", err)
 	}
 
-	progressDone := make(chan struct{})
-	if progress != nil {
-		go func() {
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-progressDone:
-					return
-				case <-ticker.C:
-					progress <- 1024 * 1024 // rough estimate: no per-byte count in a streaming pipe
-				}
-			}
-		}()
-		defer close(progressDone)
-	}
+	// progress gets the bytes of the files themselves (the tar stream after gunzip), so it can
+	// be compared with a du of the source.
+	var counter atomic.Int64
+	stopReporting := reportCounter(ctx, &counter, progress)
+	defer stopReporting()
 
 	if root, entries, err := c.findSplittableRoot(ctx, remotePath, 2); err == nil && len(entries) >= 2 {
 		localRoot := localPath + strings.TrimPrefix(root, remotePath)
 		if err := os.MkdirAll(localRoot, 0755); err != nil {
 			return fmt.Errorf("failed to create local directory: %w", err)
 		}
-		return c.transferParallel(ctx, client, root, localRoot, entries)
+		return c.transferParallel(ctx, client, root, localRoot, entries, &counter)
 	}
-	return c.transferChunk(ctx, client, remotePath, localPath, []string{"."})
+	return c.transferChunk(ctx, client, remotePath, localPath, []string{"."}, &counter)
 }
 
 // findSplittableRoot looks for a directory under remotePath (remotePath itself, or up to
@@ -639,7 +711,7 @@ func (c *Client) listRemoteEntries(ctx context.Context, remotePath string) ([]st
 
 // transferParallel splits entries into up to 4 groups and downloads each over its own SSH
 // channel concurrently.
-func (c *Client) transferParallel(ctx context.Context, client *ssh.Client, remoteRoot, localRoot string, entries []string) error {
+func (c *Client) transferParallel(ctx context.Context, client *ssh.Client, remoteRoot, localRoot string, entries []string, counter *atomic.Int64) error {
 	groups := min(len(entries), 4)
 	buckets := make([][]string, groups)
 	for i, name := range entries {
@@ -651,7 +723,7 @@ func (c *Client) transferParallel(ctx context.Context, client *ssh.Client, remot
 		wg.Add(1)
 		go func(i int, bucket []string) {
 			defer wg.Done()
-			errs[i] = c.transferChunk(ctx, client, remoteRoot, localRoot, bucket)
+			errs[i] = c.transferChunk(ctx, client, remoteRoot, localRoot, bucket, counter)
 		}(i, bucket)
 	}
 	wg.Wait()
@@ -665,7 +737,7 @@ func (c *Client) transferParallel(ctx context.Context, client *ssh.Client, remot
 
 // transferChunk streams `names` (entries directly under remoteRoot, or ["."] for everything)
 // into localRoot as one continuous tar+gzip pipe over its own SSH channel.
-func (c *Client) transferChunk(ctx context.Context, client *ssh.Client, remoteRoot, localRoot string, names []string) error {
+func (c *Client) transferChunk(ctx context.Context, client *ssh.Client, remoteRoot, localRoot string, names []string, counter *atomic.Int64) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
@@ -698,9 +770,22 @@ func (c *Client) transferChunk(ctx context.Context, client *ssh.Client, remoteRo
 		return fmt.Errorf("failed to start remote tar: %w", err)
 	}
 
-	extractCmd := fmt.Sprintf("cd %s && (tar -xzf - 2>&1 || tar -xf - 2>&1)", shellQuote(localRoot))
+	// The stream is gunzipped here rather than by tar so the bytes can be counted as the files
+	// themselves (the compressed size on the wire says nothing against a du of the source). A
+	// stream that is not gzip passes through untouched.
+	br := bufio.NewReaderSize(stdout, 256*1024)
+	var raw io.Reader = br
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return fmt.Errorf("remote stream is not valid gzip: %w", err)
+		}
+		defer gz.Close()
+		raw = gz
+	}
+	extractCmd := fmt.Sprintf("cd %s && tar -xf - 2>&1", shellQuote(localRoot))
 	cmd := execCommand("sh", "-c", extractCmd)
-	cmd.Stdin = stdout
+	cmd.Stdin = &countingReader{r: raw, n: counter}
 	var extractOut bytes.Buffer
 	cmd.Stdout = &extractOut
 	cmd.Stderr = &extractOut
@@ -708,15 +793,16 @@ func (c *Client) transferChunk(ctx context.Context, client *ssh.Client, remoteRo
 	runErr := cmd.Run()
 	waitErr := session.Wait()
 
-	if runErr != nil {
-		return fmt.Errorf("local tar extraction failed: %w: %s", runErr, tailLines(extractOut.String(), 20))
-	}
+	// A remote failure explains a local extraction failure too, so it is reported first; files
+	// changing or vanishing while archiving a live site are not a failure.
 	if waitErr != nil {
 		msg := strings.ToLower(remoteErr.String())
-		if strings.Contains(msg, "differs") || strings.Contains(msg, "file changed") || strings.Contains(msg, "file removed") {
-			return nil // some files changed or vanished while archiving a live site: not fatal, already handled
+		if !strings.Contains(msg, "differs") && !strings.Contains(msg, "file changed") && !strings.Contains(msg, "file removed") {
+			return fmt.Errorf("remote tar failed: %w: %s", waitErr, tailLines(remoteErr.String(), 20))
 		}
-		return fmt.Errorf("remote tar failed: %w: %s", waitErr, tailLines(remoteErr.String(), 20))
+	}
+	if runErr != nil {
+		return fmt.Errorf("local tar extraction failed: %w: %s", runErr, tailLines(extractOut.String(), 20))
 	}
 	return nil
 }
@@ -758,39 +844,43 @@ func (c *Client) FastUploadDirectory(ctx context.Context, localPath, remotePath 
 	}
 
 	// Create tar locally (the export dir is already fully materialized here, not a live site,
-	// so unlike the download side there's no "file vanished mid-read" case to tolerate) and
-	// stream to remote.
-	tarCmd := fmt.Sprintf("cd %s && tar -cf - . | pigz -1 2>/dev/null || tar -czf - .", localPath)
+	// so unlike the download side there's no "file vanished mid-read" case to tolerate). It runs
+	// uncompressed so the stream can be counted as the files themselves, and is gzipped here
+	// (level 1, as pigz -1 was) on its way into the SSH channel.
+	tarCmd := fmt.Sprintf("cd %s && tar -cf - .", shellQuote(localPath))
 	cmd := execCommand("sh", "-c", tarCmd)
-	cmd.Stdout = stdin
+	// COPYFILE_DISABLE keeps macOS's bsdtar from adding ._* metadata entries (ignored elsewhere).
+	cmd.Env = append(os.Environ(), "COPYFILE_DISABLE=1")
 	var localErr bytes.Buffer
 	cmd.Stderr = &localErr
-
-	progressDone := make(chan struct{})
-	if progress != nil {
-		go func() {
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-progressDone:
-					return
-				case <-ticker.C:
-					progress <- 1024 * 1024
-				}
-			}
-		}()
+	tarOut, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to get tar pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("local tar failed to start: %w", err)
 	}
 
-	runErr := cmd.Run()
-	close(progressDone)
-	stdin.Close()
-	waitErr := session.Wait()
+	var counter atomic.Int64
+	stopReporting := reportCounter(ctx, &counter, progress)
 
+	gz, _ := gzip.NewWriterLevel(stdin, gzip.BestSpeed)
+	_, copyErr := io.Copy(gz, &countingReader{r: tarOut, n: &counter})
+	if gzErr := gz.Close(); copyErr == nil {
+		copyErr = gzErr
+	}
+	stdin.Close()
+	if copyErr != nil {
+		cmd.Process.Kill()
+	}
+	runErr := cmd.Wait()
+	waitErr := session.Wait()
+	stopReporting()
+
+	if copyErr != nil {
+		return fmt.Errorf("streaming files to the node failed: %w: %s", copyErr, tailLines(remoteErr.String(), 20))
+	}
 	if runErr != nil {
-		session.Close()
 		return fmt.Errorf("local tar failed: %w: %s", runErr, tailLines(localErr.String(), 20))
 	}
 	if waitErr != nil {
@@ -842,7 +932,7 @@ func (c *Client) RsyncUpload(ctx context.Context, localPath, remotePath, host, u
 
 // RsyncDownloadWithKey uses rsync with the stored connection config
 // Falls back to tar+ssh if rsync with key fails, or uses SFTP for password auth
-func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath string) error {
+func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath string, progress chan<- int64) error {
 	c.mu.Lock()
 	config := c.config
 	sshClient := c.sshClient
@@ -859,7 +949,7 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 	// raw bandwidth. A fresh destination (always the case: a new export directory every run)
 	// gets none of rsync's delta-sync advantage to offset that cost, so tar wins outright.
 	if sshClient != nil {
-		if err := c.FastDownloadDirectory(ctx, remotePath, localPath, nil); err == nil {
+		if err := c.FastDownloadDirectory(ctx, remotePath, localPath, progress); err == nil {
 			return nil
 		}
 	}
@@ -914,11 +1004,11 @@ func (c *Client) RsyncDownloadWithKey(ctx context.Context, remotePath, localPath
 	}
 
 	// Password auth, tar already failed above: last resort is plain SFTP.
-	return c.DownloadDirectory(ctx, remotePath, localPath, nil)
+	return c.DownloadDirectory(ctx, remotePath, localPath, progress)
 }
 
 // RsyncUploadWithKey uses rsync with the stored connection config
-func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath string) error {
+func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath string, progress chan<- int64) error {
 	c.mu.Lock()
 	config := c.config
 	sshClient := c.sshClient
@@ -931,7 +1021,7 @@ func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath s
 	// Same reasoning as RsyncDownloadWithKey: tar+ssh over the already-open connection avoids
 	// rsync's per-file round trips, which dominate on a latent link with many small files.
 	if sshClient != nil {
-		if err := c.FastUploadDirectory(ctx, localPath, remotePath, nil); err == nil {
+		if err := c.FastUploadDirectory(ctx, localPath, remotePath, progress); err == nil {
 			return nil
 		}
 	}
@@ -978,7 +1068,7 @@ func (c *Client) RsyncUploadWithKey(ctx context.Context, localPath, remotePath s
 	}
 
 	// Password auth, tar already failed above: last resort is plain SFTP.
-	return c.UploadDirectory(ctx, localPath, remotePath, nil)
+	return c.UploadDirectory(ctx, localPath, remotePath, progress)
 }
 
 // runSession runs command on the session and aborts it (SIGKILL + session close) when ctx is cancelled.

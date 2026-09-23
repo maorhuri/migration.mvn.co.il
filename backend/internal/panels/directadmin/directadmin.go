@@ -499,21 +499,29 @@ func (da *DirectAdmin) ExportFiles(ctx context.Context, username string, outputD
 	}
 
 	// Report progress
+	const step = "Downloading files with rsync"
 	if progress != nil {
 		progress <- common.MigrationProgress{
 			Status:      "running",
-			CurrentStep: "Downloading files with rsync",
+			CurrentStep: step,
 		}
 	}
+	total, sizeErr := da.sshClient.RemoteDirSize(ctx, publicHtmlRemote)
+	if sizeErr != nil {
+		da.logf("warn", "Could not measure %s up front (%v); progress is reported without a total", publicHtmlRemote, sizeErr)
+	}
+	reporter := common.NewTransferReporter(step, total, progress, func(level, msg string) { da.logf(level, "%s", msg) })
+	reporter.Start()
+	defer reporter.Finish()
 
 	// Use rsync with compression for fastest transfer. Exit status 24 (files vanished at the
 	// source while copying: caches, temp files) is not a failure: a second pass picks up the
 	// changes and the migration continues with a warning.
-	err := da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal)
+	err := da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal, reporter.Feed())
 	var partial *ssh.RsyncPartialError
 	if errors.As(err, &partial) {
 		da.logf("warn", "Some files changed or vanished on the source while copying (rsync exit 24); running a second pass. %s", partial.Tail)
-		err = da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal)
+		err = da.sshClient.RsyncDownloadWithKey(ctx, publicHtmlRemote, publicHtmlLocal, reporter.Feed())
 		if errors.As(err, &partial) {
 			da.logf("warn", "Files are still being rewritten on the source (cache/temp files); continuing with what was copied. %s", partial.Tail)
 			err = nil

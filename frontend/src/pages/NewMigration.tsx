@@ -85,6 +85,9 @@ interface AccountRun {
   steps: MigrationStepStatus[];
   currentStepIndex: number;
   overallProgress: number;
+  /** Bytes of the file transfer in flight (0 outside the file steps). */
+  bytesTransferred: number;
+  totalBytes: number;
   logs: MigrationLog[];
   targetNode: string;
   targetIp: string;
@@ -371,6 +374,8 @@ export default function NewMigration() {
             patchRun(username, (r) => ({ ...r, targetNode: label, targetIp: status.target_ip! }));
           }
 
+          patchRun(username, (r) => ({ ...r, bytesTransferred: status.progress?.bytes_transferred ?? 0, totalBytes: status.progress?.total_bytes ?? 0 }));
+
           // Map backend step names to UI step indices
           const currentStepName = status.current_step || '';
           const stepMapping: [string, string][] = [
@@ -548,6 +553,8 @@ export default function NewMigration() {
       steps: steps.map((st) => ({ ...st })),
       currentStepIndex: 0,
       overallProgress: 0,
+      bytesTransferred: 0,
+      totalBytes: 0,
       logs: [],
       targetNode: '',
       targetIp: '',
@@ -1139,6 +1146,7 @@ export default function NewMigration() {
                 steps={focusedRun.steps}
                 currentStepIndex={focusedRun.currentStepIndex}
                 overallProgress={focusedRun.overallProgress}
+                transfer={{ done: focusedRun.bytesTransferred, total: focusedRun.totalBytes }}
                 elapsedMs={focusedRun.startedAt ? now - focusedRun.startedAt : 0}
                 running={focusedRun.status === 'running' || focusedRun.status === 'queued'}
                 failed={focusedRun.status === 'failed'}

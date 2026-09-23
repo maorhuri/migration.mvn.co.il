@@ -4,8 +4,10 @@ package cloudways
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,10 +61,26 @@ func TestLiveFastDownload(t *testing.T) {
 	}
 	cw, ctx := liveConnect(t)
 	dir := t.TempDir()
-	start := time.Now()
-	if err := cw.sshClient.RsyncDownloadWithKey(ctx, cw.appDir(slug)+"/"+sub, dir); err != nil {
+	remote := cw.appDir(slug) + "/" + sub
+	total, err := cw.sshClient.RemoteDirSize(ctx, remote)
+	if err != nil {
 		t.Fatal(err)
 	}
+	progress := make(chan int64, 64)
+	var counted int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for n := range progress {
+			counted += n
+		}
+	}()
+	start := time.Now()
+	if err := cw.sshClient.RsyncDownloadWithKey(ctx, remote, dir, progress); err != nil {
+		t.Fatal(err)
+	}
+	close(progress)
+	<-done
 	n, size := 0, int64(0)
 	filepath.Walk(dir, func(_ string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
@@ -71,9 +89,38 @@ func TestLiveFastDownload(t *testing.T) {
 		}
 		return nil
 	})
-	t.Logf("downloaded %d files, %d bytes in %s", n, size, time.Since(start).Round(time.Millisecond))
+	t.Logf("downloaded %d files, %d bytes on disk in %s; du on source %d; progress counted %d (%.1f%% of du)", n, size, time.Since(start).Round(time.Millisecond), total, counted, float64(counted)*100/float64(total))
 	if n == 0 {
 		t.Fatal("nothing downloaded")
+	}
+	if counted < size || counted > size*11/10+1024*1024 {
+		t.Fatalf("progress count %d is not close to the %d bytes that arrived", counted, size)
+	}
+
+	// Upload the same tree back into the master user's home with the tar+gzip path the Enhance
+	// importer uses, then remove it.
+	remoteUp := fmt.Sprintf("$HOME/.migration-upload-test-%d", time.Now().UnixNano())
+	remoteUp, _ = cw.sshClient.RunCommand(ctx, "printf %s "+remoteUp)
+	progressUp := make(chan int64, 64)
+	var countedUp int64
+	doneUp := make(chan struct{})
+	go func() {
+		defer close(doneUp)
+		for n := range progressUp {
+			countedUp += n
+		}
+	}()
+	start = time.Now()
+	err = cw.sshClient.RsyncUploadWithKey(ctx, dir, remoteUp, progressUp)
+	close(progressUp)
+	<-doneUp
+	out, _ := cw.sshClient.RunCommand(ctx, fmt.Sprintf("find %s -type f | wc -l; du -sb %s | cut -f1; rm -rf %s", shq(remoteUp), shq(remoteUp), shq(remoteUp)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("uploaded in %s; progress counted %d; on the server (files, bytes): %s", time.Since(start).Round(time.Millisecond), countedUp, strings.Join(strings.Fields(out), " "))
+	if f := strings.Fields(out); len(f) < 1 || f[0] != fmt.Sprint(n) {
+		t.Fatalf("expected %d files on the server, got %q", n, out)
 	}
 }
 

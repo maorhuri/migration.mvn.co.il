@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { ArrowLeftIcon } from '@heroicons/react/16/solid';
 import { Badge, Button, Card, CardDescription, CardHeader, CardTitle, Figure, LogViewer, Mono, ProgressBar, StatusBadge, Timeline, type TimelineItem } from '../ui';
 import { useT } from '../../lib/i18n';
-import { formatDuration, formatNumber } from '../../lib/format';
+import { formatBytes, formatDuration, formatNumber, percent } from '../../lib/format';
 import { matchStepId, parseInventory } from '../../lib/migrationSteps';
 import type { Account, MigrationLog } from '../../types';
 import type { MigrationStepStatus } from './types';
@@ -11,6 +11,8 @@ export interface MigrationProgressProps {
   steps: MigrationStepStatus[];
   currentStepIndex: number;
   overallProgress: number;
+  /** Bytes of the file transfer in flight; shown as its own bar while total > 0. */
+  transfer?: { done: number; total: number };
   elapsedMs: number;
   /** True while handleStartMigration is running. */
   running: boolean;
@@ -38,6 +40,7 @@ export function MigrationProgress({
   steps,
   currentStepIndex,
   overallProgress,
+  transfer,
   elapsedMs,
   running,
   failed,
@@ -117,6 +120,17 @@ export function MigrationProgress({
         </div>
 
         <ProgressBar className="mt-5" value={overallProgress} tone={tone} size="md" live={running} showValue label={t('newmigration.progress.overall')} />
+        {running && transfer && transfer.total > 0 && transfer.done > 0 && (
+          <div className="mt-3 space-y-1">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <span>{t('newmigration.progress.transfer')}</span>
+              <span className="tabular" dir="ltr">
+                {formatBytes(transfer.done)} / {formatBytes(transfer.total)}
+              </span>
+            </div>
+            <ProgressBar value={percent(transfer.done, transfer.total)} tone={tone} size="sm" label={t('newmigration.progress.transfer')} />
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
           <span className="me-1 text-xs text-slate-500 dark:text-slate-400">{t('newmigration.progress.migrating')}</span>
