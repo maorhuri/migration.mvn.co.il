@@ -62,6 +62,9 @@ type Enhance struct {
 	// ResolveOrgForServer), so a website lands under its existing customer instead of the
 	// top-level org the API key is configured against.
 	orgOverride string
+	// subscriptionID is the customer package (an Enhance subscription id, a number) new
+	// websites on the chosen node join; resolved with orgOverride (see ResolveOrgForServer).
+	subscriptionID string
 }
 
 // New creates a new Enhance panel instance
@@ -340,20 +343,25 @@ type WebsiteDomain struct {
 
 // EnhanceWebsite is a website as returned by the API
 type EnhanceWebsite struct {
-	ID            string          `json:"id"`
-	Domain        WebsiteDomain   `json:"domain"`
-	Aliases       []WebsiteDomain `json:"aliases"`
-	Kind          string          `json:"kind"`
-	Status        string          `json:"status"`
-	OrgID         string          `json:"orgId"`
-	Org           string          `json:"org"` // org display name, for logging
-	AppServerID   string          `json:"appServerId"`
-	DbServerID    string          `json:"dbServerId"`
-	EmailServerID string          `json:"emailServerId"`
-	UnixUser      string          `json:"unixUser"`
-	PhpVersion    string          `json:"phpVersion"`
-	DbServerIps   []ServerIP      `json:"dbServerIps"`
-	ServerIps     []ServerIP      `json:"serverIps"`
+	ID      string          `json:"id"`
+	Domain  WebsiteDomain   `json:"domain"`
+	Aliases []WebsiteDomain `json:"aliases"`
+	Kind    string          `json:"kind"`
+	Status  string          `json:"status"`
+	OrgID   string          `json:"orgId"`
+	Org     string          `json:"org"` // org display name, for logging
+	// SubscriptionID is the customer package the website belongs to (a number in Enhance);
+	// empty when the website has none, which hides package features (FTP, WordPress tools,
+	// redirects...) from the customer's UI.
+	SubscriptionID json.Number `json:"subscriptionId"`
+	Plan           string      `json:"plan"`
+	AppServerID    string      `json:"appServerId"`
+	DbServerID     string      `json:"dbServerId"`
+	EmailServerID  string      `json:"emailServerId"`
+	UnixUser       string      `json:"unixUser"`
+	PhpVersion     string      `json:"phpVersion"`
+	DbServerIps    []ServerIP  `json:"dbServerIps"`
+	ServerIps      []ServerIP  `json:"serverIps"`
 
 	// Resolved on the node, not part of the API
 	HomeDir string `json:"-"`
@@ -528,6 +536,7 @@ func (e *Enhance) ListWebsiteDomains(ctx context.Context, appServerID string) ([
 // logFn explains why, since guessing wrong here would put a website under the wrong customer.
 func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) error {
 	e.orgOverride = ""
+	e.subscriptionID = ""
 	if appServerID == "" {
 		return nil
 	}
@@ -561,7 +570,7 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 		// new account, or one whose sites were all removed). Fall back to the authoritative
 		// source -- each customer's subscription records which node it owns -- since guessing
 		// from websites alone would miss this and wrongly use the top-level org.
-		orgID, orgName, err := e.findOrgBySubscribedServer(ctx, topOrg, appServerID)
+		orgID, orgName, subID, err := e.findOrgBySubscribedServer(ctx, topOrg, appServerID)
 		if err != nil {
 			e.logf("warn", fmt.Sprintf("Could not check customer subscriptions for this node (%v); new websites will use the configured org", err))
 			return nil
@@ -571,7 +580,8 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 			return nil
 		}
 		e.orgOverride = orgID
-		e.logf("info", "Using existing customer org %q (%s) for this node: its subscription dedicates this server, even though it has no websites yet", orgName, orgID)
+		e.subscriptionID = subID
+		e.logf("info", "Using existing customer org %q (%s) for this node: its subscription %s dedicates this server, even though it has no websites yet", orgName, orgID, subID)
 		return nil
 	}
 	best, bestN := "", 0
@@ -585,7 +595,71 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 	}
 	e.orgOverride = best
 	e.logf("info", "Using existing customer org %q (%s) for this node: %d website(s) already there", names[best], best, bestN)
+
+	// The package new websites join: what the customer's other websites on this node use,
+	// else the customer's subscription that dedicates this node (or its only active one).
+	subCounts := map[string]int{}
+	for _, ws := range listing.Items {
+		if ws.OrgID == best && ws.AppServerID == appServerID && ws.SubscriptionID.String() != "" {
+			subCounts[ws.SubscriptionID.String()]++
+		}
+	}
+	for id, n := range subCounts {
+		if n > subCounts[e.subscriptionID] || e.subscriptionID == "" {
+			e.subscriptionID = id
+		}
+	}
+	if e.subscriptionID == "" {
+		if id, plan, err := e.findSubscriptionForOrg(ctx, best, appServerID); err != nil {
+			e.warnf("Could not read the subscriptions of %q (%v); new websites are created without a package", names[best], err)
+		} else if id != "" {
+			e.subscriptionID = id
+			e.logf("info", "New websites join subscription %s (%s) of %q", id, plan, names[best])
+		} else {
+			e.warnf("%q has no usable subscription for this node; new websites are created without a package (FTP/WordPress tools will be missing in the customer's UI)", names[best])
+		}
+	} else {
+		e.logf("info", "New websites join subscription %s, the package of the customer's other websites on this node", e.subscriptionID)
+	}
 	return nil
+}
+
+// findSubscriptionForOrg picks the customer's subscription new websites on appServerID should
+// join: the one whose dedicated app server is this node, else the only active one; "" if none.
+func (e *Enhance) findSubscriptionForOrg(ctx context.Context, orgID, appServerID string) (id, planName string, err error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/subscriptions", orgID), nil)
+	if err != nil {
+		return "", "", err
+	}
+	var subs struct {
+		Items []struct {
+			ID               json.Number `json:"id"`
+			PlanName         string      `json:"planName"`
+			Status           string      `json:"status"`
+			DedicatedServers struct {
+				AppServer *struct {
+					ID string `json:"id"`
+				} `json:"appServer"`
+			} `json:"dedicatedServers"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &subs); err != nil {
+		return "", "", err
+	}
+	var active []int
+	for i, sub := range subs.Items {
+		if sub.DedicatedServers.AppServer != nil && sub.DedicatedServers.AppServer.ID == appServerID {
+			return sub.ID.String(), sub.PlanName, nil
+		}
+		if sub.Status == "" || strings.EqualFold(sub.Status, "active") {
+			active = append(active, i)
+		}
+	}
+	if len(active) == 1 {
+		s := subs.Items[active[0]]
+		return s.ID.String(), s.PlanName, nil
+	}
+	return "", "", nil
 }
 
 // findOrgBySubscribedServer scans every customer org under topOrg (recursively) for one whose
@@ -593,10 +667,10 @@ func (e *Enhance) ResolveOrgForServer(ctx context.Context, appServerID string) e
 // email/backup/postgresql server a plan pins a customer to). There is no single endpoint for
 // this, so it lists customers once and checks each one's subscription, capped and bounded in
 // parallel to keep this usable even with a large customer base.
-func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServerID string) (orgID, orgName string, err error) {
+func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServerID string) (orgID, orgName, subscriptionID string, err error) {
 	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/customers?recursive=true&limit=1000", topOrg), nil)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var listing struct {
 		Items []struct {
@@ -605,9 +679,9 @@ func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServ
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(resp, &listing); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	type result struct{ id, name string }
+	type result struct{ id, name, sub string }
 	found := make(chan result, 1)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10) // bounded concurrency: one org's subscriptions is a small, cheap call, but there can be many orgs
@@ -625,6 +699,7 @@ func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServ
 			}
 			var subs struct {
 				Items []struct {
+					ID               json.Number `json:"id"`
 					DedicatedServers struct {
 						AppServer *struct {
 							ID string `json:"id"`
@@ -638,7 +713,7 @@ func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServ
 			for _, sub := range subs.Items {
 				if sub.DedicatedServers.AppServer != nil && sub.DedicatedServers.AppServer.ID == appServerID {
 					select {
-					case found <- result{id, name}:
+					case found <- result{id, name, sub.ID.String()}:
 					default:
 					}
 					return
@@ -650,9 +725,9 @@ func (e *Enhance) findOrgBySubscribedServer(ctx context.Context, topOrg, appServ
 	r, ok := <-found
 	e.logf("info", fmt.Sprintf("Checked %d customer(s) for a subscription dedicating this node (of %d total)", atomic.LoadInt32(&checked), len(listing.Items)))
 	if !ok {
-		return "", "", nil
+		return "", "", "", nil
 	}
-	return r.id, r.name, nil
+	return r.id, r.name, r.sub, nil
 }
 
 // getWebsiteByDomain finds a website of the org by primary domain and returns its full details
@@ -716,6 +791,7 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		}
 		e.logf("info", "Website %s already exists on the selected server (id=%s, unixUser=%s, dbServer=%s ips=%s); reusing it",
 			registerName, existing.ID, existing.UnixUser, existing.DbServerID, serverIPs(existing.DbServerIps))
+		e.ensureSubscription(ctx, orgID, existing)
 		return existing, nil
 	}
 
@@ -725,7 +801,14 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 		"dbServerId":  target,
 		"phpVersion":  e.mapPHPVersion(domain.PHPVersion),
 	}
-	e.logf("info", "Creating website %s on cluster server %s (php=%s)", registerName, target, websiteReq["phpVersion"])
+	// Without a subscription the website exists but has no package: the customer's UI then
+	// lacks FTP, the WordPress tools, redirects and the rest of what the plan provides.
+	if e.subscriptionID != "" {
+		websiteReq["subscriptionId"] = json.Number(e.subscriptionID)
+	} else {
+		e.warnf("%s: no customer subscription (package) is known for this node; the website is created without one -- attach it to a package in Enhance afterwards or FTP/WordPress tools will be missing", registerName)
+	}
+	e.logf("info", "Creating website %s on cluster server %s (php=%s, subscription=%s)", registerName, target, websiteReq["phpVersion"], orDash(e.subscriptionID))
 
 	resp, err := e.apiRequest(ctx, "POST", fmt.Sprintf("/orgs/%s/websites", orgID), websiteReq)
 	if err != nil {
@@ -753,6 +836,30 @@ func (e *Enhance) createWebsite(ctx context.Context, orgID string, domain *commo
 	e.logf("info", "Website %s created on server %s (id=%s, unixUser=%s)", registerName, website.AppServerID, website.ID, website.UnixUser)
 	e.createdWebsiteIDs = append(e.createdWebsiteIDs, createdWebsite{orgID: orgID, id: website.ID, domain: registerName})
 	return website, nil
+}
+
+// ensureSubscription attaches a website that has no package to the customer subscription
+// resolved for this node (a website created without one -- as this tool did before it learned
+// to pass subscriptionId -- shows up in the customer's Enhance UI without FTP, WordPress tools,
+// redirects and the other plan features). Best effort: a failure is a warning.
+func (e *Enhance) ensureSubscription(ctx context.Context, orgID string, ws *EnhanceWebsite) {
+	if e.subscriptionID == "" || ws.SubscriptionID.String() != "" {
+		return
+	}
+	body := map[string]interface{}{"subscriptionId": json.Number(e.subscriptionID)}
+	if _, err := e.apiRequest(ctx, "PATCH", fmt.Sprintf("/orgs/%s/websites/%s", orgID, ws.ID), body); err != nil {
+		e.warnf("%s: could not attach the website to subscription %s (%v); attach it to a package in Enhance by hand, or FTP/WordPress tools stay missing", ws.Domain.Domain, e.subscriptionID, err)
+		return
+	}
+	ws.SubscriptionID = json.Number(e.subscriptionID)
+	e.logf("info", "%s: website had no package; attached to subscription %s", ws.Domain.Domain, e.subscriptionID)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // createdWebsite identifies one website createWebsite actually created (not reused) this run.
@@ -2215,6 +2322,14 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 		if err := e.resolveWebsitePaths(ctx, ws); err != nil {
 			e.warnf("%s: %v", domain, err)
 			continue
+		}
+
+		// 0. The customer's package, if the website was created without one
+		if ws.SubscriptionID.String() == "" {
+			e.ensureSubscription(ctx, orgID, ws)
+			if ws.SubscriptionID.String() != "" {
+				summary = append(summary, fmt.Sprintf("%s: attached to subscription %s", domain, ws.SubscriptionID))
+			}
 		}
 
 		// 1. PHP version as on the source
