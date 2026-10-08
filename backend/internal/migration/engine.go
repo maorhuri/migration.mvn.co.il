@@ -421,6 +421,52 @@ func (e *Engine) connectEnhanceTarget(ctx context.Context, migrationID string, s
 	}
 	e.db.SetMigrationTarget(ctx, migrationID, nodeIP, node.FriendlyName)
 	logFn("info", fmt.Sprintf("Target node: %s (hostname %s, ip %s, roles %s)", node.FriendlyName, node.Hostname, nodeIP, strings.Join(node.EnabledRoles(), ",")))
+	return e.connectEnhanceNode(ctx, server, en, node, logFn)
+}
+
+// connectEnhanceSource opens an Enhance cluster as a migration SOURCE: the console API, the
+// website named by username (its unix user) and root SSH to the node that hosts it.
+func (e *Engine) connectEnhanceSource(ctx context.Context, server *storage.Server, username string, logFn enhance.LogFunc) (*enhance.Enhance, *enhance.EnhanceWebsite, error) {
+	config := e.db.ToConnectionConfig(server)
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	en := enhance.New()
+	en.SetLogger(logFn)
+	if err := en.ConnectAPI(ctx, config, apiKey); err != nil {
+		return nil, nil, fmt.Errorf("source Enhance API: %w", err)
+	}
+	ws, err := en.FindWebsiteByUser(ctx, username)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The listing omits unixUser (and the website's paths depend on it): read the full record.
+	if full, err := en.GetWebsiteInfo(ctx, ws.OrgID, ws.ID); err == nil && full != nil && full.UnixUser != "" {
+		if full.OrgID == "" {
+			full.OrgID = ws.OrgID
+		}
+		ws = full
+	} else if ws.UnixUser == "" {
+		return nil, nil, fmt.Errorf("could not read website %s (%s) from the source console: %v", ws.Domain.Domain, ws.ID, err)
+	}
+	node, err := en.GetServer(ctx, ws.AppServerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("node of website %s: %w", ws.Domain.Domain, err)
+	}
+	if node.PrimaryIP() == "" {
+		return nil, nil, fmt.Errorf("node %s (%s) of website %s has no IP in the Enhance API", node.FriendlyName, node.ID, ws.Domain.Domain)
+	}
+	logFn("info", fmt.Sprintf("Source website %s (user %s) lives on node %s (%s)", ws.Domain.Domain, ws.UnixUser, node.FriendlyName, node.PrimaryIP()))
+	if _, err := e.connectEnhanceNode(ctx, server, en, node, logFn); err != nil {
+		return nil, nil, err
+	}
+	return en, ws, nil
+}
+
+// connectEnhanceNode opens root SSH (+SFTP) on en to a cluster node, trying every stored
+// credential that could fit: a server entry matching the node, the default SSH key, and the
+// Enhance entry's own credentials.
+func (e *Engine) connectEnhanceNode(ctx context.Context, server *storage.Server, en *enhance.Enhance, node *enhance.EnhanceServer, logFn enhance.LogFunc) (*enhance.Enhance, error) {
+	config := e.db.ToConnectionConfig(server)
+	nodeIP := node.PrimaryIP()
 
 	// SSH credential candidates, tried in order:
 	//   1. a server record whose host/name matches the node
@@ -604,6 +650,18 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 		}
 		defer cw.Disconnect()
 		return cw.ExportAccount(ctx, username, workDir, progress)
+	case common.PanelTypeEnhance:
+		en, ws, err := e.connectEnhanceSource(ctx, server, username, logFn)
+		if err != nil {
+			return nil, err
+		}
+		defer en.Disconnect()
+		defer func() { // dumps are removed as they are downloaded; this catches an interrupted run
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			en.CleanupTempFiles(cleanupCtx)
+		}()
+		return en.ExportWebsite(ctx, ws, workDir, progress)
 	case common.PanelTypeFTP, common.PanelTypeWordPress:
 		password, _ := e.db.GetServerPassword(ctx, server.ID)
 		return agentless.Export(ctx, server, password, workDir, progress, logFn)
@@ -632,14 +690,46 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 	if common.PanelType(server.PanelType) == common.PanelTypeCloudways {
 		return nil, fmt.Errorf("a Cloudways application cannot be suspended from here; after the DNS switch, stop or delete the application in the Cloudways console (or remove its domain there)")
 	}
-	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
-		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
-	}
 	action := "unsuspend"
 	if suspend {
 		action = "suspend"
 	}
 	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
+
+	if common.PanelType(server.PanelType) == common.PanelTypeEnhance {
+		// An Enhance source: suspend the website through the console API (no node access needed).
+		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+		en := enhance.New()
+		en.SetLogger(logFn)
+		if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
+			logFn("error", fmt.Sprintf("Source website %s: %s failed: cannot connect to %s: %v", m.AccountUsername, action, server.Name, err))
+			return nil, err
+		}
+		ws, err := en.FindWebsiteByUser(ctx, m.AccountUsername)
+		if err != nil {
+			logFn("error", fmt.Sprintf("Source website %s: %s failed: %v", m.AccountUsername, action, err))
+			return nil, err
+		}
+		changed, err := en.SetWebsiteSuspended(ctx, ws, suspend)
+		if err != nil {
+			logFn("error", fmt.Sprintf("Source website %s: %s on %s failed: %v", ws.Domain.Domain, action, server.Name, err))
+			return nil, err
+		}
+		if err := e.db.SetMigrationSourceSuspended(ctx, migrationID, suspend); err != nil {
+			return nil, fmt.Errorf("website %sed but the migration record could not be updated: %w", action, err)
+		}
+		if changed {
+			if suspend {
+				logFn("info", fmt.Sprintf("Source website %s suspended on %s; the site is now served only by the new server", ws.Domain.Domain, server.Name))
+			} else {
+				logFn("info", fmt.Sprintf("Source website %s unsuspended on %s", ws.Domain.Domain, server.Name))
+			}
+		}
+		return e.GetMigrationStatus(ctx, migrationID)
+	}
+	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
+		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
+	}
 
 	da, err := e.connectDirectAdmin(ctx, server, "", logFn)
 	if err != nil {
@@ -1120,15 +1210,22 @@ func (e *Engine) RepairWordPress(ctx context.Context, migrationID string) (*Migr
 	if m.ExportData.Valid && len(m.ExportData.Data) > 0 {
 		_ = json.Unmarshal(m.ExportData.Data, &export)
 	}
-	var domains []string
-	for _, d := range export.Domains {
-		domains = append(domains, d.Name)
-	}
+	domains := export.Domains
 	if len(domains) == 0 && export.Account.Domain != "" {
-		domains = []string{export.Account.Domain}
+		domains = []common.Domain{{Name: export.Account.Domain}}
 	}
 	if len(domains) == 0 {
 		return nil, nil, fmt.Errorf("no domains are recorded for this migration")
+	}
+	// What each site is actually registered as on Enhance (a pointer or the operator's choice
+	// supersedes the source's own name).
+	var names []string
+	for _, d := range domains {
+		if d.TargetDomain != "" {
+			names = append(names, d.TargetDomain)
+		} else {
+			names = append(names, d.Name)
+		}
 	}
 	var knownDBs []string
 	for _, db := range export.Databases {
@@ -1144,7 +1241,7 @@ func (e *Engine) RepairWordPress(ctx context.Context, migrationID string) (*Migr
 	}
 
 	logFn := func(level, message string) { e.db.AddMigrationLog(ctx, migrationID, level, message, nil) }
-	logFn("info", fmt.Sprintf("Repair WordPress started (operator action): domains %s, source PHP %q", strings.Join(domains, ", "), sourcePHP))
+	logFn("info", fmt.Sprintf("Repair WordPress started (operator action): domains %s, source PHP %q", strings.Join(names, ", "), sourcePHP))
 
 	// The cluster node is learned from the website itself (the migration record does not store it).
 	probe := enhance.New()
@@ -1153,7 +1250,7 @@ func (e *Engine) RepairWordPress(ctx context.Context, migrationID string) (*Migr
 		logFn("error", "Repair failed: "+err.Error())
 		return nil, nil, err
 	}
-	site, err := probe.FindWebsite(ctx, domains[0])
+	site, err := probe.FindWebsite(ctx, names[0])
 	if err != nil {
 		logFn("error", "Repair failed: "+err.Error())
 		return nil, nil, err
@@ -1323,6 +1420,19 @@ func (e *Engine) runDatabaseRemigration(migrationID string, sourceServer, target
 			fail(fmt.Sprintf("export failed: %v", err))
 			return
 		}
+	case common.PanelTypeEnhance:
+		src, ws, err := e.connectEnhanceSource(workCtx, sourceServer, export.Account.Username, logFn)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer src.Disconnect()
+		dbs, err = src.ExportDatabases(workCtx, ws, tmpDir)
+		src.CleanupTempFiles(ctx)
+		if err != nil {
+			fail(fmt.Sprintf("export failed: %v", err))
+			return
+		}
 	default:
 		fail(fmt.Sprintf("unsupported source panel type: %s", sourceServer.PanelType))
 		return
@@ -1363,7 +1473,7 @@ func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int
 		return 0, err
 	}
 	switch common.PanelType(server.PanelType) {
-	case common.PanelTypeDirectAdmin, common.PanelTypeCloudways:
+	case common.PanelTypeDirectAdmin, common.PanelTypeCloudways, common.PanelTypeEnhance:
 	default:
 		if !agentless.IsAgentless(server.PanelType) {
 			return 0, nil
@@ -1476,8 +1586,14 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 	supportedPaths := map[common.PanelType][]common.PanelType{
 		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance},
 		common.PanelTypeCloudways:   {common.PanelTypeEnhance},
+		common.PanelTypeEnhance:     {common.PanelTypeEnhance},
 		common.PanelTypeFTP:         {common.PanelTypeEnhance},
 		common.PanelTypeWordPress:   {common.PanelTypeEnhance},
+	}
+	if sourceType == common.PanelTypeEnhance && sourceServer.ID == targetServer.ID {
+		result.Compatible = false
+		result.Errors = append(result.Errors, "Source and target are the same Enhance cluster; move the website between its servers in Enhance itself")
+		return result, nil
 	}
 	supported := false
 	for _, target := range supportedPaths[sourceType] {
@@ -1498,6 +1614,14 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 			"Emails, cron jobs and DNS records are not available from an FTP/WordPress-only source; recreate them manually",
 			"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
 			"The old site cannot be suspended by the tool after the switch; disable it manually",
+		)
+		return result, nil
+	}
+	if sourceType == common.PanelTypeEnhance {
+		result.Warnings = append(result.Warnings,
+			"Mailbox contents are not migrated; mailboxes are recreated with new passwords",
+			"Database users get new passwords; wp-config.php is updated automatically, other apps need manual update",
+			"SSL certificates are not copied; the target issues its own after the DNS switch",
 		)
 		return result, nil
 	}
@@ -1766,24 +1890,25 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 		return result, nil
 
 	case common.PanelTypeEnhance:
+		// As a source: one account per website of the cluster, named by its unix user.
 		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
 		en := enhance.New()
 		if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
 			return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
 		}
-		accounts, err := en.ListAccounts(ctx)
+		accounts, err := en.ListSourceAccounts(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list accounts: %w", err)
+			return nil, fmt.Errorf("failed to list websites: %w", err)
 		}
 		var result []AccountInfo
 		for _, acc := range accounts {
 			result = append(result, AccountInfo{
-				Username:  acc.Username,
-				Domain:    acc.Domain,
-				Email:     acc.Email,
-				DiskUsed:  acc.DiskUsage,
-				DiskLimit: acc.DiskLimit,
-				Suspended: acc.Suspended,
+				Username:     acc.Username,
+				Domain:       acc.Domain,
+				DiskUsed:     acc.DiskUsage,
+				Suspended:    acc.Suspended,
+				PHPVersion:   acc.PHPVersion,
+				AddonDomains: acc.AddonDomains,
 			})
 		}
 		return result, nil

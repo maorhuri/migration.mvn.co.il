@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -356,6 +357,8 @@ type EnhanceWebsite struct {
 	SubscriptionID json.Number `json:"subscriptionId"`
 	Plan           string      `json:"plan"`
 	AppServerID    string      `json:"appServerId"`
+	AppServerName  string      `json:"appServerName"`
+	Size           int64       `json:"size"` // disk usage in bytes as reported by the API
 	DbServerID     string      `json:"dbServerId"`
 	EmailServerID  string      `json:"emailServerId"`
 	UnixUser       string      `json:"unixUser"`
@@ -459,6 +462,372 @@ func (e *Enhance) ListAccounts(ctx context.Context) ([]common.Account, error) {
 		})
 	}
 	return accounts, nil
+}
+
+// ---------------------------------------------------------------------------
+// Enhance as a migration SOURCE: websites of another cluster, read through its console API and
+// its node (root SSH), exported in the same layout the importer consumes.
+// ---------------------------------------------------------------------------
+
+// ListWebsites returns every website in the configured org tree.
+func (e *Enhance) ListWebsites(ctx context.Context) ([]EnhanceWebsite, error) {
+	if !e.connected {
+		return nil, fmt.Errorf("not connected")
+	}
+	orgID, err := e.orgID()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000&recursion=infinite", orgID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var listing struct {
+		Items []EnhanceWebsite `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
+	}
+	return listing.Items, nil
+}
+
+// isPreviewAlias tells Enhance's own auto-generated preview alias of a website
+// (<domain-with-dashes>-xxxx.<preview zone>, e.g. shop-co-il-ab12.mvstage.com) from a real
+// customer alias.
+func isPreviewAlias(alias, primary string) bool {
+	prefix := strings.ReplaceAll(strings.ToLower(primary), ".", "-") + "-"
+	rest := strings.TrimPrefix(strings.ToLower(alias), prefix)
+	if rest == alias {
+		return false
+	}
+	// "xxxx.zone.tld": a short random label followed by the preview zone
+	i := strings.Index(rest, ".")
+	return i > 0 && i <= 8 && strings.Count(rest[i+1:], ".") >= 1
+}
+
+// phpDots turns Enhance's "php83" into "8.3" (what the rest of the tool uses).
+func phpDots(v string) string {
+	v = strings.TrimPrefix(strings.ToLower(v), "php")
+	if len(v) >= 2 && !strings.Contains(v, ".") {
+		return v[:1] + "." + v[1:]
+	}
+	return v
+}
+
+// websiteAccount is the source-side account view of a website: one account per website,
+// named by its unix user (unique per node), with its real customer aliases.
+func websiteAccount(ws *EnhanceWebsite) common.Account {
+	acc := common.Account{
+		Username:   ws.UnixUser,
+		Domain:     ws.Domain.Domain,
+		DiskUsage:  common.HumanBytes(ws.Size),
+		PHPVersion: phpDots(ws.PhpVersion),
+		Suspended:  strings.EqualFold(ws.Status, "suspended"),
+		Metadata:   map[string]string{"website_id": ws.ID, "org_id": ws.OrgID, "app_server_id": ws.AppServerID, "node": ws.AppServerName},
+	}
+	if acc.Username == "" {
+		acc.Username = ws.ID
+	}
+	for _, a := range ws.Aliases {
+		if a.Domain != "" && !isPreviewAlias(a.Domain, ws.Domain.Domain) {
+			acc.AddonDomains = append(acc.AddonDomains, a.Domain)
+		}
+	}
+	return acc
+}
+
+// ListSourceAccounts lists the websites of this cluster as accounts to migrate (Enhance's own
+// control-panel/phpMyAdmin/webmail/staging sites excluded).
+func (e *Enhance) ListSourceAccounts(ctx context.Context) ([]common.Account, error) {
+	sites, err := e.ListWebsites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var accounts []common.Account
+	for i := range sites {
+		ws := &sites[i]
+		if ws.Kind != "" && ws.Kind != "normal" {
+			continue
+		}
+		if ws.Domain.Domain == "" {
+			continue
+		}
+		accounts = append(accounts, websiteAccount(ws))
+	}
+	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Domain < accounts[j].Domain })
+	return accounts, nil
+}
+
+// FindWebsiteByUser returns the website named by username (its unix user, or its id).
+func (e *Enhance) FindWebsiteByUser(ctx context.Context, username string) (*EnhanceWebsite, error) {
+	sites, err := e.ListWebsites(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sites {
+		if sites[i].UnixUser == username || sites[i].ID == username {
+			ws := sites[i]
+			return &ws, nil
+		}
+	}
+	return nil, fmt.Errorf("no website with unix user or id %q in this Enhance cluster", username)
+}
+
+// SetWebsiteSuspended suspends or unsuspends a website through the console API. Returns
+// whether anything changed.
+func (e *Enhance) SetWebsiteSuspended(ctx context.Context, ws *EnhanceWebsite, suspend bool) (bool, error) {
+	if strings.EqualFold(ws.Status, "suspended") == suspend {
+		e.logf("info", "Website %s is already %s", ws.Domain.Domain, map[bool]string{true: "suspended", false: "active"}[suspend])
+		return false, nil
+	}
+	if _, err := e.apiRequest(ctx, "PATCH", fmt.Sprintf("/orgs/%s/websites/%s", ws.OrgID, ws.ID), map[string]interface{}{"isSuspended": suspend}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ExportWebsite exports one website hosted on the connected node: domain(s), databases
+// (dumped as root on the node), mailboxes and cron jobs (console API) and the document root
+// (rsync), laid out the way ImportAccount expects.
+func (e *Enhance) ExportWebsite(ctx context.Context, ws *EnhanceWebsite, outputDir string, progress chan<- common.MigrationProgress) (*common.ExportData, error) {
+	if e.node == nil {
+		return nil, fmt.Errorf("not connected to the website's node")
+	}
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	}
+	if err := e.resolveWebsitePaths(ctx, ws); err != nil {
+		return nil, err
+	}
+	sendProgress := func(step string, completed, total int) {
+		if progress != nil {
+			progress <- common.MigrationProgress{Status: "running", CurrentStep: step, TotalSteps: total, CompletedSteps: completed}
+		}
+	}
+	const totalSteps = 5
+	data := &common.ExportData{ExportedAt: time.Now(), SourcePanel: common.PanelTypeEnhance, Account: websiteAccount(ws)}
+
+	// 1. Domains
+	sendProgress("Exporting domains", 0, totalSteps)
+	d := common.Domain{Name: ws.Domain.Domain, Type: "main", DocumentRoot: ws.DocRoot, PHPVersion: phpDots(ws.PhpVersion), Aliases: data.Account.AddonDomains}
+	data.Domains = []common.Domain{d}
+	if _, err := e.nodeRun(ctx, "test -f "+shq(ws.DocRoot+"/wp-config.php")); err == nil {
+		data.Account.IsWordPress = true
+		data.Account.SiteType = "wordpress"
+	}
+	e.logf("info", "Website %s (user %s, node %s): docroot %s, PHP %s, %s%s", ws.Domain.Domain, ws.UnixUser, e.nodeHost, ws.DocRoot, d.PHPVersion, humanBytes(ws.Size), aliasNote(d.Aliases))
+
+	// 2. Databases
+	sendProgress("Exporting databases", 1, totalSteps)
+	dbs, err := e.ExportDatabases(ctx, ws, outputDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to export databases: %w", err)
+	}
+	data.Databases = dbs
+	for _, db := range dbs {
+		data.Account.Databases = append(data.Account.Databases, db.Name)
+	}
+
+	// 3. Mailboxes (names and quotas; contents are never migrated)
+	sendProgress("Exporting emails", 2, totalSteps)
+	emails, err := e.exportEmails(ctx, ws)
+	if err != nil {
+		e.warnf("Could not list the mailboxes of %s (%v); none are recreated on the target", ws.Domain.Domain, err)
+	}
+	data.Emails = emails
+	for _, em := range emails {
+		data.Account.EmailAccounts = append(data.Account.EmailAccounts, em.Email)
+	}
+
+	// 4. Cron jobs
+	sendProgress("Exporting cron jobs", 3, totalSteps)
+	crons, err := e.exportCronJobs(ctx, ws)
+	if err != nil {
+		e.warnf("Could not read the crontab of %s (%v); recreate cron jobs manually", ws.Domain.Domain, err)
+	}
+	data.CronJobs = crons
+
+	// 5. Files
+	sendProgress("Exporting files", 4, totalSteps)
+	localDocRoot := filepath.Join(outputDir, "files", "domains", ws.Domain.Domain, "public_html")
+	if err := os.MkdirAll(localDocRoot, 0755); err != nil {
+		return nil, err
+	}
+	const step = "Downloading files"
+	if progress != nil {
+		progress <- common.MigrationProgress{Status: "running", CurrentStep: step}
+	}
+	total, sizeErr := e.node.RemoteDirSize(ctx, ws.DocRoot)
+	if sizeErr != nil {
+		e.warnf("Could not measure %s up front (%v); progress is reported without a total", ws.DocRoot, sizeErr)
+	}
+	reporter := common.NewTransferReporter(step, total, progress, func(level, msg string) { e.logf(level, "%s", msg) })
+	reporter.Start()
+	ferr := e.node.RsyncDownloadWithKey(ctx, ws.DocRoot, localDocRoot, reporter.Feed())
+	var partial *ssh.RsyncPartialError
+	if errors.As(ferr, &partial) {
+		e.warnf("Some files changed or vanished on the source while copying; running a second pass. %s", partial.Tail)
+		ferr = e.node.RsyncDownloadWithKey(ctx, ws.DocRoot, localDocRoot, reporter.Feed())
+		if errors.As(ferr, &partial) {
+			e.warnf("Files are still being rewritten on the source (cache/temp files); continuing with what was copied. %s", partial.Tail)
+			ferr = nil
+		}
+	}
+	reporter.Finish()
+	if ferr != nil {
+		return nil, fmt.Errorf("failed to download %s: %w", ws.DocRoot, ferr)
+	}
+	data.FilesPath = filepath.Join(outputDir, "files")
+
+	f, err := os.Create(filepath.Join(outputDir, "export_data.json"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create metadata file: %w", err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		return nil, fmt.Errorf("failed to write metadata: %w", err)
+	}
+	return data, nil
+}
+
+func aliasNote(aliases []string) string {
+	if len(aliases) == 0 {
+		return ""
+	}
+	return ", aliases " + strings.Join(aliases, ", ")
+}
+
+// ExportDatabases dumps every MySQL database of the website as root on its node (MariaDB's
+// own socket, like the DirectAdmin exporter does with the panel's credentials) into
+// <outputDir>/databases/<name>.sql.gz.
+func (e *Enhance) ExportDatabases(ctx context.Context, ws *EnhanceWebsite, outputDir string) ([]common.Database, error) {
+	if e.node == nil {
+		return nil, fmt.Errorf("not connected to the website's node")
+	}
+	names := e.listWebsiteDBNames(ctx, ws.OrgID, ws.ID)
+	if len(names) == 0 {
+		e.logf("info", "No databases on %s", ws.Domain.Domain)
+		return nil, nil
+	}
+	dbDir := filepath.Join(outputDir, "databases")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		return nil, err
+	}
+	query := func(sql string) string {
+		out, _ := e.nodeRun(ctx, fmt.Sprintf("mysql -N -e %s 2>/dev/null", shq(sql)))
+		return out
+	}
+	var databases []common.Database
+	for _, name := range names {
+		if !safeDBName.MatchString(name) {
+			e.warnf("Database %q has an unexpected name; skipped", name)
+			continue
+		}
+		var size int64
+		if v, err := strconv.ParseInt(strings.TrimSpace(query(fmt.Sprintf("SELECT COALESCE(SUM(data_length + index_length),0) FROM information_schema.tables WHERE table_schema='%s'", name))), 10, 64); err == nil {
+			size = v
+		}
+		var users []common.DBUser
+		for _, u := range strings.Fields(query(fmt.Sprintf("SELECT DISTINCT User FROM mysql.db WHERE Db='%s' OR Db='%s'", name, strings.ReplaceAll(name, "_", `\_`)))) {
+			users = append(users, common.DBUser{Username: u, Host: "localhost"})
+		}
+		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", name, time.Now().UnixNano())
+		e.tmpPaths = append(e.tmpPaths, remoteDump)
+		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s 2>/dev/null | gzip -1 > %s", shq(name), shq(remoteDump))
+		if out, err := e.nodeRun(ctx, dumpCmd); err != nil {
+			e.nodeRun(ctx, "rm -f "+shq(remoteDump))
+			return nil, fmt.Errorf("mysqldump of %s on the node failed: %v %s", name, err, strings.TrimSpace(out))
+		}
+		localDump := filepath.Join(dbDir, name+".sql.gz")
+		if err := e.node.Download(ctx, remoteDump, localDump); err != nil {
+			e.nodeRun(ctx, "rm -f "+shq(remoteDump))
+			return nil, fmt.Errorf("failed to download the dump of %s: %w", name, err)
+		}
+		e.nodeRun(ctx, "rm -f "+shq(remoteDump))
+		st, err := os.Stat(localDump)
+		if err != nil || st.Size() < 64 {
+			return nil, fmt.Errorf("dump of %s is empty", name)
+		}
+		e.logf("info", "Database %s dumped: %d MB data, %d bytes compressed, users: %s", name, size/1024/1024, st.Size(), strings.Join(dbUserNames(users), ","))
+		databases = append(databases, common.Database{Name: name, Type: "mysql", Size: size, Users: users, Charset: "utf8mb4"})
+	}
+	return databases, nil
+}
+
+var safeDBName = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+func dbUserNames(users []common.DBUser) []string {
+	out := make([]string, 0, len(users))
+	for _, u := range users {
+		out = append(out, u.Username)
+	}
+	return out
+}
+
+// exportEmails lists the website's mailboxes (address and quota only; the listing is per
+// website, creation per domain).
+func (e *Enhance) exportEmails(ctx context.Context, ws *EnhanceWebsite) ([]common.EmailAccount, error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/emails?limit=1000", ws.OrgID, ws.ID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var listing struct {
+		Items []struct {
+			Address    string      `json:"address"`
+			HasMailbox bool        `json:"hasMailbox"`
+			Quota      json.Number `json:"quota"` // MB in the API
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
+	}
+	var emails []common.EmailAccount
+	for _, it := range listing.Items {
+		if !it.HasMailbox || it.Address == "" {
+			continue
+		}
+		em := common.EmailAccount{Email: it.Address}
+		if q, err := it.Quota.Int64(); err == nil && q > 0 {
+			em.Quota = q * 1024 * 1024
+		}
+		emails = append(emails, em)
+	}
+	return emails, nil
+}
+
+// exportCronJobs reads the website's crontab through the API.
+func (e *Enhance) exportCronJobs(ctx context.Context, ws *EnhanceWebsite) ([]common.CronJob, error) {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/crontab", ws.OrgID, ws.ID), nil)
+	if err != nil {
+		if apiStatus(err) == 404 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var listing struct {
+		Items []struct {
+			CronCmd *struct {
+				Expr string `json:"expr"`
+			} `json:"cronCmd"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp, &listing); err != nil {
+		return nil, err
+	}
+	var jobs []common.CronJob
+	for _, it := range listing.Items {
+		if it.CronCmd == nil {
+			continue
+		}
+		f := strings.Fields(it.CronCmd.Expr)
+		if len(f) < 6 {
+			continue
+		}
+		jobs = append(jobs, common.CronJob{Minute: f[0], Hour: f[1], Day: f[2], Month: f[3], Weekday: f[4], Command: strings.Join(f[5:], " ")})
+	}
+	return jobs, nil
 }
 
 func (e *Enhance) orgID() (string, error) {
@@ -2009,8 +2378,10 @@ func (e *Enhance) registerWordPress(ctx context.Context, orgID string, ws *Enhan
 	return nil
 }
 
-// wpCLI runs a WP-CLI command for a website as its unix user (plugins/themes skipped so a broken
-// plugin cannot abort it); "" and nil when WP-CLI is not installed on the node.
+// wpCLI runs a WP-CLI command for a website (plugins/themes skipped so a broken plugin cannot
+// abort it); "" and nil when WP-CLI is not installed on the node. It is tried as the site's
+// unix user first; when that cannot reach the database it is re-run as root with the
+// connection pointed at MariaDB's socket (see wpCLIRoot).
 func (e *Enhance) wpCLI(ctx context.Context, ws *EnhanceWebsite, args string) (string, error) {
 	if _, err := e.nodeRun(ctx, "test -x /usr/bin/wp-cli"); err != nil {
 		return "", nil
@@ -2018,14 +2389,46 @@ func (e *Enhance) wpCLI(ctx context.Context, ws *EnhanceWebsite, args string) (s
 	cmd := fmt.Sprintf("cd %s && sudo -u %s -H /usr/bin/wp-cli %s --path=%s --skip-plugins --skip-themes --skip-packages 2>&1",
 		shq(ws.HomeDir), shq(ws.UnixUser), args, shq(ws.DocRoot))
 	out, err := e.nodeRun(ctx, cmd)
+	out = cleanWPCLIOutput(out)
+	if err != nil && strings.Contains(out, "Error establishing a database connection") {
+		return e.wpCLIRoot(ctx, ws, args)
+	}
+	return out, err
+}
+
+// wpCLIRoot runs WP-CLI as root with the database connection overridden to MariaDB's unix
+// socket. On an Enhance node every website's PHP runs inside its own namespace, where
+// "localhost" is a socket bind-mounted just for it; from the host, the site user cannot reach
+// the database at all (the socket is refused, TCP is not granted) and Enhance refuses commands
+// inside the website's container -- so the only way to run WP-CLI against the site's database
+// from here is as root through the host socket, which MariaDB's unix_socket auth accepts. The
+// override rides on --require (constants defined there win over wp-config.php's); any file
+// WordPress happens to create as root is handed back to the site user afterwards.
+func (e *Enhance) wpCLIRoot(ctx context.Context, ws *EnhanceWebsite, args string) (string, error) {
+	override := fmt.Sprintf("/tmp/migration_wpdb_%d.php", time.Now().UnixNano())
+	content := "<?php define('DB_USER','root'); define('DB_PASSWORD',''); define('DB_HOST','localhost:/run/mysqld/mysqld.sock');"
+	if _, err := e.nodeRun(ctx, fmt.Sprintf("umask 077; printf '%%s' %s > %s", shq(content), shq(override))); err != nil {
+		return "", fmt.Errorf("could not write the WP-CLI database override: %w", err)
+	}
+	defer e.nodeRun(ctx, fmt.Sprintf("rm -f %s; find %s -user root -exec chown %s:%s {} + 2>/dev/null", shq(override), shq(ws.DocRoot), shq(ws.UnixUser), shq(ws.UnixUser)))
+	cmd := fmt.Sprintf("cd %s && /usr/bin/wp-cli --allow-root --require=%s %s --path=%s --skip-plugins --skip-themes --skip-packages 2>&1",
+		shq(ws.HomeDir), shq(override), args, shq(ws.DocRoot))
+	out, err := e.nodeRun(ctx, cmd)
+	return cleanWPCLIOutput(out), err
+}
+
+// cleanWPCLIOutput drops the noise WP-CLI runs produce on an Enhance node (sudo's hostname
+// warning, the "constant already defined" notices of the root override, blank lines).
+func cleanWPCLIOutput(out string) string {
 	var lines []string
 	for _, l := range strings.Split(out, "\n") {
-		if strings.Contains(l, "unable to resolve host") || strings.TrimSpace(l) == "" {
+		t := strings.TrimSpace(l)
+		if t == "" || strings.Contains(l, "unable to resolve host") || strings.Contains(l, "already defined") {
 			continue
 		}
 		lines = append(lines, l)
 	}
-	return strings.Join(lines, "\n"), err
+	return strings.Join(lines, "\n")
 }
 
 // urlHost returns the lowercase host of a URL or bare hostname.
@@ -2304,7 +2707,7 @@ func (e *Enhance) quarantineDeadNestedInstalls(ctx context.Context, orgID string
 // RepairWordPress re-runs the post-import WordPress steps for migrated domains: PHP version from
 // the source, dead nested installs out of the web root, stale app records removed, discovery and
 // rewrite again, ownership fixed. Returns summary lines of what changed.
-func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDBs []string, sourcePHP string) ([]string, error) {
+func (e *Enhance) RepairWordPress(ctx context.Context, domains []common.Domain, knownDBs []string, sourcePHP string) ([]string, error) {
 	orgID, err := e.orgID()
 	if err != nil {
 		return nil, err
@@ -2313,7 +2716,11 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 		return nil, fmt.Errorf("not connected to the cluster node")
 	}
 	var summary []string
-	for _, domain := range domains {
+	for _, d := range domains {
+		domain := d.Name
+		if d.TargetDomain != "" {
+			domain = d.TargetDomain
+		}
 		ws, err := e.getWebsiteByDomain(ctx, orgID, domain)
 		if err != nil {
 			e.warnf("%s: %v", domain, err)
@@ -2405,6 +2812,13 @@ func (e *Enhance) RepairWordPress(ctx context.Context, domains []string, knownDB
 		// 5. Ownership
 		if err := e.fixPermissions(ctx, ws); err != nil {
 			e.warnf("%v", err)
+		}
+
+		// 6. URLs: a site registered under another name than the source's (pointer, or the
+		// operator's choice) must not keep pointing at the source's name in its database.
+		if d.TargetDomain != "" {
+			e.replaceSiteURL(ctx, ws, d)
+			summary = append(summary, domain+": WordPress URL checked")
 		}
 	}
 	return summary, nil

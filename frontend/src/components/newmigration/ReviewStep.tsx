@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ArrowLeftIcon, InformationCircleIcon, PlayIcon } from '@heroicons/react/16/solid';
 import {
   Button,
@@ -125,6 +126,13 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
   // its single DirectAdmin pointer (the customer-facing name); a platform hostname has no default.
   const automaticDomain = (account: Account) =>
     isPlatformHostname(account.domain) ? '' : account.pointers?.length === 1 ? account.pointers[0] : (account.domain ?? '');
+  // Which rows have "a different domain" ticked; a platform hostname is always ticked (it has no usable default).
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const overriding = (account: Account) => isPlatformHostname(account.domain) || (overrides[account.username] ?? !!targetDomains[account.username]);
+  const setOverride = (account: Account, on: boolean) => {
+    setOverrides((prev) => ({ ...prev, [account.username]: on }));
+    if (!on) onTargetDomainChange(account.username, '');
+  };
   const exportSteps = plan.filter((s) => s.id.startsWith('export_'));
   const importSteps = plan.filter((s) => !s.id.startsWith('export_'));
   const targetName = targetNode?.friendly_name || targetNode?.hostname || targetServer?.name || t('newmigration.review.targetFallback');
@@ -160,24 +168,35 @@ export function ReviewStep({ sourceServer, targetServer, targetNode, accounts, p
             {accounts.map((account) => {
               const platform = isPlatformHostname(account.domain);
               const value = targetDomains[account.username] ?? '';
+              const other = overriding(account);
               return (
                 <TR key={account.username}>
                   <TDPrimary>{account.domain ? <Mono className="text-[13px]">{account.domain}</Mono> : '—'}</TDPrimary>
                   <TD>
-                    <Input
-                      mono
-                      size="sm"
-                      type="text"
-                      value={value}
-                      onChange={(e) => onTargetDomainChange(account.username, e.target.value)}
-                      onBlur={() => value.trim() && onTargetDomainChange(account.username, normalizeDomainInput(value))}
-                      placeholder={platform ? t('newmigration.review.targetDomain.placeholderRequired') : automaticDomain(account)}
-                      invalid={platform && !value.trim()}
-                      aria-label={t('newmigration.table.targetDomain')}
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="min-w-[14rem]"
-                    />
+                    <div className="flex flex-wrap items-center gap-3">
+                      {!other && automaticDomain(account) && <Mono className="text-[13px]">{automaticDomain(account)}</Mono>}
+                      <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+                        <Checkbox checked={other} disabled={platform} onChange={(e) => setOverride(account, e.target.checked)} />
+                        {t('newmigration.review.targetDomain.other')}
+                      </label>
+                      {other && (
+                        <Input
+                          mono
+                          size="sm"
+                          type="text"
+                          value={value}
+                          onChange={(e) => onTargetDomainChange(account.username, e.target.value)}
+                          onBlur={() => value.trim() && onTargetDomainChange(account.username, normalizeDomainInput(value))}
+                          placeholder={platform ? t('newmigration.review.targetDomain.placeholderRequired') : t('newmigration.review.targetDomain.placeholder')}
+                          invalid={!value.trim()}
+                          aria-label={t('newmigration.table.targetDomain')}
+                          autoComplete="off"
+                          spellCheck={false}
+                          autoFocus={!platform}
+                          className="min-w-[14rem]"
+                        />
+                      )}
+                    </div>
                   </TD>
                   <TD mono>{account.username}</TD>
                   <TD numeric>{account.disk_used ? <Mono className="text-[13px]">{account.disk_used}</Mono> : '—'}</TD>
