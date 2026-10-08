@@ -843,8 +843,25 @@ func (e *Enhance) ExportDatabases(ctx context.Context, ws *EnhanceWebsite, outpu
 		}
 		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", name, time.Now().UnixNano())
 		e.tmpPaths = append(e.tmpPaths, remoteDump)
-		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s 2>/dev/null | gzip -1 > %s", shq(name), shq(remoteDump))
-		if out, err := e.nodeRun(ctx, dumpCmd); err != nil {
+		// mysqldump's stdout must stay pure SQL for gzip; its stderr goes to a side file that is
+		// echoed back after the pipeline so a failure comes with mysqldump's own message. A table
+		// the source itself cannot read any more is skipped (with a warning) and the dump retried.
+		errFile := remoteDump + ".err"
+		ignore := ""
+		var skipped []string
+		for {
+			dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4%s %s 2>%s | gzip -1 > %s; rc=$?; grep -v 'Deprecated program name' %s; rm -f %s; exit $rc",
+				ignore, shq(name), shq(errFile), shq(remoteDump), shq(errFile), shq(errFile))
+			out, err := e.nodeRun(ctx, dumpCmd)
+			if err == nil {
+				break
+			}
+			if table := common.BrokenDumpTable(out); table != "" && len(skipped) < common.MaxBrokenDumpTables {
+				e.warnf("Database %s: table %s cannot be read on the source (%s); it is left out of the migration -- recreate or repair it on the new site if it matters", name, table, firstLine(strings.TrimSpace(out)))
+				skipped = append(skipped, table)
+				ignore += " --ignore-table=" + shq(name+"."+table)
+				continue
+			}
 			e.nodeRun(ctx, "rm -f "+shq(remoteDump))
 			return nil, fmt.Errorf("mysqldump of %s on the node failed: %v %s", name, err, strings.TrimSpace(out))
 		}

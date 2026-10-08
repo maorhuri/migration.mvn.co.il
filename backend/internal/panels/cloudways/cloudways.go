@@ -610,10 +610,24 @@ func (c *Cloudways) ExportDatabases(ctx context.Context, slug string, outputDir 
 	// exporter does, does not work here: Cloudways jails the master user's SFTP to its home
 	// directory, so a file the shell wrote under /tmp does not exist as far as SFTP is concerned.)
 	// set -o pipefail keeps mysqldump's own exit status authoritative over gzip's.
-	dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s | gzip -1",
-		a.DB.mysqlAuth(), shq(a.DB.Name))
 	localDump := filepath.Join(dbDir, a.DB.Name+".sql.gz")
-	if err := c.streamToFile(ctx, dumpCmd, localDump); err != nil {
+	// A table the source itself cannot read any more would abort the whole dump: it is skipped
+	// with a warning and the dump retried.
+	ignore := ""
+	var skipped []string
+	for {
+		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4%s %s | gzip -1",
+			a.DB.mysqlAuth(), ignore, shq(a.DB.Name))
+		err := c.streamToFile(ctx, dumpCmd, localDump)
+		if err == nil {
+			break
+		}
+		if table := common.BrokenDumpTable(err.Error()); table != "" && len(skipped) < common.MaxBrokenDumpTables {
+			c.logf("warn", "Database %s: table %s cannot be read on the source (%s); it is left out of the migration -- recreate or repair it on the new site if it matters", a.DB.Name, table, shortErr(err))
+			skipped = append(skipped, table)
+			ignore += " --ignore-table=" + shq(a.DB.Name+"."+table)
+			continue
+		}
 		os.Remove(localDump)
 		return nil, fmt.Errorf("mysqldump of %s failed: %w", a.DB.Name, err)
 	}

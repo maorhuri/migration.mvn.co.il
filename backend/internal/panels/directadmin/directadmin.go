@@ -607,9 +607,23 @@ func (da *DirectAdmin) ExportDatabases(ctx context.Context, username string, out
 		// command's own stderr instead, which RunCommand still captures into `out` below for
 		// the failure case; set -o pipefail keeps mysqldump's own exit code authoritative.
 		remoteDump := fmt.Sprintf("/tmp/migration_%s_%d.sql.gz", dbName, time.Now().UnixNano())
-		dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4 %s | gzip -1 > %s",
-			auth, shq(dbName), shq(remoteDump))
-		if out, err := da.sshClient.RunCommand(ctx, dumpCmd); err != nil {
+		// A table the source itself cannot read any more (missing InnoDB tablespace, vanished
+		// mid-dump) would abort the whole dump: it is skipped with a warning and the dump retried.
+		ignore := ""
+		var skipped []string
+		for {
+			dumpCmd := fmt.Sprintf("set -o pipefail 2>/dev/null; mysqldump %s --single-transaction --quick --skip-lock-tables --routines --triggers --events --default-character-set=utf8mb4%s %s | gzip -1 > %s",
+				auth, ignore, shq(dbName), shq(remoteDump))
+			out, err := da.sshClient.RunCommand(ctx, dumpCmd)
+			if err == nil {
+				break
+			}
+			if table := common.BrokenDumpTable(out); table != "" && len(skipped) < common.MaxBrokenDumpTables {
+				da.logf("warn", "Database %s: table %s cannot be read on the source (%s); it is left out of the migration -- recreate or repair it on the new site if it matters", dbName, table, strings.TrimSpace(out))
+				skipped = append(skipped, table)
+				ignore += " --ignore-table=" + shq(dbName+"."+table)
+				continue
+			}
 			da.sshClient.RunCommand(ctx, "rm -f "+shq(remoteDump))
 			return nil, fmt.Errorf("mysqldump of %s failed: %v %s", dbName, err, strings.TrimSpace(out))
 		}
