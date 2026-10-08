@@ -45,8 +45,9 @@ export const testServerConnection = async (id: string): Promise<ServerTestRespon
   return data;
 };
 
-export const getServerAccounts = async (id: string): Promise<{ accounts: Account[]; total: number }> => {
-  const { data } = await api.get(`/servers/${id}/accounts`);
+/** Accounts of a source server; an Enhance source lists only the websites of clusterServerId when given. */
+export const getServerAccounts = async (id: string, clusterServerId?: string): Promise<{ accounts: Account[]; total: number }> => {
+  const { data } = await api.get(`/servers/${id}/accounts`, { params: clusterServerId ? { cluster_server_id: clusterServerId } : undefined });
   return { accounts: data.accounts || [], total: data.total || 0 };
 };
 
@@ -84,9 +85,9 @@ export const getExistingDomains = async (id: string, clusterServerId?: string): 
 };
 
 // Refresh server accounts (force reload from server)
-export const refreshServerAccounts = async (id: string): Promise<{ accounts: Account[]; total: number }> => {
-  const { data } = await api.post(`/servers/${id}/accounts/refresh`);
-  return data;
+export const refreshServerAccounts = async (id: string, clusterServerId?: string): Promise<{ accounts: Account[]; total: number }> => {
+  const { data } = await api.post(`/servers/${id}/accounts/refresh`, undefined, { params: clusterServerId ? { cluster_server_id: clusterServerId } : undefined });
+  return { accounts: data.accounts || [], total: data.total || 0 };
 };
 
 // SSH Keys

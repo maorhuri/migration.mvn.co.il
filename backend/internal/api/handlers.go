@@ -414,7 +414,14 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		"panel_type": server.PanelType,
 	})
 
-	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	var accounts []migration.AccountInfo
+	if server.PanelType == "enhance" {
+		// An Enhance source lists the websites of one cluster server (?cluster_server_id=),
+		// never the whole cluster unless asked.
+		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, c.Query("cluster_server_id"))
+	} else {
+		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	}
 	if err != nil {
 		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
 			"server_id": id,
@@ -494,7 +501,12 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 		}
 	}
 
-	accounts, err := h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	var accounts []migration.AccountInfo
+	if server.PanelType == "enhance" {
+		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, c.Query("cluster_server_id"))
+	} else {
+		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
+	}
 	if err != nil {
 		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
 			"server_id": id,

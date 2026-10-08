@@ -88,10 +88,14 @@ export default function ServerDetail() {
     if (id) {
       loadServer();
       loadSSHKeys();
-      // Auto-load cached accounts
-      loadAccounts();
     }
   }, [id]);
+
+  // Auto-load cached accounts -- except for an Enhance cluster, whose websites are read per
+  // node from the migration wizard (listing them here would mean the whole cluster).
+  useEffect(() => {
+    if (server && server.panel_type !== 'enhance') loadAccounts();
+  }, [server?.id, server?.panel_type]);
 
   const loadServer = async () => {
     try {

@@ -90,6 +90,9 @@ export interface Account {
   ssl_expiry?: string;
   is_wordpress?: boolean;
   db_size?: string;
+  /** Cluster server hosting the website (Enhance sources only). */
+  node_id?: string;
+  node?: string;
 }
 
 export interface Migration {

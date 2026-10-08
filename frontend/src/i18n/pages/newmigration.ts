@@ -120,6 +120,9 @@ export const newmigration: PageDict = {
     'newmigration.target.continue': 'המשך לסיכום',
     'newmigration.cluster.title': 'צומת באשכול',
     'newmigration.cluster.description': 'לאשכול Enhance הזה יש כמה שרתים. בחר את הצומת שבו ייווצר האתר.',
+    'newmigration.sourceCluster.title': 'צומת המקור',
+    'newmigration.sourceCluster.description': 'בחר את השרת באשכול שממנו מעבירים. רק האתרים של הצומת הזה ייקראו ויוצגו — לא כל האשכול.',
+    'newmigration.source.continue': 'המשך ליעד',
     'newmigration.nodes.search': 'חיפוש לפי שם, hostname או IP',
     'newmigration.nodes.searchAria': 'חיפוש צמתים',
     'newmigration.nodes.loading': 'טוען צמתים...',
@@ -133,6 +136,8 @@ export const newmigration: PageDict = {
     'newmigration.nodes.clearSearch': 'נקה חיפוש',
     'newmigration.nodes.callout.selected': 'האתר ייווצר בצומת {name}{ip}. הקבצים יועלו לצומת הזה דרך SSH, ורשומת ה-hosts תצביע ל-IP שלו.',
     'newmigration.nodes.callout.pick': 'בחר את הצומת שבו ייווצר האתר. הקבצים יועלו אליו, ורשומת ה-hosts תצביע ל-IP שלו.',
+    'newmigration.nodes.callout.source.selected': 'יוצגו רק האתרים שנמצאים על {name}{ip}. הקבצים ומסדי הנתונים ייקראו מהצומת הזה דרך SSH.',
+    'newmigration.nodes.callout.source.pick': 'בחר את הצומת שממנו מעבירים. רק האתרים שלו ייקראו ויוצגו ברשימה.',
 
     // Step 4: review
     'newmigration.review.source': 'מקור',
@@ -356,6 +361,9 @@ export const newmigration: PageDict = {
     'newmigration.target.continue': 'Continue to review',
     'newmigration.cluster.title': 'Cluster node',
     'newmigration.cluster.description': 'This Enhance cluster has several servers. Pick the node the website should be created on.',
+    'newmigration.sourceCluster.title': 'Source node',
+    'newmigration.sourceCluster.description': 'Pick the server in the cluster to migrate from. Only that node\'s websites are read and listed — never the whole cluster.',
+    'newmigration.source.continue': 'Continue to target',
     'newmigration.nodes.search': 'Search by name, hostname or IP',
     'newmigration.nodes.searchAria': 'Search cluster nodes',
     'newmigration.nodes.loading': 'Loading nodes...',
@@ -369,6 +377,8 @@ export const newmigration: PageDict = {
     'newmigration.nodes.clearSearch': 'Clear search',
     'newmigration.nodes.callout.selected': 'The website will be created on {name}{ip}. Files are uploaded to this node over SSH and the hosts entry will point to its IP.',
     'newmigration.nodes.callout.pick': 'Select the cluster node the website should be created on. Files are uploaded to that node and the hosts entry will point to its IP.',
+    'newmigration.nodes.callout.source.selected': 'Only the websites hosted on {name}{ip} are listed. Files and databases are read from this node over SSH.',
+    'newmigration.nodes.callout.source.pick': 'Select the node to migrate from. Only its websites are read and listed.',
 
     // Step 4: review
     'newmigration.review.source': 'Source',

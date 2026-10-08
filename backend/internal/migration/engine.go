@@ -1641,6 +1641,35 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 	return result, nil
 }
 
+// GetEnhanceSourceAccounts lists the websites of an Enhance cluster as source accounts (one per
+// website, named by its id), restricted to one cluster server when clusterServerID is set --
+// the console filters server-side, so only that node's websites are read at all.
+func (e *Engine) GetEnhanceSourceAccounts(ctx context.Context, server *storage.Server, clusterServerID string) ([]AccountInfo, error) {
+	apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+	en := enhance.New()
+	if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
+		return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
+	}
+	accounts, err := en.ListSourceAccounts(ctx, clusterServerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list websites: %w", err)
+	}
+	result := []AccountInfo{} // never nil: the API must answer "accounts": [] for an empty node, not null
+	for _, acc := range accounts {
+		result = append(result, AccountInfo{
+			Username:     acc.Username,
+			Domain:       acc.Domain,
+			DiskUsed:     acc.DiskUsage,
+			Suspended:    acc.Suspended,
+			PHPVersion:   acc.PHPVersion,
+			AddonDomains: acc.AddonDomains,
+			NodeID:       acc.Metadata["app_server_id"],
+			Node:         acc.Metadata["node"],
+		})
+	}
+	return result, nil
+}
+
 // CreateSSHClient creates an SSH client for a server
 func (e *Engine) CreateSSHClient(server *storage.Server, password string) (*ssh.Client, error) {
 	config := e.db.ToConnectionConfig(server)
@@ -1673,6 +1702,9 @@ type AccountInfo struct {
 	SSLExpiry     string   `json:"ssl_expiry,omitempty"`
 	IsWordPress   bool     `json:"is_wordpress"`
 	DBSize        string   `json:"db_size,omitempty"`
+	// NodeID / Node: the cluster server hosting the website (Enhance sources only).
+	NodeID string `json:"node_id,omitempty"`
+	Node   string `json:"node,omitempty"`
 }
 
 // ServerInfo represents server system information
@@ -1890,28 +1922,7 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 		return result, nil
 
 	case common.PanelTypeEnhance:
-		// As a source: one account per website of the cluster, named by its unix user.
-		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
-		en := enhance.New()
-		if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(server), apiKey); err != nil {
-			return nil, fmt.Errorf("failed to connect to Enhance: %w", err)
-		}
-		accounts, err := en.ListSourceAccounts(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list websites: %w", err)
-		}
-		var result []AccountInfo
-		for _, acc := range accounts {
-			result = append(result, AccountInfo{
-				Username:     acc.Username,
-				Domain:       acc.Domain,
-				DiskUsed:     acc.DiskUsage,
-				Suspended:    acc.Suspended,
-				PHPVersion:   acc.PHPVersion,
-				AddonDomains: acc.AddonDomains,
-			})
-		}
-		return result, nil
+		return e.GetEnhanceSourceAccounts(ctx, server, "")
 
 	case common.PanelTypeFTP, common.PanelTypeWordPress:
 		return e.agentlessAccounts(ctx, server, password)

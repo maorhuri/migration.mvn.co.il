@@ -165,10 +165,21 @@ export default function NewMigration() {
 
   const [formData, setFormData] = useState({
     source_server_id: '',
+    // Enhance source: the cluster server whose websites are listed (only that node is read).
+    source_cluster_server_id: '',
     target_server_id: '',
     target_cluster_server_id: '',
     scan_malware: false,
   });
+  const [sourceClusterServers, setSourceClusterServers] = useState<ClusterServer[]>([]);
+  const [loadingSourceCluster, setLoadingSourceCluster] = useState(false);
+  // True once the node list of the chosen Enhance source came back (even empty): until then
+  // nothing is listed, so the whole cluster is never fetched by accident.
+  const [sourceClusterLoaded, setSourceClusterLoaded] = useState(false);
+  const [sourceClusterSearch, setSourceClusterSearch] = useState('');
+  const isEnhanceSource = servers.find((s: Server) => s.id === formData.source_server_id)?.panel_type === 'enhance';
+  // An Enhance source whose console reported no nodes (or failed to): fall back to the whole cluster rather than block.
+  const sourceNodeRequired = isEnhanceSource && !(sourceClusterLoaded && sourceClusterServers.length === 0);
   // Per account (by username): the domain to register the site under on the target instead of
   // the source's name; empty = automatic (the source domain, or its DirectAdmin pointer).
   const [targetDomains, setTargetDomains] = useState<Record<string, string>>({});
@@ -193,23 +204,63 @@ export default function NewMigration() {
   // Load accounts when source server is selected
   useEffect(() => {
     if (formData.source_server_id) {
+      let cancelled = false;
       const fetchAccounts = async () => {
+        // An Enhance source is read per cluster server: nothing is listed until one is picked.
+        if (sourceNodeRequired && !formData.source_cluster_server_id) {
+          setAccounts([]);
+          return;
+        }
         setLoadingAccounts(true);
         try {
-          const data = await getServerAccounts(formData.source_server_id);
-          setAccounts(data.accounts);
+          const data = await getServerAccounts(formData.source_server_id, isEnhanceSource ? formData.source_cluster_server_id || undefined : undefined);
+          if (!cancelled) setAccounts(data.accounts);
         } catch (error) {
           console.error('Failed to fetch accounts:', error);
-          setAccounts([]);
+          if (!cancelled) setAccounts([]);
         } finally {
-          setLoadingAccounts(false);
+          if (!cancelled) setLoadingAccounts(false);
         }
       };
       fetchAccounts();
+      // A newer source/node selection supersedes this request: its result must not land.
+      return () => {
+        cancelled = true;
+      };
     } else {
       setAccounts([]);
     }
-  }, [formData.source_server_id]);
+  }, [formData.source_server_id, formData.source_cluster_server_id, sourceNodeRequired, isEnhanceSource]);
+
+  // Enhance source: load its cluster servers so the operator picks the node to read from.
+  useEffect(() => {
+    setSourceClusterLoaded(false);
+    if (!formData.source_server_id || !isEnhanceSource) {
+      setSourceClusterServers([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSourceCluster(true);
+    getClusterServers(formData.source_server_id)
+      .then((data) => {
+        if (cancelled) return;
+        setSourceClusterServers(data);
+        if (data.length === 1) setFormData((prev: typeof formData) => ({ ...prev, source_cluster_server_id: data[0].id }));
+      })
+      .catch((error) => {
+        console.error('Failed to fetch source cluster servers:', error);
+        if (!cancelled) setSourceClusterServers([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingSourceCluster(false);
+          setSourceClusterLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.source_server_id, isEnhanceSource]);
 
   // An agentless source holds exactly one site: it is the selection.
   useEffect(() => {
@@ -633,7 +684,7 @@ export default function NewMigration() {
     if (!formData.source_server_id) return;
     setRefreshingAccounts(true);
     try {
-      const data = await refreshServerAccounts(formData.source_server_id);
+      const data = await refreshServerAccounts(formData.source_server_id, isEnhanceSource ? formData.source_cluster_server_id || undefined : undefined);
       setAccounts(data.accounts);
       toast.success(t('newmigration.toast.refreshed'));
     } catch (error) {
@@ -720,6 +771,7 @@ export default function NewMigration() {
     setCompletedMigrationIds([]);
     setFormData({
       source_server_id: '',
+      source_cluster_server_id: '',
       target_server_id: '',
       target_cluster_server_id: '',
       scan_malware: false,
@@ -829,6 +881,7 @@ export default function NewMigration() {
                 setFormData({
                   ...formData,
                   source_server_id: server.id,
+                  ...(changed ? { source_cluster_server_id: '' } : {}),
                   // A server cannot be both source and target.
                   ...(server.id === formData.target_server_id ? { target_server_id: '', target_cluster_server_id: '' } : {}),
                 });
@@ -837,7 +890,8 @@ export default function NewMigration() {
                   setSelectedAccounts([]);
                   setSearchTerm('');
                 }
-                setCurrentStep('select_target');
+                // An Enhance source needs its node picked first (card below); others go straight on.
+                if (server.panel_type !== 'enhance') setCurrentStep('select_target');
               }}
               search={sourceSearchTerm}
               onSearchChange={setSourceSearchTerm}
@@ -847,6 +901,54 @@ export default function NewMigration() {
               onAddServer={() => navigate('/servers')}
             />
           </Card>
+
+          {/* Source cluster node (Enhance sources): only that node's websites are listed */}
+          {formData.source_server_id && isEnhanceSource && (
+            <Card edge="violet" className="mt-6 motion-safe:animate-rise">
+              <CardHeader
+                actions={
+                  sourceServer ? (
+                    <Badge tone="violet" size="sm">
+                      {sourceServer.name}
+                    </Badge>
+                  ) : undefined
+                }
+              >
+                <CardTitle>{t('newmigration.sourceCluster.title')}</CardTitle>
+                <CardDescription>{t('newmigration.sourceCluster.description')}</CardDescription>
+              </CardHeader>
+              <ClusterNodePicker
+                nodes={sourceClusterServers.filter(
+                  (node: ClusterServer) =>
+                    !sourceClusterSearch ||
+                    [node.friendly_name, node.hostname, node.ip].some((v) => (v || '').toLowerCase().includes(sourceClusterSearch.toLowerCase())),
+                )}
+                allNodes={sourceClusterServers}
+                selectedId={formData.source_cluster_server_id}
+                onSelect={(node) => {
+                  if (node.id !== formData.source_cluster_server_id) {
+                    setSelectedAccounts([]);
+                    setSearchTerm('');
+                  }
+                  setFormData({ ...formData, source_cluster_server_id: node.id });
+                }}
+                search={sourceClusterSearch}
+                onSearchChange={setSourceClusterSearch}
+                loading={loadingSourceCluster}
+                role="source"
+              />
+              <CardFooter>
+                <Button
+                  variant="primary"
+                  rightIcon={<ArrowRightIcon className="flip-rtl" />}
+                  onClick={() => setCurrentStep('select_target')}
+                  disabled={loadingSourceCluster || (sourceNodeRequired && !formData.source_cluster_server_id)}
+                >
+                  {t('newmigration.source.continue')}
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
         </div>
       )}
 

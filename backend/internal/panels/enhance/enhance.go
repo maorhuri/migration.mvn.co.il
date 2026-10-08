@@ -469,8 +469,10 @@ func (e *Enhance) ListAccounts(ctx context.Context) ([]common.Account, error) {
 // its node (root SSH), exported in the same layout the importer consumes.
 // ---------------------------------------------------------------------------
 
-// ListWebsites returns every website in the configured org tree.
-func (e *Enhance) ListWebsites(ctx context.Context) ([]EnhanceWebsite, error) {
+// ListWebsites returns the websites of the configured org tree -- all of them, or only those
+// hosted on one cluster server (appServerID): the console filters server-side, so nothing
+// beyond that node is even listed.
+func (e *Enhance) ListWebsites(ctx context.Context, appServerID string) ([]EnhanceWebsite, error) {
 	if !e.connected {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -478,7 +480,11 @@ func (e *Enhance) ListWebsites(ctx context.Context) ([]EnhanceWebsite, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?limit=1000&recursion=infinite", orgID), nil)
+	query := "limit=1000&recursion=infinite"
+	if appServerID != "" {
+		query += "&servers=" + appServerID
+	}
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?%s", orgID, query), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +494,16 @@ func (e *Enhance) ListWebsites(ctx context.Context) ([]EnhanceWebsite, error) {
 	if err := json.Unmarshal(resp, &listing); err != nil {
 		return nil, err
 	}
-	return listing.Items, nil
+	if appServerID == "" {
+		return listing.Items, nil
+	}
+	var onNode []EnhanceWebsite
+	for _, ws := range listing.Items {
+		if ws.AppServerID == appServerID {
+			onNode = append(onNode, ws)
+		}
+	}
+	return onNode, nil
 }
 
 // isPreviewAlias tells Enhance's own auto-generated preview alias of a website
@@ -536,10 +551,11 @@ func websiteAccount(ws *EnhanceWebsite) common.Account {
 	return acc
 }
 
-// ListSourceAccounts lists the websites of this cluster as accounts to migrate (Enhance's own
-// control-panel/phpMyAdmin/webmail/staging sites excluded).
-func (e *Enhance) ListSourceAccounts(ctx context.Context) ([]common.Account, error) {
-	sites, err := e.ListWebsites(ctx)
+// ListSourceAccounts lists the websites of this cluster -- or of one of its servers when
+// appServerID is set -- as accounts to migrate (Enhance's own control-panel/phpMyAdmin/webmail/
+// staging sites excluded).
+func (e *Enhance) ListSourceAccounts(ctx context.Context, appServerID string) ([]common.Account, error) {
+	sites, err := e.ListWebsites(ctx, appServerID)
 	if err != nil {
 		return nil, err
 	}
@@ -560,7 +576,7 @@ func (e *Enhance) ListSourceAccounts(ctx context.Context) ([]common.Account, err
 
 // FindWebsiteByUser returns the website named by username (its unix user, or its id).
 func (e *Enhance) FindWebsiteByUser(ctx context.Context, username string) (*EnhanceWebsite, error) {
-	sites, err := e.ListWebsites(ctx)
+	sites, err := e.ListWebsites(ctx, "")
 	if err != nil {
 		return nil, err
 	}

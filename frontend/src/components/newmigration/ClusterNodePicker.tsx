@@ -91,13 +91,15 @@ export interface ClusterNodePickerProps {
   search: string;
   onSearchChange: (value: string) => void;
   loading?: boolean;
+  /** Which end of the migration the node is for: wording of the callout. Default "target". */
+  role?: 'target' | 'source';
 }
 
 /**
  * Enhance cluster node picker: search, node cards and a callout stating
- * where the website will be created.
+ * where the website will be created (target) or read from (source).
  */
-export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, search, onSearchChange, loading }: ClusterNodePickerProps) {
+export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, search, onSearchChange, loading, role = 'target' }: ClusterNodePickerProps) {
   const t = useT();
   const selected = allNodes.find((n) => n.id === selectedId);
 
@@ -159,7 +161,7 @@ export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, searc
         <InformationCircleIcon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
         {selected ? (
           <p>
-            {t.rich('newmigration.nodes.callout.selected', {
+            {t.rich(role === 'source' ? 'newmigration.nodes.callout.source.selected' : 'newmigration.nodes.callout.selected', {
               name: <span className="font-semibold">{selected.friendly_name || selected.hostname}</span>,
               ip: selected.ip ? (
                 <span>
@@ -173,7 +175,7 @@ export function ClusterNodePicker({ nodes, allNodes, selectedId, onSelect, searc
             })}
           </p>
         ) : (
-          <p>{t('newmigration.nodes.callout.pick')}</p>
+          <p>{t(role === 'source' ? 'newmigration.nodes.callout.source.pick' : 'newmigration.nodes.callout.pick')}</p>
         )}
       </div>
     </div>
