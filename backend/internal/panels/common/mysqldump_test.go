@@ -16,3 +16,24 @@ func TestBrokenDumpTable(t *testing.T) {
 		}
 	}
 }
+
+func TestIsEssentialTable(t *testing.T) {
+	for table, want := range map[string]bool{
+		"wpl0_wc_category_lookup":       false,
+		"wp_wc_product_meta_lookup":     false,
+		"wp_actionscheduler_logs":       false,
+		"wp_posts":                      true,
+		"wwv_options":                   true,
+		"wp_2_postmeta":                 true,
+		"wpl0_wc_orders":                true,
+		"wp_woocommerce_order_itemmeta": true,
+		"wp_woocommerce_sessions":       false,
+		"wp_wc_order_stats":             false,
+		"posts":                         true,
+		"wp_litespeed_url":              false,
+	} {
+		if got := IsEssentialTable(table); got != want {
+			t.Errorf("IsEssentialTable(%q) = %v, want %v", table, got, want)
+		}
+	}
+}
