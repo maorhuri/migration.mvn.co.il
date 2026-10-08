@@ -549,7 +549,7 @@ func websiteAccount(ws *EnhanceWebsite) common.Account {
 		DiskUsage:  common.HumanBytes(ws.Size),
 		PHPVersion: phpDots(ws.PhpVersion),
 		Suspended:  strings.EqualFold(ws.Status, "suspended"),
-		Metadata:   map[string]string{"website_id": ws.ID, "org_id": ws.OrgID, "app_server_id": ws.AppServerID, "node": ws.AppServerName},
+		Metadata:   map[string]string{"website_id": ws.ID, "org_id": ws.OrgID, "app_server_id": ws.AppServerID, "node": ws.AppServerName, "kind": ws.Kind},
 	}
 	if acc.Username == "" {
 		acc.Username = ws.ID
@@ -571,18 +571,99 @@ func (e *Enhance) ListSourceAccounts(ctx context.Context, appServerID string) ([
 		return nil, err
 	}
 	var accounts []common.Account
+	var kept []*EnhanceWebsite
 	for i := range sites {
 		ws := &sites[i]
-		if ws.Kind != "" && ws.Kind != "normal" {
+		// Customer sites and their staging copies migrate; Enhance's own control-panel,
+		// phpMyAdmin, webmail and server-hostname sites do not.
+		if ws.Kind != "" && ws.Kind != "normal" && ws.Kind != "staging" {
 			continue
 		}
 		if ws.Domain.Domain == "" {
 			continue
 		}
 		accounts = append(accounts, websiteAccount(ws))
+		kept = append(kept, ws)
+	}
+	// Databases, mailboxes and the WordPress flag are three more calls per website; worth it
+	// for one node's worth of sites, not for a whole cluster.
+	if appServerID != "" && len(kept) <= 200 {
+		e.enrichSourceAccounts(ctx, kept, accounts)
 	}
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Domain < accounts[j].Domain })
 	return accounts, nil
+}
+
+// enrichSourceAccounts fills in, per website, its databases (names and total size), mailbox
+// addresses and whether Enhance knows a WordPress install -- bounded in parallel, best effort
+// (a failed call just leaves that detail empty).
+func (e *Enhance) enrichSourceAccounts(ctx context.Context, sites []*EnhanceWebsite, accounts []common.Account) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i := range sites {
+		wg.Add(1)
+		go func(ws *EnhanceWebsite, acc *common.Account) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if dbs := e.listWebsiteDBs(ctx, ws.OrgID, ws.ID); len(dbs) > 0 {
+				var total int64
+				for _, db := range dbs {
+					acc.Databases = append(acc.Databases, db.Name)
+					total += db.Size
+				}
+				acc.DBCount = len(dbs)
+				acc.DBSize = common.HumanBytes(total)
+			}
+			if emails, err := e.exportEmails(ctx, ws); err == nil {
+				for _, em := range emails {
+					acc.EmailAccounts = append(acc.EmailAccounts, em.Email)
+				}
+				acc.EmailCount = len(emails)
+			}
+			if apps, err := e.listApps(ctx, ws.OrgID, ws.ID); err == nil {
+				for _, a := range apps {
+					if a.App == "wordpress" {
+						acc.IsWordPress = true
+						acc.SiteType = "wordpress"
+						break
+					}
+				}
+			}
+		}(sites[i], &accounts[i])
+	}
+	wg.Wait()
+}
+
+type websiteDB struct {
+	Name string
+	Size int64
+}
+
+// listWebsiteDBs lists the MySQL databases Enhance knows for a website, with their sizes.
+func (e *Enhance) listWebsiteDBs(ctx context.Context, orgID, wsID string) []websiteDB {
+	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, wsID), nil)
+	if err != nil {
+		return nil
+	}
+	var listing struct {
+		Items []struct {
+			Name string      `json:"name"`
+			Size json.Number `json:"size"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(resp, &listing) != nil {
+		return nil
+	}
+	var dbs []websiteDB
+	for _, it := range listing.Items {
+		if it.Name == "" {
+			continue
+		}
+		size, _ := it.Size.Int64()
+		dbs = append(dbs, websiteDB{Name: it.Name, Size: size})
+	}
+	return dbs
 }
 
 // FindWebsiteByUser returns the website named by username (its unix user, or its id).

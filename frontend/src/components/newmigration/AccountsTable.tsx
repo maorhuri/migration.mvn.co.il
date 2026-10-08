@@ -141,6 +141,11 @@ export function AccountsTable({
                       {t('newmigration.table.wordpress')}
                     </Badge>
                   )}
+                  {account.staging && (
+                    <Badge tone="info" size="sm">
+                      STG
+                    </Badge>
+                  )}
                   {account.ssl_enabled && (
                     <Badge tone="success" size="sm">
                       {t('newmigration.table.ssl')}

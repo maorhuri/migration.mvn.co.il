@@ -1657,14 +1657,19 @@ func (e *Engine) GetEnhanceSourceAccounts(ctx context.Context, server *storage.S
 	result := []AccountInfo{} // never nil: the API must answer "accounts": [] for an empty node, not null
 	for _, acc := range accounts {
 		result = append(result, AccountInfo{
-			Username:     acc.Username,
-			Domain:       acc.Domain,
-			DiskUsed:     acc.DiskUsage,
-			Suspended:    acc.Suspended,
-			PHPVersion:   acc.PHPVersion,
-			AddonDomains: acc.AddonDomains,
-			NodeID:       acc.Metadata["app_server_id"],
-			Node:         acc.Metadata["node"],
+			Username:      acc.Username,
+			Domain:        acc.Domain,
+			DiskUsed:      acc.DiskUsage,
+			Suspended:     acc.Suspended,
+			PHPVersion:    acc.PHPVersion,
+			AddonDomains:  acc.AddonDomains,
+			Databases:     acc.Databases,
+			DBSize:        acc.DBSize,
+			EmailAccounts: acc.EmailAccounts,
+			IsWordPress:   acc.IsWordPress,
+			NodeID:        acc.Metadata["app_server_id"],
+			Node:          acc.Metadata["node"],
+			Staging:       acc.Metadata["kind"] == "staging",
 		})
 	}
 	return result, nil
@@ -1705,6 +1710,8 @@ type AccountInfo struct {
 	// NodeID / Node: the cluster server hosting the website (Enhance sources only).
 	NodeID string `json:"node_id,omitempty"`
 	Node   string `json:"node,omitempty"`
+	// Staging: an Enhance staging copy of another website (Enhance sources only).
+	Staging bool `json:"staging,omitempty"`
 }
 
 // ServerInfo represents server system information

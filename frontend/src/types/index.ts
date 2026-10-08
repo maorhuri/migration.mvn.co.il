@@ -93,6 +93,8 @@ export interface Account {
   /** Cluster server hosting the website (Enhance sources only). */
   node_id?: string;
   node?: string;
+  /** An Enhance staging copy of another website. */
+  staging?: boolean;
 }
 
 export interface Migration {
