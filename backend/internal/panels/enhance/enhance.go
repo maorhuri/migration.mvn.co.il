@@ -17,6 +17,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -480,25 +481,35 @@ func (e *Enhance) ListWebsites(ctx context.Context, appServerID string) ([]Enhan
 	if err != nil {
 		return nil, err
 	}
-	query := "limit=1000&recursion=infinite"
-	if appServerID != "" {
-		query += "&servers=" + appServerID
-	}
-	resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?%s", orgID, query), nil)
-	if err != nil {
-		return nil, err
-	}
-	var listing struct {
-		Items []EnhanceWebsite `json:"items"`
-	}
-	if err := json.Unmarshal(resp, &listing); err != nil {
-		return nil, err
+	// Paged: a cluster can hold more websites than one page returns.
+	const pageSize = 1000
+	var all []EnhanceWebsite
+	for offset := 0; ; offset += pageSize {
+		query := fmt.Sprintf("limit=%d&offset=%d&recursion=infinite", pageSize, offset)
+		if appServerID != "" {
+			query += "&servers=" + url.QueryEscape(appServerID)
+		}
+		resp, err := e.apiRequest(ctx, "GET", fmt.Sprintf("/orgs/%s/websites?%s", orgID, query), nil)
+		if err != nil {
+			return nil, err
+		}
+		var listing struct {
+			Items []EnhanceWebsite `json:"items"`
+			Total int              `json:"total"`
+		}
+		if err := json.Unmarshal(resp, &listing); err != nil {
+			return nil, err
+		}
+		all = append(all, listing.Items...)
+		if len(listing.Items) < pageSize || (listing.Total > 0 && len(all) >= listing.Total) {
+			break
+		}
 	}
 	if appServerID == "" {
-		return listing.Items, nil
+		return all, nil
 	}
 	var onNode []EnhanceWebsite
-	for _, ws := range listing.Items {
+	for _, ws := range all {
 		if ws.AppServerID == appServerID {
 			onNode = append(onNode, ws)
 		}

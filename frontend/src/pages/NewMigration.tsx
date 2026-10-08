@@ -176,10 +176,14 @@ export default function NewMigration() {
   // True once the node list of the chosen Enhance source came back (even empty): until then
   // nothing is listed, so the whole cluster is never fetched by accident.
   const [sourceClusterLoaded, setSourceClusterLoaded] = useState(false);
+  // Why the node list could not be loaded (kept apart from "the cluster has no nodes"), and a counter to retry.
+  const [sourceClusterError, setSourceClusterError] = useState<string | null>(null);
+  const [sourceClusterAttempt, setSourceClusterAttempt] = useState(0);
   const [sourceClusterSearch, setSourceClusterSearch] = useState('');
   const isEnhanceSource = servers.find((s: Server) => s.id === formData.source_server_id)?.panel_type === 'enhance';
-  // An Enhance source whose console reported no nodes (or failed to): fall back to the whole cluster rather than block.
-  const sourceNodeRequired = isEnhanceSource && !(sourceClusterLoaded && sourceClusterServers.length === 0);
+  // A node must be picked for an Enhance source, unless the console genuinely reported none (then
+  // the whole cluster is listed). A failed node-list load is NOT that case: it gets a retry instead.
+  const sourceNodeRequired = isEnhanceSource && !(sourceClusterLoaded && !sourceClusterError && sourceClusterServers.length === 0);
   // Per account (by username): the domain to register the site under on the target instead of
   // the source's name; empty = automatic (the source domain, or its DirectAdmin pointer).
   const [targetDomains, setTargetDomains] = useState<Record<string, string>>({});
@@ -235,6 +239,7 @@ export default function NewMigration() {
   // Enhance source: load its cluster servers so the operator picks the node to read from.
   useEffect(() => {
     setSourceClusterLoaded(false);
+    setSourceClusterError(null);
     if (!formData.source_server_id || !isEnhanceSource) {
       setSourceClusterServers([]);
       return;
@@ -249,7 +254,11 @@ export default function NewMigration() {
       })
       .catch((error) => {
         console.error('Failed to fetch source cluster servers:', error);
-        if (!cancelled) setSourceClusterServers([]);
+        if (cancelled) return;
+        setSourceClusterServers([]);
+        const message = (error as { response?: { data?: { error?: string } } })?.response?.data?.error || (error instanceof Error ? error.message : String(error));
+        setSourceClusterError(message);
+        toast.error(t('newmigration.sourceCluster.loadFailed', { error: message }));
       })
       .finally(() => {
         if (!cancelled) {
@@ -260,7 +269,7 @@ export default function NewMigration() {
     return () => {
       cancelled = true;
     };
-  }, [formData.source_server_id, isEnhanceSource]);
+  }, [formData.source_server_id, isEnhanceSource, sourceClusterAttempt]);
 
   // An agentless source holds exactly one site: it is the selection.
   useEffect(() => {
@@ -917,26 +926,35 @@ export default function NewMigration() {
                 <CardTitle>{t('newmigration.sourceCluster.title')}</CardTitle>
                 <CardDescription>{t('newmigration.sourceCluster.description')}</CardDescription>
               </CardHeader>
-              <ClusterNodePicker
-                nodes={sourceClusterServers.filter(
-                  (node: ClusterServer) =>
-                    !sourceClusterSearch ||
-                    [node.friendly_name, node.hostname, node.ip].some((v) => (v || '').toLowerCase().includes(sourceClusterSearch.toLowerCase())),
-                )}
-                allNodes={sourceClusterServers}
-                selectedId={formData.source_cluster_server_id}
-                onSelect={(node) => {
-                  if (node.id !== formData.source_cluster_server_id) {
-                    setSelectedAccounts([]);
-                    setSearchTerm('');
-                  }
-                  setFormData({ ...formData, source_cluster_server_id: node.id });
-                }}
-                search={sourceClusterSearch}
-                onSearchChange={setSourceClusterSearch}
-                loading={loadingSourceCluster}
-                role="source"
-              />
+              {sourceClusterError && !loadingSourceCluster ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200" role="alert">
+                  <span>{t('newmigration.sourceCluster.loadFailed', { error: sourceClusterError })}</span>
+                  <Button size="sm" variant="secondary" leftIcon={<ArrowPathIcon />} onClick={() => setSourceClusterAttempt((n) => n + 1)}>
+                    {t('newmigration.sourceCluster.retry')}
+                  </Button>
+                </div>
+              ) : (
+                <ClusterNodePicker
+                  nodes={sourceClusterServers.filter(
+                    (node: ClusterServer) =>
+                      !sourceClusterSearch ||
+                      [node.friendly_name, node.hostname, node.ip].some((v) => (v || '').toLowerCase().includes(sourceClusterSearch.toLowerCase())),
+                  )}
+                  allNodes={sourceClusterServers}
+                  selectedId={formData.source_cluster_server_id}
+                  onSelect={(node) => {
+                    if (node.id !== formData.source_cluster_server_id) {
+                      setSelectedAccounts([]);
+                      setSearchTerm('');
+                    }
+                    setFormData({ ...formData, source_cluster_server_id: node.id });
+                  }}
+                  search={sourceClusterSearch}
+                  onSearchChange={setSourceClusterSearch}
+                  loading={loadingSourceCluster}
+                  role="source"
+                />
+              )}
               <CardFooter>
                 <Button
                   variant="primary"

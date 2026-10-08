@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/lib/pq"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -352,6 +353,19 @@ func (h *Handler) testServerConnection(c *gin.Context) {
 	})
 }
 
+var clusterServerIDRe = regexp.MustCompile(`^[0-9a-fA-F-]{1,64}$`)
+
+// queryClusterServerID reads the optional ?cluster_server_id= (an Enhance server uuid); an
+// ill-formed value answers 400 and returns ok=false (it is spliced into a console query).
+func queryClusterServerID(c *gin.Context) (string, bool) {
+	v := strings.TrimSpace(c.Query("cluster_server_id"))
+	if v != "" && !clusterServerIDRe.MatchString(v) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cluster_server_id must be an Enhance server id"})
+		return "", false
+	}
+	return v, true
+}
+
 func (h *Handler) listServerAccounts(c *gin.Context) {
 	id := c.Param("id")
 
@@ -418,7 +432,11 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 	if server.PanelType == "enhance" {
 		// An Enhance source lists the websites of one cluster server (?cluster_server_id=),
 		// never the whole cluster unless asked.
-		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, c.Query("cluster_server_id"))
+		clusterServerID, ok := queryClusterServerID(c)
+		if !ok {
+			return
+		}
+		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, clusterServerID)
 	} else {
 		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	}
@@ -503,7 +521,11 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 
 	var accounts []migration.AccountInfo
 	if server.PanelType == "enhance" {
-		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, c.Query("cluster_server_id"))
+		clusterServerID, ok := queryClusterServerID(c)
+		if !ok {
+			return
+		}
+		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, clusterServerID)
 	} else {
 		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	}
