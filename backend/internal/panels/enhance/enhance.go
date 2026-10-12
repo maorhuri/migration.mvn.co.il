@@ -1960,6 +1960,22 @@ func (e *Enhance) pollTableCount(ctx context.Context, hostFlag, user, password, 
 	return func() { close(done); <-finished }
 }
 
+// sedEscapeRE escapes a literal string for the search half of a `sed -E s/.../.../` using "/"
+// as the delimiter, so an identifier spliced into the pattern matches itself and nothing else.
+func sedEscapeRE(s string) string {
+	return strings.NewReplacer(
+		`\`, `\\`, `/`, `\/`, `.`, `\.`, `*`, `\*`, `+`, `\+`, `?`, `\?`,
+		`(`, `\(`, `)`, `\)`, `[`, `\[`, `]`, `\]`, `{`, `\{`, `}`, `\}`,
+		`|`, `\|`, `^`, `\^`, `$`, `\$`,
+	).Replace(s)
+}
+
+// sedEscapeRepl escapes a literal string for the replacement half of a `sed s/.../.../` using
+// "/" as the delimiter (& means "the whole match", \ is an escape).
+func sedEscapeRepl(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `/`, `\/`, `&`, `\&`).Replace(s)
+}
+
 func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB, actualUser, password, host string) (int, error) {
 	reader := "cat " + shq(remoteDump)
 	if strings.HasSuffix(remoteDump, ".gz") {
@@ -1978,6 +1994,21 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 		e.logf("info", "Dump of %s contains %d DEFINER / CREATE DATABASE / USE line(s); stripped before import", sourceName, lastInt(counts))
 	}
 	filter := "sed -E -e '/^(CREATE DATABASE|USE )/d' -e 's/DEFINER=`[^`]*`@`[^`]*`//g'"
+
+	// Triggers, views, routines, events and FK references in the dump can carry the SOURCE
+	// database name as a `source`.`object` qualifier (mysqldump keeps a qualifier the object was
+	// created with). The database has a different name here, so that qualifier points at a schema
+	// that does not exist on this node and that the website's MySQL user has no rights on -- the
+	// import dies part-way with e.g. "TRIGGER command denied to user ...@localhost for table
+	// `source`.`wp_..._comments`". Rewrite the source-schema qualifier to the target database so
+	// every qualified object lands in the migrated database. Only the backtick-quoted "`source`."
+	// form is rewritten, which mysqldump never emits inside row data (its INSERT values are not
+	// backtick-qualified), so this cannot touch real data. Skipped when the name is identical or
+	// holds a backtick/quote that would be unsafe to splice into the sed program.
+	if sourceName != "" && sourceName != actualDB && !strings.ContainsAny(sourceName, "`'") && !strings.ContainsAny(actualDB, "`'") {
+		filter += fmt.Sprintf(" -e 's/`%s`\\./`%s`./g'", sedEscapeRE(sourceName), sedEscapeRepl(actualDB))
+		e.logf("info", "Dump of %s: rewriting source-schema qualifiers `%s`. to `%s`. so qualified triggers/views/routines land in the migrated database", sourceName, sourceName, actualDB)
+	}
 
 	// A single INSERT can hold a row bigger than the server's max_allowed_packet (a page-builder
 	// like Elementor storing one giant compiled-HTML field is a common case): mysqldump/mysqli
