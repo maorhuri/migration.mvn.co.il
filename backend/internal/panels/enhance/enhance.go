@@ -1798,13 +1798,20 @@ func (e *Enhance) uploadFiles(ctx context.Context, ws *EnhanceWebsite, localDocR
 func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceWebsite, db common.Database, dumpDir, sourceUser string) (*DBResult, error) {
 	base := dbBaseName(db.Name, sourceUser)
 
-	// Create DB (409 = already exists, reuse)
+	// Create DB. Enhance answers 409 when it already exists -- but on a re-run after a failed
+	// migration it has also been seen to answer a bare 500 ("An unknown error occurred, please
+	// try again later") for a database that is in fact already there. So do not trust the status
+	// code: on any error fall back to the listing, which is the source of truth. If the database
+	// already exists, reuse it (and clear it before importing, below, so the re-run is a clean
+	// slate); only abort when it genuinely is not there.
 	dbEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-dbs", orgID, ws.ID)
+	dbExisted := false
 	if _, err := e.apiRequest(ctx, "POST", dbEndpoint, map[string]interface{}{"name": base}); err != nil {
-		if apiStatus(err) != 409 {
+		if _, ferr := e.findMySQLName(ctx, dbEndpoint, base, ws.UnixUser); ferr != nil {
 			return nil, fmt.Errorf("create database: %w", err)
 		}
-		e.logf("info", "Database %s already exists for %s; reusing", base, ws.Domain.Domain)
+		dbExisted = true
+		e.logf("info", "Database %s already exists for %s (Enhance create returned %s); reusing it and clearing it before import", base, ws.Domain.Domain, apiErrLabel(err))
 	}
 	actualDB, err := e.findMySQLName(ctx, dbEndpoint, base, ws.UnixUser)
 	if err != nil {
@@ -1819,16 +1826,14 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	password := randomPassword(24)
 	userEndpoint := fmt.Sprintf("/orgs/%s/websites/%s/mysql-users", orgID, ws.ID)
 	if _, err := e.apiRequest(ctx, "POST", userEndpoint, map[string]interface{}{"username": userBase, "password": password}); err != nil {
-		if apiStatus(err) != 409 {
+		// Same as the database above: 409, or a flaky 500, for a user that already exists. Trust
+		// the listing, not the status code. When it exists, reset the password so we know it.
+		existing, ferr := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
+		if ferr != nil {
 			return nil, fmt.Errorf("create database user: %w", err)
 		}
-		// exists: reset the password so we know it
-		actualUser, ferr := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
-		if ferr != nil {
-			return nil, ferr
-		}
-		if _, err := e.apiRequest(ctx, "PUT", fmt.Sprintf("%s/%s", userEndpoint, actualUser), map[string]interface{}{"password": password}); err != nil {
-			return nil, fmt.Errorf("database user %s exists and password reset failed: %w", actualUser, err)
+		if _, perr := e.apiRequest(ctx, "PUT", fmt.Sprintf("%s/%s", userEndpoint, existing), map[string]interface{}{"password": password}); perr != nil {
+			return nil, fmt.Errorf("database user %s exists and password reset failed: %w", existing, perr)
 		}
 	}
 	actualUser, err := e.findMySQLName(ctx, userEndpoint, userBase, ws.UnixUser)
@@ -1887,6 +1892,17 @@ func (e *Enhance) importDatabase(ctx context.Context, orgID string, ws *EnhanceW
 	res.Host = "localhost"
 	if host != "" {
 		res.Host = host
+	}
+	// A database left behind by a failed run still holds whatever that run managed to load. The
+	// dump's own DROP TABLE IF EXISTS only replaces tables that are in this dump, and never clears
+	// views, routines, events or triggers -- so re-importing on top can fail (e.g. "table already
+	// exists" for a table the new dump omits, or a leftover trigger). Drop everything first so the
+	// re-import is the clean recreate the operator expects.
+	if dbExisted {
+		e.logf("info", "Clearing the existing database %s before re-importing (dropping leftover tables/views/routines/events)", actualDB)
+		if err := e.clearDatabaseObjects(ctx, actualDB, actualUser, password, host); err != nil {
+			return nil, err
+		}
 	}
 	tables, err := e.loadDump(ctx, remoteDump, db.Name, actualDB, actualUser, password, host)
 	if err != nil {
@@ -1959,6 +1975,42 @@ func (e *Enhance) pollTableCount(ctx context.Context, hostFlag, user, password, 
 	}()
 	return func() { close(done); <-finished }
 }
+
+// apiErrLabel is a short, log-friendly label for an Enhance API error: "HTTP 500" when the
+// status is known, otherwise a generic word (the full error is surfaced elsewhere when it aborts).
+func apiErrLabel(err error) string {
+	if s := apiStatus(err); s != 0 {
+		return fmt.Sprintf("HTTP %d", s)
+	}
+	return "an error"
+}
+
+// clearDatabaseObjects drops every table, view, routine and event in a database so that
+// re-importing into a database left behind by a failed run starts from a clean slate. It runs as
+// the website's own MySQL user (which holds ALL privileges on its database) over the host that
+// waitForDatabase confirmed. A database with nothing in it is a harmless no-op.
+func (e *Enhance) clearDatabaseObjects(ctx context.Context, actualDB, actualUser, password, host string) error {
+	hostFlag := ""
+	if host != "" {
+		hostFlag = " -h " + shq(host)
+	}
+	mysql := fmt.Sprintf("mysql%s -u %s -p%s", hostFlag, shq(actualUser), shq(password))
+	db := sqlQuote(actualDB)
+	gen := "SELECT CONCAT('DROP TABLE IF EXISTS `',table_name,'`;') FROM information_schema.tables WHERE table_schema=" + db + " AND table_type='BASE TABLE'" +
+		" UNION ALL SELECT CONCAT('DROP VIEW IF EXISTS `',table_name,'`;') FROM information_schema.views WHERE table_schema=" + db +
+		" UNION ALL SELECT CONCAT('DROP ',routine_type,' IF EXISTS `',routine_name,'`;') FROM information_schema.routines WHERE routine_schema=" + db +
+		" UNION ALL SELECT CONCAT('DROP EVENT IF EXISTS `',event_name,'`;') FROM information_schema.events WHERE event_schema=" + db
+	// Generate the DROP statements, wrap them with FOREIGN_KEY_CHECKS off (so a table referenced by
+	// a not-yet-dropped foreign key still drops), and feed them back into the same database.
+	cmd := fmt.Sprintf("{ echo 'SET FOREIGN_KEY_CHECKS=0;'; %s -N -e %s 2>/dev/null; } | %s %s 2>&1", mysql, shq(gen), mysql, shq(actualDB))
+	if out, err := e.nodeRun(ctx, cmd); err != nil {
+		return fmt.Errorf("could not clear the existing database %s before re-import: %v %s", actualDB, err, lastLines(out, 2))
+	}
+	return nil
+}
+
+// sqlQuote renders s as a single-quoted SQL string literal.
+func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 // sedEscapeRE escapes a literal string for the search half of a `sed -E s/.../.../` using "/"
 // as the delimiter, so an identifier spliced into the pattern matches itself and nothing else.
