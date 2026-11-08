@@ -15,6 +15,7 @@ import (
 	"github.com/migration-tool/backend/internal/panels/agentless"
 	"github.com/migration-tool/backend/internal/panels/cloudways"
 	"github.com/migration-tool/backend/internal/panels/common"
+	"github.com/migration-tool/backend/internal/panels/cpanel"
 	"github.com/migration-tool/backend/internal/panels/directadmin"
 	"github.com/migration-tool/backend/internal/panels/enhance"
 	"github.com/migration-tool/backend/internal/security"
@@ -643,6 +644,16 @@ func (e *Engine) exportFromSource(ctx context.Context, server *storage.Server, u
 			return nil, fmt.Errorf("DirectAdmin connection test failed: %w", err)
 		}
 		return da.ExportAccount(ctx, username, workDir, progress)
+	case common.PanelTypeCPanel:
+		cp, err := e.connectCPanel(ctx, server, "", logFn)
+		if err != nil {
+			return nil, err
+		}
+		defer cp.Disconnect()
+		if err := cp.TestConnection(ctx); err != nil {
+			return nil, fmt.Errorf("cPanel connection test failed: %w", err)
+		}
+		return cp.ExportAccount(ctx, username, workDir, progress)
 	case common.PanelTypeCloudways:
 		cw, err := e.connectCloudways(ctx, server, "", logFn)
 		if err != nil {
@@ -727,18 +738,28 @@ func (e *Engine) SetSourceSuspended(ctx context.Context, migrationID string, sus
 		}
 		return e.GetMigrationStatus(ctx, migrationID)
 	}
-	if common.PanelType(server.PanelType) != common.PanelTypeDirectAdmin {
+	// DirectAdmin and cPanel can both suspend the migrated account on the source after the DNS
+	// switch; they expose the same SetAccountSuspended/Disconnect shape.
+	type accountSuspender interface {
+		SetAccountSuspended(ctx context.Context, username string, suspend bool) (bool, error)
+		Disconnect() error
+	}
+	var conn accountSuspender
+	switch common.PanelType(server.PanelType) {
+	case common.PanelTypeDirectAdmin:
+		conn, err = e.connectDirectAdmin(ctx, server, "", logFn)
+	case common.PanelTypeCPanel:
+		conn, err = e.connectCPanel(ctx, server, "", logFn)
+	default:
 		return nil, fmt.Errorf("source panel %s does not support suspending accounts", server.PanelType)
 	}
-
-	da, err := e.connectDirectAdmin(ctx, server, "", logFn)
 	if err != nil {
 		logFn("error", fmt.Sprintf("Source account %s: %s failed: cannot connect to %s: %v", m.AccountUsername, action, server.Name, err))
 		return nil, err
 	}
-	defer da.Disconnect()
+	defer conn.Disconnect()
 
-	changed, err := da.SetAccountSuspended(ctx, m.AccountUsername, suspend)
+	changed, err := conn.SetAccountSuspended(ctx, m.AccountUsername, suspend)
 	if err != nil {
 		logFn("error", fmt.Sprintf("Source account %s: %s on %s failed: %v", m.AccountUsername, action, server.Name, err))
 		return nil, err
@@ -816,6 +837,64 @@ func (e *Engine) connectDirectAdmin(ctx context.Context, server *storage.Server,
 	return nil, fmt.Errorf("failed to connect to DirectAdmin %s:%d: %w", server.Host, server.Port, err)
 }
 
+// connectCPanel connects to a cPanel/WHM server with its configured credentials and, when those
+// are refused, falls back to the other stored credential (key <-> password), the same way
+// connectDirectAdmin does.
+func (e *Engine) connectCPanel(ctx context.Context, server *storage.Server, password string, logFn func(level, message string)) (*cpanel.CPanel, error) {
+	if logFn == nil {
+		logFn = func(string, string) {}
+	}
+	config := e.db.ToConnectionConfig(server)
+	if password == "" {
+		password, _ = e.db.GetServerPassword(ctx, server.ID)
+	}
+	var privateKey []byte
+	keyName, publicKey := "", ""
+	if server.SSHKeyID.Valid {
+		keyData, _ := e.db.GetSSHKeyPrivateKey(ctx, server.SSHKeyID.String)
+		privateKey = []byte(keyData)
+		if k, err := e.db.GetSSHKey(ctx, server.SSHKeyID.String); err == nil {
+			keyName, publicKey = k.Name, strings.TrimSpace(k.PublicKey)
+		}
+	}
+	hint := ""
+	if publicKey != "" {
+		hint = fmt.Sprintf(" To let the key %q in, run on %s: mkdir -p ~/.ssh && echo '%s' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys", keyName, server.Host, publicKey)
+	}
+
+	try := func(method common.AuthMethod, pw string, key []byte) (*cpanel.CPanel, error) {
+		cfg := *config
+		cfg.AuthMethod = method
+		cp := cpanel.New()
+		cp.SetLogger(logFn)
+		if err := cp.ConnectWithCredentials(ctx, &cfg, pw, key); err != nil {
+			return nil, err
+		}
+		return cp, nil
+	}
+
+	cp, err := try(config.AuthMethod, password, privateKey)
+	if err == nil {
+		return cp, nil
+	}
+	switch {
+	case config.AuthMethod == common.AuthMethodSSHKey && password != "":
+		if cp2, err2 := try(common.AuthMethodPassword, password, nil); err2 == nil {
+			logFn("warn", fmt.Sprintf("SSH key %q was refused by %s (%v); connected with the stored password instead.%s", keyName, server.Host, shortErr(err), hint))
+			return cp2, nil
+		}
+	case config.AuthMethod == common.AuthMethodPassword && len(privateKey) > 0:
+		if cp2, err2 := try(common.AuthMethodSSHKey, "", privateKey); err2 == nil {
+			logFn("warn", fmt.Sprintf("Password was refused by %s (%v); connected with SSH key %q instead. Update the server record.", server.Host, shortErr(err), keyName))
+			return cp2, nil
+		}
+	}
+	if config.AuthMethod == common.AuthMethodSSHKey {
+		return nil, fmt.Errorf("SSH key %q not accepted by %s:%d and no working password stored: %w.%s", keyName, server.Host, server.Port, err, hint)
+	}
+	return nil, fmt.Errorf("failed to connect to cPanel %s:%d: %w", server.Host, server.Port, err)
+}
+
 func shortErr(err error) string {
 	msg := err.Error()
 	if i := strings.Index(msg, "ssh: handshake failed: "); i >= 0 {
@@ -837,6 +916,13 @@ func (e *Engine) cleanupSourceServer(ctx context.Context, server *storage.Server
 		}
 		defer da.Disconnect()
 		return da.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
+	case common.PanelTypeCPanel:
+		cp, err := e.connectCPanel(ctx, server, "", nil)
+		if err != nil {
+			return err
+		}
+		defer cp.Disconnect()
+		return cp.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
 	case common.PanelTypeCloudways:
 		cw, err := e.connectCloudways(ctx, server, "", nil)
 		if err != nil {
@@ -1408,6 +1494,19 @@ func (e *Engine) runDatabaseRemigration(migrationID string, sourceServer, target
 			fail(fmt.Sprintf("export failed: %v", err))
 			return
 		}
+	case common.PanelTypeCPanel:
+		cp, err := e.connectCPanel(workCtx, sourceServer, "", logFn)
+		if err != nil {
+			fail(err.Error())
+			return
+		}
+		defer cp.Disconnect()
+		dbs, err = cp.ExportDatabases(workCtx, export.Account.Username, tmpDir)
+		cp.CleanupTempFiles(ctx, []string{"/tmp/migration_*"})
+		if err != nil {
+			fail(fmt.Sprintf("export failed: %v", err))
+			return
+		}
 	case common.PanelTypeCloudways:
 		cw, err := e.connectCloudways(workCtx, sourceServer, "", logFn)
 		if err != nil {
@@ -1473,7 +1572,7 @@ func (e *Engine) RefreshAccountsCache(ctx context.Context, serverID string) (int
 		return 0, err
 	}
 	switch common.PanelType(server.PanelType) {
-	case common.PanelTypeDirectAdmin, common.PanelTypeCloudways, common.PanelTypeEnhance:
+	case common.PanelTypeDirectAdmin, common.PanelTypeCPanel, common.PanelTypeCloudways, common.PanelTypeEnhance:
 	default:
 		if !agentless.IsAgentless(server.PanelType) {
 			return 0, nil
@@ -1585,6 +1684,7 @@ func (e *Engine) CheckCompatibility(ctx context.Context, sourceServerID, targetS
 
 	supportedPaths := map[common.PanelType][]common.PanelType{
 		common.PanelTypeDirectAdmin: {common.PanelTypeEnhance},
+		common.PanelTypeCPanel:      {common.PanelTypeEnhance},
 		common.PanelTypeCloudways:   {common.PanelTypeEnhance},
 		common.PanelTypeEnhance:     {common.PanelTypeEnhance},
 		common.PanelTypeFTP:         {common.PanelTypeEnhance},
@@ -1878,6 +1978,38 @@ func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, 
 		}
 		defer da.Disconnect()
 		accounts, err := da.ListAccounts(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list accounts: %w", err)
+		}
+		var result []AccountInfo
+		for _, acc := range accounts {
+			result = append(result, AccountInfo{
+				Username:      acc.Username,
+				Domain:        acc.Domain,
+				Email:         acc.Email,
+				DiskUsed:      acc.DiskUsage,
+				DiskLimit:     acc.DiskLimit,
+				Suspended:     acc.Suspended,
+				PHPVersion:    acc.PHPVersion,
+				Databases:     acc.Databases,
+				EmailAccounts: acc.EmailAccounts,
+				AddonDomains:  acc.AddonDomains,
+				Pointers:      acc.Pointers,
+				SSLEnabled:    acc.SSLEnabled,
+				SSLExpiry:     acc.SSLExpiry,
+				IsWordPress:   acc.IsWordPress,
+				DBSize:        acc.DBSize,
+			})
+		}
+		return result, nil
+
+	case common.PanelTypeCPanel:
+		cp, err := e.connectCPanel(ctx, server, password, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer cp.Disconnect()
+		accounts, err := cp.ListAccounts(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list accounts: %w", err)
 		}
