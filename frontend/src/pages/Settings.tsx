@@ -12,15 +12,11 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [token, setToken] = useState('');
-  const [targetIp, setTargetIp] = useState('');
-  const [targetIpv6, setTargetIpv6] = useState('');
 
   const load = async () => {
     try {
       const s = await getCloudflareSettings();
       setConfigured(s.configured);
-      setTargetIp(s.target_ip || '');
-      setTargetIpv6(s.target_ipv6 || '');
     } catch {
       toast.error(t('settings.cf.loadFailed'));
     } finally {
@@ -41,12 +37,8 @@ export default function Settings() {
     try {
       const s = await updateCloudflareSettings({
         api_token: token.trim() ? token.trim() : undefined,
-        target_ip: targetIp.trim(),
-        target_ipv6: targetIpv6.trim(),
       });
       setConfigured(s.configured);
-      setTargetIp(s.target_ip || '');
-      setTargetIpv6(s.target_ipv6 || '');
       setToken('');
       toast.success(t('settings.cf.saved'));
     } catch (error) {
@@ -120,24 +112,6 @@ export default function Settings() {
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 placeholder={t('settings.cf.tokenPlaceholder')}
-              />
-            </Field>
-
-            <Field label={t('settings.cf.targetIpLabel')} hint={t('settings.cf.targetIpHint')}>
-              <Input
-                mono
-                value={targetIp}
-                onChange={(e) => setTargetIp(e.target.value)}
-                placeholder={t('settings.cf.targetIpPlaceholder')}
-              />
-            </Field>
-
-            <Field label={t('settings.cf.targetIpv6Label')} hint={t('settings.cf.targetIpv6Hint')}>
-              <Input
-                mono
-                value={targetIpv6}
-                onChange={(e) => setTargetIpv6(e.target.value)}
-                placeholder={t('settings.cf.targetIpv6Placeholder')}
               />
             </Field>
           </div>
