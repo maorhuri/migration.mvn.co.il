@@ -2,6 +2,7 @@ package migration
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -81,6 +82,95 @@ func TestUnquoteTXTAndSPF(t *testing.T) {
 	}
 	if !isSPF(`"v=spf1 -all"`) || isSPF("v=DMARC1; p=none") {
 		t.Fatalf("isSPF detection wrong")
+	}
+}
+
+// BUG 1: exported TXT (DKIM/DMARC) is BIND-escaped and/or split into character-strings; it must be
+// decoded to the clean value a provider stores, with no literal backslashes or stray quoting.
+func TestUnquoteTXTBindEscaped(t *testing.T) {
+	cases := map[string]string{
+		// DKIM: split character-strings with \; escaping -> one clean string, no backslashes.
+		`"v=DKIM1\; k=rsa\; " "p=MIGfMA0\;GCSq"`: "v=DKIM1; k=rsa; p=MIGfMA0;GCSq",
+		// DMARC: BIND-escaped, trailing \; -> clean value without the trailing separator.
+		`"v=DMARC1\; p=none\;"`: "v=DMARC1; p=none",
+		`v=DMARC1\; p=none\;`:   "v=DMARC1; p=none", // same, unquoted in the zone file
+		// Escaped quote inside a character-string is literal, not a delimiter.
+		`"a\"b"`: `a"b`,
+		// Plain, already-clean values are unchanged.
+		`"v=spf1 ip4:1.2.3.4 ~all"`: "v=spf1 ip4:1.2.3.4 ~all",
+		`"part-a" "part-b"`:         "part-apart-b",
+	}
+	for in, want := range cases {
+		if got := unquoteTXT(in); got != want {
+			t.Errorf("unquoteTXT(%q) = %q, want %q", in, got, want)
+		}
+		if strings.Contains(unquoteTXT(in), `\`) {
+			t.Errorf("unquoteTXT(%q) still contains a literal backslash", in)
+		}
+	}
+}
+
+// BUG 1: a DKIM selector / DMARC record from the exported zone must normalize to clean content and
+// a full-qualified name under the zone (a bare "default._domainkey" never matches the existing
+// record in Cloudflare and would be duplicated).
+func TestBuildDesiredRecordsDKIMDMARCNormalized(t *testing.T) {
+	e := &Engine{}
+	own := map[string]bool{"asicohen.co.il": true}
+	exported := []common.DNSRecord{
+		{Type: "A", Name: "@", Value: "45.83.40.67", TTL: 14400},
+		{Type: "TXT", Name: "default._domainkey", Value: `"v=DKIM1\; k=rsa\; " "p=MIIBIj"`, TTL: 14400},
+		{Type: "TXT", Name: "_dmarc", Value: `"v=DMARC1\; p=none\;"`, TTL: 14400},
+	}
+	names := []string{"asicohen.co.il", "www.asicohen.co.il"}
+	desired, _, _ := e.buildDesiredRecords("asicohen.co.il", "asicohen.co.il", own, nil, exported, "103.95.119.34", "", "45.83.40.67", names, func(string, string) {})
+
+	got := map[string]string{}
+	for _, d := range desired {
+		if d.Type == "TXT" {
+			got[d.Name] = d.Content
+		}
+	}
+	if c := got["default._domainkey.asicohen.co.il"]; c != "v=DKIM1; k=rsa; p=MIIBIj" {
+		t.Fatalf("DKIM not normalized to clean content at a fully-qualified name: name/content = %+v", got)
+	}
+	if c := got["_dmarc.asicohen.co.il"]; c != "v=DMARC1; p=none" {
+		t.Fatalf("DMARC not normalized: got %q", c)
+	}
+	for name, content := range got {
+		if strings.Contains(content, `\`) {
+			t.Fatalf("TXT %s still has a literal backslash: %q", name, content)
+		}
+	}
+}
+
+// BUG 2: the exported apex A has the OLD source IP; the transform must set @ and www to the target
+// IP regardless of how the apex owner is written in the zone file (@, bare zone name, or empty).
+func TestBuildDesiredRecordsApexRepointedToTarget(t *testing.T) {
+	e := &Engine{}
+	own := map[string]bool{"6x6.co.il": true}
+	for _, owner := range []string{"@", "6x6.co.il.", "6x6.co.il", ""} {
+		exported := []common.DNSRecord{
+			{Type: "A", Name: owner, Value: "45.83.40.67", TTL: 14400}, // apex at OLD source IP
+			{Type: "A", Name: "www", Value: "45.83.40.67", TTL: 14400}, // www at OLD source IP
+			{Type: "A", Name: "ftp", Value: "45.83.40.67", TTL: 14400}, // non-apex at OLD source IP
+		}
+		names := []string{"6x6.co.il", "www.6x6.co.il"}
+		desired, _, _ := e.buildDesiredRecords("6x6.co.il", "6x6.co.il", own, nil, exported, "103.95.119.34", "", "45.83.40.67", names, func(string, string) {})
+		got := map[string]string{}
+		for _, d := range desired {
+			if d.Type == "A" {
+				got[d.Name] = d.Content
+			}
+		}
+		if got["6x6.co.il"] != "103.95.119.34" {
+			t.Fatalf("owner %q: apex A not repointed to target, got %q", owner, got["6x6.co.il"])
+		}
+		if got["www.6x6.co.il"] != "103.95.119.34" {
+			t.Fatalf("owner %q: www A not repointed, got %q", owner, got["www.6x6.co.il"])
+		}
+		if got["ftp.6x6.co.il"] != "103.95.119.34" {
+			t.Fatalf("owner %q: ftp A (old IP) not repointed, got %q", owner, got["ftp.6x6.co.il"])
+		}
 	}
 }
 

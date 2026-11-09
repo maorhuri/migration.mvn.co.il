@@ -205,7 +205,7 @@ func TestUpsertRecordsCreatesUpdatesSkipsUnchanged(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestUpsertRecordsNoChangeMakesNoCall(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(srv)
-	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -239,6 +239,258 @@ func TestUpsertRecordsNoChangeMakesNoCall(t *testing.T) {
 	}
 	if len(res.Unchanged) != 1 {
 		t.Fatalf("expected 1 unchanged, got %d", len(res.Unchanged))
+	}
+}
+
+// captureBatch returns a server that records the batch body it receives and answers OK.
+func captureBatch(t *testing.T, body *batchRequest, called *bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/dns_records/batch") {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if called != nil {
+			*called = true
+		}
+		data, _ := io.ReadAll(r.Body)
+		json.Unmarshal(data, body)
+		writeOK(w, map[string]interface{}{})
+	}))
+}
+
+// BUG 1: once a DKIM record is stored clean (what Cloudflare keeps), a re-run that offers the same
+// clean content must be a no-op -- not a re-create that trips 81058.
+func TestUpsertRecordsTXTIdempotentRerun(t *testing.T) {
+	clean := "v=DKIM1; k=rsa; p=MIIBIj"
+	existing := []DNSRecord{{ID: "dkim", Type: "TXT", Name: "default._domainkey.example.com", Content: clean}}
+	desired := []DesiredRecord{{Type: "TXT", Name: "default._domainkey.example.com", Content: clean, TTL: 3600}}
+	var body batchRequest
+	called := false
+	srv := captureBatch(t, &body, &called)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called {
+		t.Fatalf("a clean DKIM re-run must be a no-op; the batch endpoint should not be called")
+	}
+	if len(res.Unchanged) != 1 || len(res.Created) != 0 || len(res.Deleted) != 0 {
+		t.Fatalf("expected a single unchanged record, got %+v", res)
+	}
+}
+
+// BUG 1 (DMARC): a BIND-escaped DMARC left in the zone is PATCHED to the clean content (a
+// singleton by name), not duplicated and not left invalid. A later re-run (clean stored) is a
+// no-op -- covered by the byte-identical branch in TestUpsertRecordsTXTIdempotentRerun.
+func TestUpsertRecordsPatchesEscapedDMARCToClean(t *testing.T) {
+	clean := "v=DMARC1; p=none"
+	existing := []DNSRecord{{ID: "dmarc", Type: "TXT", Name: "_dmarc.example.com", Content: `v=DMARC1\; p=none\;`}}
+	desired := []DesiredRecord{{Type: "TXT", Name: "_dmarc.example.com", Content: clean, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 {
+		t.Fatalf("must not create a second DMARC; expected a patch, got posts %+v", body.Posts)
+	}
+	if len(body.Patches) != 1 || body.Patches[0].ID != "dmarc" || body.Patches[0].Content != clean {
+		t.Fatalf("expected the escaped DMARC patched to clean, got %+v", body.Patches)
+	}
+	if len(res.Updated) != 1 || len(res.Deleted) != 0 {
+		t.Fatalf("expected one update and no deletes, got %+v", res)
+	}
+}
+
+// BUG 1: a DKIM selector duplicated as an escaped copy AND a clean copy must collapse to exactly one
+// clean record -- the clean one is kept, the escaped duplicate is deleted, nothing is created.
+func TestUpsertRecordsCollapsesDuplicateDKIM(t *testing.T) {
+	clean := "v=DKIM1; k=rsa; p=MIIBIj"
+	existing := []DNSRecord{
+		{ID: "dkim-esc", Type: "TXT", Name: "default._domainkey.example.com", Content: `v=DKIM1\; k=rsa\; p=MIIBIj`},
+		{ID: "dkim-clean", Type: "TXT", Name: "default._domainkey.example.com", Content: clean},
+	}
+	desired := []DesiredRecord{{Type: "TXT", Name: "default._domainkey.example.com", Content: clean, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 {
+		t.Fatalf("must never create a second DKIM record, got posts %+v", body.Posts)
+	}
+	if len(body.Deletes) != 1 || body.Deletes[0].ID != "dkim-esc" {
+		t.Fatalf("expected the escaped duplicate deleted, got %+v", body.Deletes)
+	}
+	if len(res.Unchanged) != 1 || len(res.Deleted) != 1 {
+		t.Fatalf("expected one clean record kept and one deleted, got %+v", res)
+	}
+}
+
+// BUG 1: when only an escaped DKIM exists, it is PATCHED to the clean content (not left invalid,
+// not duplicated).
+func TestUpsertRecordsPatchesEscapedDKIMToClean(t *testing.T) {
+	clean := "v=DKIM1; k=rsa; p=MIIBIj"
+	existing := []DNSRecord{{ID: "dkim-esc", Type: "TXT", Name: "default._domainkey.example.com", Content: `v=DKIM1\; k=rsa\; p=MIIBIj`}}
+	desired := []DesiredRecord{{Type: "TXT", Name: "default._domainkey.example.com", Content: clean, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 {
+		t.Fatalf("must not create; expected a patch, got posts %+v", body.Posts)
+	}
+	if len(body.Patches) != 1 || body.Patches[0].ID != "dkim-esc" || body.Patches[0].Content != clean {
+		t.Fatalf("expected the escaped record patched to clean, got %+v", body.Patches)
+	}
+	if len(res.Updated) != 1 {
+		t.Fatalf("expected one updated, got %+v", res)
+	}
+}
+
+// BUG 2: a stale apex A at the old source IP sitting next to the new target A must be removed, so
+// the apex resolves only to the new IP (this is the "A 6x6.co.il = 45.83.40.67 (unexpected)" case).
+func TestUpsertRecordsRemovesStaleApexDuplicate(t *testing.T) {
+	oldIP, target := "45.83.40.67", "103.95.119.34"
+	existing := []DNSRecord{
+		{ID: "a-old", Type: "A", Name: "6x6.co.il", Content: oldIP},
+		{ID: "a-new", Type: "A", Name: "6x6.co.il", Content: target},
+	}
+	desired := []DesiredRecord{{Type: "A", Name: "6x6.co.il", Content: target, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, oldIP)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 || len(body.Patches) != 0 {
+		t.Fatalf("target A already present; expected only a delete, got posts=%+v patches=%+v", body.Posts, body.Patches)
+	}
+	if len(body.Deletes) != 1 || body.Deletes[0].ID != "a-old" {
+		t.Fatalf("expected the stale old-IP apex A deleted, got %+v", body.Deletes)
+	}
+	if len(res.Unchanged) != 1 || len(res.Deleted) != 1 || res.Deleted[0].ID != "a-old" {
+		t.Fatalf("expected target kept and stale deleted, got %+v", res)
+	}
+}
+
+// BUG 2: when the apex still has the old-source-IP A (alongside an unrelated A) and no target A yet,
+// the stale one is PATCHED to the target -- not left, and not duplicated -- while a legitimate
+// unrelated A is preserved.
+func TestUpsertRecordsPatchesStaleApexAmongDuplicates(t *testing.T) {
+	oldIP, target := "45.83.40.67", "103.95.119.34"
+	existing := []DNSRecord{
+		{ID: "a-old", Type: "A", Name: "6x6.co.il", Content: oldIP},
+		{ID: "a-cdn", Type: "A", Name: "6x6.co.il", Content: "198.51.100.7"}, // legit round-robin member
+	}
+	desired := []DesiredRecord{{Type: "A", Name: "6x6.co.il", Content: target, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, oldIP)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 {
+		t.Fatalf("stale apex A must be reused, not duplicated; got posts %+v", body.Posts)
+	}
+	if len(body.Patches) != 1 || body.Patches[0].ID != "a-old" || body.Patches[0].Content != target {
+		t.Fatalf("expected the stale old-IP A patched to target, got %+v", body.Patches)
+	}
+	for _, d := range body.Deletes {
+		if d.ID == "a-cdn" {
+			t.Fatalf("a legitimate non-stale round-robin A must not be deleted")
+		}
+	}
+	if len(res.Updated) != 1 {
+		t.Fatalf("expected one update, got %+v", res)
+	}
+}
+
+// Single-candidate apex A at the old IP is patched over (the baseline the coordinator asked for).
+func TestUpsertRecordsPatchesApexOverExisting(t *testing.T) {
+	oldIP, target := "45.83.40.67", "103.95.119.34"
+	existing := []DNSRecord{{ID: "a-root", Type: "A", Name: "6x6.co.il", Content: oldIP}}
+	desired := []DesiredRecord{{Type: "A", Name: "6x6.co.il", Content: target, TTL: 3600}}
+	var body batchRequest
+	srv := captureBatch(t, &body, nil)
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	if _, err := c.UpsertRecords(context.Background(), "zone1", existing, desired, oldIP); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(body.Posts) != 0 {
+		t.Fatalf("expected a patch, not a create: %+v", body.Posts)
+	}
+	if len(body.Patches) != 1 || body.Patches[0].ID != "a-root" || body.Patches[0].Content != target {
+		t.Fatalf("expected apex A patched to target, got %+v", body.Patches)
+	}
+}
+
+// BUG 1 resilience: if the atomic batch is still rejected with 81058, the duplicate POST is treated
+// as already-present and the other records still apply (one duplicate does not abort the zone).
+func TestUpsertRecordsToleratesDuplicate81058(t *testing.T) {
+	desired := []DesiredRecord{
+		{Type: "TXT", Name: "a.example.com", Content: "dup", TTL: 3600}, // Cloudflare already has it
+		{Type: "TXT", Name: "b.example.com", Content: "new", TTL: 3600}, // genuinely new
+	}
+	var combinedCalls, singleCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		var body batchRequest
+		json.Unmarshal(data, &body)
+		if len(body.Posts) > 1 { // the first, combined batch -> reject with 81058
+			combinedCalls++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"success":false,"errors":[{"code":81058,"message":"failed to POST record"}]}`))
+			return
+		}
+		singleCalls++
+		if len(body.Posts) == 1 && body.Posts[0].Content == "dup" { // the duplicate -> 81058
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"success":false,"errors":[{"code":81058,"message":"an identical record already exists"}]}`))
+			return
+		}
+		writeOK(w, map[string]interface{}{})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	res, err := c.UpsertRecords(context.Background(), "zone1", nil, desired, "")
+	if err != nil {
+		t.Fatalf("a resilient upsert must not fail the whole zone on 81058: %v", err)
+	}
+	if combinedCalls != 1 || singleCalls != 2 {
+		t.Fatalf("expected 1 combined + 2 single batch calls, got combined=%d single=%d", combinedCalls, singleCalls)
+	}
+	if len(res.Created) != 1 || res.Created[0].Content != "new" {
+		t.Fatalf("only the genuinely new record should be created, got %+v", res.Created)
+	}
+	if len(res.Unchanged) != 1 || res.Unchanged[0].Content != "dup" {
+		t.Fatalf("the duplicate should be reported unchanged, got %+v", res.Unchanged)
 	}
 }
 

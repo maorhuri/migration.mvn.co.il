@@ -436,7 +436,7 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 		}
 		out.MailSkipped += len(skippedMail)
 
-		upres, err := client.UpsertRecords(ctx, zone.ID, existing, desired)
+		upres, err := client.UpsertRecords(ctx, zone.ID, existing, desired, oldIP)
 		if err != nil {
 			zr.Skipped = fmt.Sprintf("upsert failed: %v", err)
 			logFn("error", fmt.Sprintf("Cloudflare zone %s: replicating the zone failed: %v", zone.Name, err))
@@ -452,9 +452,15 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 			zr.Updated = append(zr.Updated, line)
 			logFn("info", "Cloudflare: updated "+line)
 		}
+		for _, r := range upres.Deleted {
+			line := fmt.Sprintf("%s %s (was %s)", r.Type, r.Name, r.Content)
+			zr.Deleted = append(zr.Deleted, line)
+			logFn("info", fmt.Sprintf("Cloudflare: removed stale %s", line))
+		}
 		zr.Unchanged = len(upres.Unchanged)
 		out.RecordsCreated += len(upres.Created)
 		out.RecordsUpdated += len(upres.Updated)
+		out.RecordsDeleted += len(upres.Deleted)
 		out.Unchanged += len(upres.Unchanged)
 
 		if err := client.DeleteRecords(ctx, zone.ID, aaaaDelete); err != nil {
@@ -469,7 +475,7 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 			}
 			out.RecordsDeleted += len(aaaaDelete)
 		}
-		changed = len(upres.Created)+len(upres.Updated)+len(aaaaDelete) > 0
+		changed = len(upres.Created)+len(upres.Updated)+len(upres.Deleted)+len(aaaaDelete) > 0
 		if !changed {
 			logFn("info", fmt.Sprintf("Cloudflare zone %s: already matches the source zone; nothing to change", zone.Name))
 		}
@@ -744,9 +750,13 @@ func (e *Engine) mxIsExternal(host string, ownDomains map[string]bool, oldIP, ta
 // zoneName. It handles "@"/empty (apex), relative labels, FQDNs already under the zone, and FQDNs
 // under the source origin domain (rebased onto the zone when the target domain differs).
 func zoneRecordName(raw, zoneName, origin string) string {
-	raw = strings.ToLower(strings.Trim(strings.TrimSpace(raw), "."))
+	raw = strings.ToLower(strings.TrimSpace(raw))
 	zoneName = strings.ToLower(strings.Trim(zoneName, "."))
 	origin = strings.ToLower(strings.Trim(origin, "."))
+	// A trailing dot marks an absolute (fully-qualified) name; without it the name is relative to
+	// the zone origin. Capture that before the dots are trimmed off.
+	absolute := strings.HasSuffix(raw, ".")
+	raw = strings.Trim(raw, ".")
 	if raw == "" || raw == "@" || raw == zoneName {
 		return zoneName
 	}
@@ -761,8 +771,12 @@ func zoneRecordName(raw, zoneName, origin string) string {
 			return strings.TrimSuffix(raw, "."+origin) + "." + zoneName
 		}
 	}
-	if strings.Contains(raw, ".") {
-		return raw // some other FQDN; leave it as-is
+	// An absolute name under neither the zone nor the origin belongs elsewhere: leave it as-is.
+	// A relative name is rooted at the zone, so append the zone -- including a multi-label one
+	// like "default._domainkey", which must become "default._domainkey.<zone>" (not stay bare, or
+	// it would never match the existing full-name record and a duplicate would be created).
+	if absolute {
+		return raw
 	}
 	return raw + "." + zoneName
 }
@@ -800,28 +814,41 @@ func isSPF(s string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(strings.Trim(s, `"`))), "v=spf1")
 }
 
-// unquoteTXT joins and unquotes a zone-file TXT value: `"a" "b"` -> `ab`, `"text"` -> `text`.
+// unquoteTXT decodes a zone-file TXT RDATA into the plain string value a DNS provider stores:
+// it concatenates the character-strings (`"a" "b"` -> `ab`) and removes BIND backslash escaping
+// (`\;` -> `;`, `\"` -> `"`, `\\` -> `\`, and `\X` -> `X` otherwise), then trims trailing
+// separators. Without this the value we POST keeps literal backslashes (a malformed DKIM/DMARC/SPF
+// record) and never equals the clean value the provider stores -- so an idempotent re-run instead
+// re-creates the record (Cloudflare error 81058, "an identical record already exists").
 func unquoteTXT(s string) string {
 	s = strings.TrimSpace(s)
-	if !strings.Contains(s, `"`) {
-		return s
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsAny(s, "\"\\") {
+		return strings.TrimRight(s, "; \t")
 	}
 	var b strings.Builder
 	inQuote := false
-	for _, ch := range s {
-		if ch == '"' {
-			inQuote = !inQuote
+	sawQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i+1]) // keep the escaped byte, drop the backslash
+			i++
 			continue
 		}
-		if inQuote {
-			b.WriteRune(ch)
+		if ch == '"' {
+			inQuote = !inQuote
+			sawQuote = true
+			continue
 		}
+		if sawQuote && !inQuote {
+			continue // whitespace between character-strings is separator noise
+		}
+		b.WriteByte(ch)
 	}
-	out := b.String()
-	if out == "" {
-		return strings.Trim(s, `"`)
-	}
-	return out
+	return strings.TrimRight(b.String(), "; \t")
 }
 
 func firstField(s string) string {
