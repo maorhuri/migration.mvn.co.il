@@ -9,83 +9,41 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 )
 
-// FluentSMTPConfig is the central outbound-email configuration applied to each migrated
-// WordPress site. FromEmail is a pattern resolved per site (see resolveFromEmail): empty ->
-// no-reply@<site-domain>, "local@" or a bare local part -> local@<site-domain>, a full address
-// -> used verbatim for every site.
-type FluentSMTPConfig struct {
-	Host       string
-	Port       string
-	Encryption string // tls | ssl | none
-	AuthUser   string
-	Password   string
-	FromName   string
-	FromEmail  string
-}
-
-// resolveFromEmail turns the operator's from-email pattern into a concrete sender address for one
-// site's domain. A full address (non-empty local and domain parts) is used as-is; otherwise the
-// local part (default "no-reply") is combined with the site's own domain.
-func resolveFromEmail(pattern, domain string) string {
+// noReplyFor returns the per-site sender address no-reply@<site domain> (the "www." prefix and
+// casing are normalised away). This is the only From address used -- there is nothing to configure.
+func noReplyFor(domain string) string {
 	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "www."))
-	p := strings.TrimSpace(pattern)
-	if p == "" {
-		return "no-reply@" + domain
-	}
-	if strings.HasSuffix(p, "@") { // "no-reply@" pattern
-		return strings.ToLower(p) + domain
-	}
-	if i := strings.Index(p, "@"); i > 0 && i < len(p)-1 { // full address local@domain
-		return strings.ToLower(p)
-	}
-	// bare local part (or a malformed "@x"): use as the local part on the site's domain
-	return strings.ToLower(strings.Trim(p, "@")) + "@" + domain
+	return "no-reply@" + domain
 }
 
 // BuildFluentSMTPSettingsJSON builds the JSON value FluentSMTP stores in the WordPress option
-// `fluentmail-settings`. It defines a single SMTP connection keyed by the sender email, maps that
-// sender to the connection, and marks it the default connection, so WordPress sends all mail
-// through the central SMTP host. The shape mirrors what FluentSMTP's own settings screen writes
-// (connections / mappings / misc with provider "smtp"); the exact field set should be confirmed
-// against a live FluentSMTP install.
-func BuildFluentSMTPSettingsJSON(fromEmail, fromName, host, port, encryption, authUser, password string) (string, error) {
+// `fluentmail-settings` for one site. It defines a single SMTP connection pointed at the server's
+// OWN local mail transport (localhost:25, no auth, no encryption) -- i.e. mail leaves from the
+// target server itself over port 25, exactly like PHP mail() -- sending as no-reply@<site domain>
+// with the From address forced. There is no central relay and nothing for the operator to set.
+// The shape mirrors what FluentSMTP's own settings screen writes (connections / mappings / misc
+// with provider "smtp"); the exact field set should be confirmed against a live FluentSMTP install.
+func BuildFluentSMTPSettingsJSON(fromEmail string) (string, error) {
 	fromEmail = strings.ToLower(strings.TrimSpace(fromEmail))
 	if fromEmail == "" {
 		return "", fmt.Errorf("a from-email is required to configure FluentSMTP")
 	}
-	if host == "" {
-		return "", fmt.Errorf("an SMTP host is required to configure FluentSMTP")
-	}
-	if port == "" {
-		port = "587"
-	}
-	switch encryption {
-	case "tls", "ssl", "none":
-	case "":
-		encryption = "tls"
-	default:
-		encryption = "tls"
-	}
-	auth := "yes"
-	if strings.TrimSpace(authUser) == "" {
-		auth = "no"
-	}
 
 	providerSettings := map[string]string{
-		"sender_name":      fromName,
+		"sender_name":      "",
 		"sender_email":     fromEmail,
 		"force_from_name":  "no",
 		"force_from_email": "yes",
 		"return_path":      "no",
 		"mailer":           "smtp",
 		"provider":         "smtp",
-		"smtp_host":        host,
-		"smtp_port":        port,
-		"auth":             auth,
-		"username":         authUser,
-		"password":         password,
-		"encryption":       encryption,
-		"auto_tls":         "yes",
+		"smtp_host":        "localhost",
+		"smtp_port":        "25",
+		"auth":             "no",
+		"username":         "",
+		"password":         "",
+		"encryption":       "none",
+		"auto_tls":         "no",
 		"key_store":        "db",
 	}
 
@@ -116,20 +74,18 @@ func BuildFluentSMTPSettingsJSON(fromEmail, fromName, host, port, encryption, au
 	return string(b), nil
 }
 
-// ConfigureFluentSMTP installs and activates the FluentSMTP plugin on each migrated WordPress
-// site and points it at the central SMTP host. It is idempotent: an already-installed plugin is
-// only re-activated, and the `fluentmail-settings` option is overwritten rather than appended to.
-// Sites without a wp-config.php are skipped. Returns one summary line per site acted on.
-func (e *Enhance) ConfigureFluentSMTP(ctx context.Context, domains []common.Domain, cfg FluentSMTPConfig) ([]string, error) {
+// ConfigureFluentSMTP installs and activates the FluentSMTP plugin on each migrated WordPress site
+// and points it at the server's own local mail (localhost:25) as no-reply@<site domain>. It is
+// idempotent: an already-installed plugin is only re-activated, and the `fluentmail-settings`
+// option is overwritten rather than appended to. Sites without a wp-config.php are skipped.
+// Returns one summary line per site acted on. Zero operator configuration.
+func (e *Enhance) ConfigureFluentSMTP(ctx context.Context, domains []common.Domain) ([]string, error) {
 	orgID, err := e.orgID()
 	if err != nil {
 		return nil, err
 	}
 	if e.node == nil {
 		return nil, fmt.Errorf("not connected to the cluster node")
-	}
-	if strings.TrimSpace(cfg.Host) == "" {
-		return nil, fmt.Errorf("no SMTP host is configured; set central SMTP settings before configuring FluentSMTP")
 	}
 	if _, err := e.nodeRun(ctx, "test -x /usr/bin/wp-cli"); err != nil {
 		return nil, fmt.Errorf("WP-CLI is not installed on node %s; cannot configure FluentSMTP", e.nodeHost)
@@ -171,8 +127,8 @@ func (e *Enhance) ConfigureFluentSMTP(ctx context.Context, domains []common.Doma
 		}
 
 		// 2. Write the connection settings (overwrites, so re-running updates in place).
-		fromEmail := resolveFromEmail(cfg.FromEmail, domain)
-		jsonStr, err := BuildFluentSMTPSettingsJSON(fromEmail, cfg.FromName, cfg.Host, cfg.Port, cfg.Encryption, cfg.AuthUser, cfg.Password)
+		fromEmail := noReplyFor(domain)
+		jsonStr, err := BuildFluentSMTPSettingsJSON(fromEmail)
 		if err != nil {
 			e.warnf("FluentSMTP %s: %v", domain, err)
 			continue
@@ -181,8 +137,8 @@ func (e *Enhance) ConfigureFluentSMTP(ctx context.Context, domains []common.Doma
 			e.warnf("FluentSMTP %s: could not write the settings: %v %s", domain, uerr, lastLines(out, 2))
 			continue
 		}
-		e.logf("info", "FluentSMTP %s: configured to send through %s:%s as %s", domain, cfg.Host, cfg.Port, fromEmail)
-		summary = append(summary, fmt.Sprintf("%s: FluentSMTP -> %s (from %s)", domain, cfg.Host, fromEmail))
+		e.logf("info", "FluentSMTP %s: configured to send via the local server (localhost:25) as %s", domain, fromEmail)
+		summary = append(summary, fmt.Sprintf("%s: FluentSMTP -> localhost:25 (from %s)", domain, fromEmail))
 	}
 	return summary, nil
 }

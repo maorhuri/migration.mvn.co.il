@@ -9,7 +9,6 @@ import (
 	"github.com/migration-tool/backend/internal/cloudflare"
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/internal/panels/enhance"
-	"github.com/migration-tool/backend/internal/storage"
 )
 
 // EmailSetupResult summarizes an "Email setup" run: FluentSMTP configured per site, and SPF/DMARC
@@ -134,7 +133,7 @@ type mailDNSOutcome struct {
 // record exists at _dmarc.<apex>. SPF is merged into any existing record (no second SPF created);
 // DMARC is created only when absent (an operator's stricter policy is never downgraded). It logs
 // every action and never returns an error (problems go to the log and leave the outcome lines empty).
-func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, zoneID, zoneName, targetIP string, smtp storage.SMTPSettings, logFn func(level, message string)) mailDNSOutcome {
+func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, zoneID, zoneName, targetIP string, logFn func(level, message string)) mailDNSOutcome {
 	apex := strings.ToLower(strings.Trim(zoneName, "."))
 	var oc mailDNSOutcome
 
@@ -154,7 +153,7 @@ func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, z
 			}
 		}
 	}
-	desiredSPF, changed := mergeSPF(currentSPF, targetIP, smtp.SPFExtra)
+	desiredSPF, changed := mergeSPF(currentSPF, targetIP, "")
 	if desiredSPF != "" {
 		if currentSPF != "" && !changed {
 			oc.SPF = fmt.Sprintf("SPF %s already authorizes the target (%s)", apex, desiredSPF)
@@ -193,7 +192,7 @@ func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, z
 		oc.DMARC = fmt.Sprintf("DMARC %s already present (%s); left unchanged", dmarcName, currentDMARC)
 		logFn("info", "Email DNS: "+oc.DMARC)
 	} else {
-		desiredDMARC := buildDMARC(smtp.DMARCPolicy, smtp.DMARCRua)
+		desiredDMARC := buildDMARC("none", "")
 		up, err := client.UpsertRecords(ctx, zoneID, existing, []cloudflare.DesiredRecord{{Type: "TXT", Name: dmarcName, Content: desiredDMARC, TTL: 3600}})
 		if err != nil {
 			logFn("error", fmt.Sprintf("Email DNS %s: could not create DMARC: %v", dmarcName, err))
@@ -211,9 +210,10 @@ func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, z
 // ---------------------------------------------------------------------------
 
 // EmailSetup is a post-migration step for completed migrations: it configures FluentSMTP on every
-// migrated WordPress site so outbound mail goes through the central SMTP host, and ensures SPF +
-// DMARC in Cloudflare DNS for the migrated domain(s). It never creates or touches DKIM. Requires
-// central SMTP settings to be configured; SPF/DMARC need a Cloudflare token. Every action is logged.
+// migrated WordPress site to send through the server's own local mail (localhost:25) as
+// no-reply@<site domain>, and ensures SPF (authorizing the target server IP) + a DMARC p=none
+// record in Cloudflare DNS for the migrated domain(s). It never creates or touches DKIM, and there
+// is nothing to configure. SPF/DMARC need a Cloudflare token. Every action is logged.
 func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*MigrationResult, *EmailSetupResult, error) {
 	m, err := e.db.GetMigration(ctx, migrationID)
 	if err != nil {
@@ -229,15 +229,6 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 	if common.PanelType(targetServer.PanelType) != common.PanelTypeEnhance {
 		return nil, nil, fmt.Errorf("email setup is only implemented for Enhance targets")
 	}
-
-	smtp, err := e.db.GetSMTPSettings(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("could not read SMTP settings: %w", err)
-	}
-	if strings.TrimSpace(smtp.Host) == "" {
-		return nil, nil, fmt.Errorf("central SMTP settings are not configured; set them in Settings before running email setup")
-	}
-	password, _ := e.db.GetSMTPPassword(ctx)
 
 	var export common.ExportData
 	if m.ExportData.Valid && len(m.ExportData.Data) > 0 {
@@ -263,7 +254,7 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 		}
 	}
 	out.Domains = names
-	logFn("info", fmt.Sprintf("Email setup started (operator action): sites %s, SMTP host %s:%s", strings.Join(names, ", "), smtp.Host, smtp.Port))
+	logFn("info", fmt.Sprintf("Email setup started: sites %s (FluentSMTP via the local server as no-reply@<domain>, plus SPF/DMARC in DNS)", strings.Join(names, ", ")))
 
 	// 1. FluentSMTP on each migrated site (learn the cluster node from the first website).
 	probe := enhance.New()
@@ -284,16 +275,7 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 	}
 	defer en.Disconnect()
 
-	cfg := enhance.FluentSMTPConfig{
-		Host:       smtp.Host,
-		Port:       smtp.Port,
-		Encryption: smtp.Encryption,
-		AuthUser:   smtp.AuthUser,
-		Password:   password,
-		FromName:   smtp.FromName,
-		FromEmail:  smtp.FromEmail,
-	}
-	fsummary, err := en.ConfigureFluentSMTP(ctx, domains, cfg)
+	fsummary, err := en.ConfigureFluentSMTP(ctx, domains)
 	if err != nil {
 		logFn("error", "Email setup (FluentSMTP) failed: "+err.Error())
 		return nil, nil, err
@@ -336,7 +318,7 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 				continue
 			}
 			doneZones[zone.ID] = true
-			oc := e.ensureMailDNS(ctx, client, zone.ID, zone.Name, targetIP, smtp, logFn)
+			oc := e.ensureMailDNS(ctx, client, zone.ID, zone.Name, targetIP, logFn)
 			if oc.SPF != "" {
 				out.SPFEnsured = append(out.SPFEnsured, oc.SPF)
 			}
@@ -351,14 +333,11 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 	return status, out, err
 }
 
-// maybeAutoEmailSetup runs EmailSetup automatically at the end of a migration when central SMTP
-// settings are configured. It never fails the migration: problems only go to the log.
+// maybeAutoEmailSetup runs EmailSetup automatically at the end of every migration: it is zero-config
+// (FluentSMTP via the local server as no-reply@<domain>, SPF/DMARC in DNS when a Cloudflare token is
+// set). It never fails the migration: problems only go to the log.
 func (e *Engine) maybeAutoEmailSetup(ctx context.Context, migrationID string) {
-	has, err := e.db.HasSMTPConfigured(ctx)
-	if err != nil || !has {
-		return
-	}
-	e.db.AddMigrationLog(ctx, migrationID, "info", "Central SMTP settings are configured; setting up outbound email automatically", nil)
+	e.db.AddMigrationLog(ctx, migrationID, "info", "Setting up outbound email (FluentSMTP + SPF/DMARC) automatically", nil)
 	if _, _, err := e.EmailSetup(ctx, migrationID); err != nil {
 		e.db.AddMigrationLog(ctx, migrationID, "warn", fmt.Sprintf("Automatic email setup did not run: %v. You can trigger it from the migration page.", err), nil)
 	}
