@@ -7,6 +7,7 @@ import Migrations from './pages/Migrations';
 import SSHKeys from './pages/SSHKeys';
 import NewMigration from './pages/NewMigration';
 import MigrationDetail from './pages/MigrationDetail';
+import Settings from './pages/Settings';
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
         <Route path="/migrations/new" element={<NewMigration />} />
         <Route path="/migrations/:id" element={<MigrationDetail />} />
         <Route path="/ssh-keys" element={<SSHKeys />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </AppShell>
   );

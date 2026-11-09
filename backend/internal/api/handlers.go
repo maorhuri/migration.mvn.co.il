@@ -90,6 +90,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.POST("/clear", h.clearMigrations)
 			migrations.POST("/:id/source/suspend", h.suspendSource)
 			migrations.POST("/:id/source/unsuspend", h.unsuspendSource)
+			migrations.POST("/:id/cloudflare/dns", h.updateCloudflareDNS)
 			migrations.POST("/:id/scan/decision", h.scanDecision)
 			migrations.POST("/:id/repair/wordpress", h.repairWordPress)
 			migrations.POST("/:id/remigrate/databases", h.remigrateDatabases)
@@ -97,6 +98,13 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.POST("/:id/resume", h.resumeMigration)
 			migrations.DELETE("/:id", h.deleteMigration)
 			migrations.POST("/check-compatibility", h.checkCompatibility)
+		}
+
+		// Global settings (Cloudflare token, etc.)
+		settings := api.Group("/settings")
+		{
+			settings.GET("/cloudflare", h.getCloudflareSettings)
+			settings.PUT("/cloudflare", h.updateCloudflareSettings)
 		}
 	}
 }

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Server, SSHKey, Migration, MigrationLog, Account, CompatibilityResult, ServerTestResponse } from '../types';
+import type { Server, SSHKey, Migration, MigrationLog, Account, CompatibilityResult, ServerTestResponse, CloudflareSettings, CloudflareDNSResult } from '../types';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -227,6 +227,34 @@ export const checkCompatibility = async (params: {
   username: string;
 }): Promise<CompatibilityResult> => {
   const { data } = await api.post('/migrations/check-compatibility', params);
+  return data;
+};
+
+// Settings — Cloudflare
+/** Whether our account's Cloudflare token is configured, and the (non-secret) fallback target IPs. The token itself is never returned. */
+export const getCloudflareSettings = async (): Promise<CloudflareSettings> => {
+  const { data } = await api.get('/settings/cloudflare');
+  return data;
+};
+
+/**
+ * Store the account-wide Cloudflare token (write-only) and optional fallback target IP(s).
+ * Omit `api_token` to leave the stored token untouched; `clear: true` removes it. `target_ip` /
+ * `target_ipv6`, when provided, replace the stored value (empty string clears it).
+ */
+export const updateCloudflareSettings = async (params: {
+  api_token?: string;
+  target_ip?: string;
+  target_ipv6?: string;
+  clear?: boolean;
+}): Promise<CloudflareSettings> => {
+  const { data } = await api.put('/settings/cloudflare', params);
+  return data;
+};
+
+/** Repoint the migrated domain(s) at the new server in Cloudflare (find zone, update A/AAAA, purge, verify). Completed migrations only. */
+export const updateMigrationCloudflareDNS = async (id: string): Promise<{ migration: Migration; result: CloudflareDNSResult }> => {
+  const { data } = await api.post(`/migrations/${id}/cloudflare/dns`);
   return data;
 };
 

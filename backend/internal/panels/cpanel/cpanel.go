@@ -667,7 +667,7 @@ func (cp *CPanel) exportDNSRecords(ctx context.Context, domain string) ([]common
 		}
 		for i, part := range parts {
 			switch strings.ToUpper(part) {
-			case "A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR":
+			case "A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SRV", "CAA":
 				record := common.DNSRecord{Type: strings.ToUpper(part), Name: parts[0], TTL: 3600}
 				if i > 1 {
 					if ttl, err := strconv.Atoi(parts[1]); err == nil {

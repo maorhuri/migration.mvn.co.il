@@ -28,6 +28,7 @@ export const common: PageDict = {
     'nav.sshKeys': 'מפתחות SSH',
     'nav.migrations': 'מיגרציות',
     'nav.newMigration': 'מיגרציה חדשה',
+    'nav.settings': 'הגדרות',
     'nav.home': 'דף הבית',
 
     'common.save': 'שמור',
@@ -120,6 +121,7 @@ export const common: PageDict = {
     'status.suspended': 'מושעה',
     'status.sourceSuspended': 'המקור מושעה',
     'status.sourceActive': 'המקור עדיין פעיל',
+    'status.dnsUpdated': 'DNS עודכן',
 
     'panel.directadmin': 'DirectAdmin',
     'panel.enhance': 'Enhance',
@@ -260,6 +262,7 @@ export const common: PageDict = {
     'nav.sshKeys': 'SSH Keys',
     'nav.migrations': 'Migrations',
     'nav.newMigration': 'New migration',
+    'nav.settings': 'Settings',
     'nav.home': 'Home',
 
     'common.save': 'Save',
@@ -352,6 +355,7 @@ export const common: PageDict = {
     'status.suspended': 'Suspended',
     'status.sourceSuspended': 'Source suspended',
     'status.sourceActive': 'Source still active',
+    'status.dnsUpdated': 'DNS updated',
 
     'panel.directadmin': 'DirectAdmin',
     'panel.enhance': 'Enhance',
