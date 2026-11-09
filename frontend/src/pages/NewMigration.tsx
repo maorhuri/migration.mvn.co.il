@@ -76,6 +76,13 @@ const buildSteps = (scan: boolean, agentless = false): MigrationStepStatus[] =>
 /** Up to this many accounts migrate at once; the rest wait their turn as a pool slot frees up. */
 const MAX_CONCURRENT_MIGRATIONS = 5;
 
+/** A uuid for grouping a multi-account run into one consolidated batch window. */
+function newBatchId(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c?.randomUUID) return c.randomUUID();
+  return 'batch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
 /** Independent progress state for one selected account's migration -- there is one of these per
  * selected account, updated by its own poll loop regardless of how many others are in flight. */
 interface AccountRun {
@@ -162,6 +169,9 @@ export default function NewMigration() {
   const [finalElapsedMs, setFinalElapsedMs] = useState(0);
   // Ids of the migrations that completed in this run (links to the detail pages on the completion screen).
   const [completedMigrationIds, setCompletedMigrationIds] = useState<string[]>([]);
+  // Batch id shared by every account of a multi-account run, so the operator can watch and finish
+  // them all from one consolidated window (/migrations/batch/:batchId). null for a single account.
+  const [batchId, setBatchId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     source_server_id: '',
@@ -368,7 +378,7 @@ export default function NewMigration() {
   /** Runs one account's migration end-to-end (start + poll to completion), updating only its own
    * entry in `runs` (the authoritative final state read back from runsRef once the pool settles).
    * Independent of every other concurrently-running account. */
-  const runOneAccount = async (account: Account, steps: MigrationStepStatus[]): Promise<void> => {
+  const runOneAccount = async (account: Account, steps: MigrationStepStatus[], runBatchId: string | null): Promise<void> => {
     const username = account.username;
     // Per-step wall-clock timestamps, local to this run (was a shared ref before; each run needs its own).
     const stepStartedAt: Record<number, number> = {};
@@ -401,6 +411,7 @@ export default function NewMigration() {
         username: account.username,
         scan_malware: formData.scan_malware,
         target_domain: chosenDomain && chosenDomain !== account.domain?.toLowerCase() ? chosenDomain : undefined,
+        batch_id: runBatchId || undefined,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -595,6 +606,9 @@ export default function NewMigration() {
 
     // The step list of this run: every poll loop indexes into its own copy of this same list.
     const steps = buildSteps(formData.scan_malware, isAgentlessSource);
+    // More than one account: group them into a batch so they can be watched from one window.
+    const runBatchId = selectedAccounts.length > 1 ? newBatchId() : null;
+    setBatchId(runBatchId);
     setCurrentStep('migrating');
     setStarting(true);
     setWarningLogs([]);
@@ -625,7 +639,7 @@ export default function NewMigration() {
     try {
       // Every run catches its own errors internally (see runOneAccount) rather than aborting
       // the rest of the batch -- one account failing should not stop the other 14 from trying.
-      await runWithConcurrency(selectedAccounts, MAX_CONCURRENT_MIGRATIONS, (account) => runOneAccount(account, steps));
+      await runWithConcurrency(selectedAccounts, MAX_CONCURRENT_MIGRATIONS, (account) => runOneAccount(account, steps, runBatchId));
 
       const finalRuns = runsRef.current;
       const anyFailed = finalRuns.some((r) => r.status === 'failed');
@@ -778,6 +792,7 @@ export default function NewMigration() {
     overallStartedAt.current = null;
     setFinalElapsedMs(0);
     setCompletedMigrationIds([]);
+    setBatchId(null);
     setFormData({
       source_server_id: '',
       source_cluster_server_id: '',
@@ -1234,6 +1249,17 @@ export default function NewMigration() {
                   <span className="me-1 text-xs font-medium text-slate-500 dark:text-slate-400" dir="ltr">
                     {doneCount} / {runs.length}
                   </span>
+                  {batchId && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="order-last ms-auto"
+                      rightIcon={<ArrowRightIcon className="flip-rtl" />}
+                      onClick={() => navigate(`/migrations/batch/${batchId}`)}
+                    >
+                      {t('batch.openConsolidated')}
+                    </Button>
+                  )}
                   {runs.map((run) => (
                     <button
                       key={run.account.username}

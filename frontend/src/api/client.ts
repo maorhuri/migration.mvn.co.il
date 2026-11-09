@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Server, SSHKey, Migration, MigrationLog, Account, CompatibilityResult, ServerTestResponse } from '../types';
+import type { Server, SSHKey, Migration, MigrationBatch, MigrationLog, Account, CompatibilityResult, ServerTestResponse } from '../types';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -132,6 +132,12 @@ export const getMigration = async (id: string): Promise<Migration> => {
   return data;
 };
 
+/** The migrations started together under one batch id, with the aggregate tally for the consolidated window. */
+export const getMigrationBatch = async (batchId: string): Promise<MigrationBatch> => {
+  const { data } = await api.get(`/migrations/batches/${batchId}`);
+  return data;
+};
+
 export const startMigration = async (params: {
   source_server_id: string;
   target_server_id: string;
@@ -141,6 +147,8 @@ export const startMigration = async (params: {
   scan_malware?: boolean;
   /** Register the site under this domain instead of the source's name (WordPress URLs are rewritten to it). */
   target_domain?: string;
+  /** Groups the accounts started together so they can be watched from one consolidated window. */
+  batch_id?: string;
 }): Promise<Migration> => {
   const { data } = await api.post('/migrations', params);
   return data;

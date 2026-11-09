@@ -1,8 +1,8 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowRightIcon } from '@heroicons/react/16/solid';
-import { PlusIcon, TrashIcon } from '@heroicons/react/20/solid';
+import { PlusIcon, Squares2X2Icon, TrashIcon } from '@heroicons/react/20/solid';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import {
   Badge,
@@ -150,6 +150,40 @@ export default function Migrations() {
   const showLoadError = !loading && !!fetchError && migrations.length === 0;
   const visible = filter === 'all' ? migrations : migrations.filter((m) => m.status === filter);
 
+  // Consolidated batches: migrations started together share a batch_id. Group them (latest attempt
+  // per account, since a rerun lands in the same batch) so the operator can open the one-screen
+  // window for a batch of 50 instead of its 50 separate rows.
+  const batches = useMemo(() => {
+    const groups = new Map<string, Migration[]>();
+    for (const m of migrations) {
+      if (!m.batch_id) continue;
+      const arr = groups.get(m.batch_id);
+      if (arr) arr.push(m);
+      else groups.set(m.batch_id, [m]);
+    }
+    return [...groups.entries()]
+      .map(([id, list]) => {
+        const byAccount = new Map<string, Migration>();
+        for (const m of list) {
+          const prev = byAccount.get(m.account_username);
+          if (!prev || new Date(m.created_at).getTime() >= new Date(prev.created_at).getTime()) byAccount.set(m.account_username, m);
+        }
+        const latest = [...byAccount.values()];
+        let completed = 0;
+        let failed = 0;
+        let active = 0;
+        let createdAt = list[0]?.created_at ?? '';
+        for (const m of list) if (m.created_at < createdAt) createdAt = m.created_at;
+        for (const m of latest) {
+          if (m.status === 'completed') completed++;
+          else if (m.status === 'failed' || m.status === 'cancelled') failed++;
+          else active++;
+        }
+        return { id, total: latest.length, completed, failed, active, createdAt };
+      })
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [migrations]);
+
   const sourceName = (m: Migration | null) => (m ? servers[m.source_server_id]?.name ?? t('migrations.dialog.sourceServer') : '');
   const account = (name?: string) => <Mono className="font-medium text-slate-900 dark:text-slate-100">{name}</Mono>;
   const server = (name: string) => <bdi className="font-medium text-slate-700 dark:text-slate-200">{name}</bdi>;
@@ -189,7 +223,47 @@ export default function Migrations() {
         </div>
       )}
 
-      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': 1 } as CSSProperties}>
+      {!loading && batches.length > 0 && (
+        <Card className="motion-safe:animate-rise stagger" style={{ '--i': 1 } as CSSProperties}>
+          <CardHeader>
+            <CardTitle>{t('batch.list.title')}</CardTitle>
+            <CardDescription>{t('batch.list.description')}</CardDescription>
+          </CardHeader>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {batches.map((b) => {
+              const done = b.active === 0;
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => navigate(`/migrations/batch/${b.id}`)}
+                  className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-start transition-colors hover:border-brand-300 hover:bg-brand-50/40 dark:border-white/[0.08] dark:bg-slate-900/40 dark:hover:border-brand-500/40 dark:hover:bg-brand-500/[0.06]"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Squares2X2Icon className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" aria-hidden="true" />
+                      <span className="font-medium text-slate-900 dark:text-slate-100">{t('batch.list.accounts', { count: b.total })}</span>
+                      {!done && (
+                        <Badge tone="brand" size="sm" dot pulse>
+                          {t('batch.list.live')}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="text-emerald-600 dark:text-emerald-400">{t('batch.progress.completed', { count: b.completed })}</span>
+                      {b.active > 0 && <span className="text-brand-700 dark:text-brand-300">{t('batch.progress.running', { count: b.active })}</span>}
+                      {b.failed > 0 && <span className="text-rose-600 dark:text-rose-400">{t('batch.progress.failed', { count: b.failed })}</span>}
+                    </div>
+                  </div>
+                  <ArrowRightIcon className="flip-rtl h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 dark:text-slate-500" aria-hidden="true" />
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': 2 } as CSSProperties}>
         <CardHeader
           divided
           actions={
