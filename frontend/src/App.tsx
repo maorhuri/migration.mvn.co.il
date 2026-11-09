@@ -8,6 +8,7 @@ import SSHKeys from './pages/SSHKeys';
 import NewMigration from './pages/NewMigration';
 import MigrationDetail from './pages/MigrationDetail';
 import BatchMigration from './pages/BatchMigration';
+import Settings from './pages/Settings';
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
         <Route path="/migrations/batch/:batchId" element={<BatchMigration />} />
         <Route path="/migrations/:id" element={<MigrationDetail />} />
         <Route path="/ssh-keys" element={<SSHKeys />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </AppShell>
   );

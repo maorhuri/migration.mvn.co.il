@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { ChevronRightIcon, MagnifyingGlassIcon } from '@heroicons/react/20/solid';
-import { ArrowsRightLeftIcon, KeyIcon, PlusIcon, ServerStackIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
+import { ArrowsRightLeftIcon, Cog6ToothIcon, KeyIcon, PlusIcon, ServerStackIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { cn } from '../../lib/cn';
 import { useT, type T } from '../../lib/i18n';
 import { buttonBaseClasses, buttonSizeClasses, buttonVariantClasses } from '../ui/Button';
@@ -34,6 +34,7 @@ const NAV_GROUPS: { key: string; items: NavItem[] }[] = [
     ],
   },
   { key: 'nav.operations', items: [{ key: 'nav.migrations', href: '/migrations', icon: ArrowsRightLeftIcon }] },
+  { key: 'nav.settings', items: [{ key: 'nav.settings', href: '/settings', icon: Cog6ToothIcon }] },
 ];
 
 const ROUTE_KEYS: Record<string, string> = {
@@ -41,6 +42,7 @@ const ROUTE_KEYS: Record<string, string> = {
   servers: 'nav.servers',
   migrations: 'nav.migrations',
   'ssh-keys': 'nav.sshKeys',
+  settings: 'nav.settings',
   new: 'nav.newMigration',
 };
 

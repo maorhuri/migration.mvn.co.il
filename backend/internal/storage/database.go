@@ -156,6 +156,15 @@ func (d *Database) Migrate(ctx context.Context) error {
 			created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 		)`,
 
+		// Global application settings (key/value). Secrets live in value_encrypted (AES-256-GCM);
+		// plain settings (e.g. a fallback target IP) live in value. One row per key.
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key VARCHAR(100) PRIMARY KEY,
+			value_encrypted TEXT,
+			value TEXT,
+			updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		)`,
+
 		// Server accounts cache table
 		`CREATE TABLE IF NOT EXISTS server_accounts (
 			id UUID PRIMARY KEY,
@@ -190,6 +199,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		// Groups migrations started together from one New-migration run so they can be watched and
 		// finished from a single consolidated window. NULL for the pre-existing single migrations.
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS batch_id UUID`,
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS cloudflare_dns_updated_at TIMESTAMPTZ`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -290,31 +300,32 @@ func (nj *NullableJSON) Scan(value interface{}) error {
 
 // Migration represents a migration record
 type Migration struct {
-	ID                    string         `db:"id" json:"id"`
-	SourceServerID        string         `db:"source_server_id" json:"source_server_id"`
-	TargetServerID        string         `db:"target_server_id" json:"target_server_id"`
-	AccountUsername       string         `db:"account_username" json:"account_username"`
-	Status                string         `db:"status" json:"status"`
-	CurrentStep           sql.NullString `db:"current_step" json:"current_step,omitempty"`
-	TotalSteps            int            `db:"total_steps" json:"total_steps"`
-	CompletedSteps        int            `db:"completed_steps" json:"completed_steps"`
-	BytesTransferred      int64          `db:"bytes_transferred" json:"bytes_transferred"`
-	TotalBytes            int64          `db:"total_bytes" json:"total_bytes"`
-	ErrorMessage          sql.NullString `db:"error_message" json:"error_message,omitempty"`
-	ExportData            NullableJSON   `db:"export_data" json:"export_data,omitempty"`
-	TargetIP              NullString     `db:"target_ip" json:"target_ip"`
-	TargetNode            NullString     `db:"target_node" json:"target_node"`
-	Warnings              int            `db:"warnings" json:"warnings"`
-	SourceSuspendedAt     sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
-	ScanRequested         bool           `db:"scan_requested" json:"scan_requested"`
-	ScanReport            NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
-	ScanDecision          NullString     `db:"scan_decision" json:"scan_decision"`
-	TargetClusterServerID NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
-	TargetDomain          NullString     `db:"target_domain" json:"target_domain"`
-	BatchID               NullString     `db:"batch_id" json:"batch_id"`
-	StartedAt             sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
-	CompletedAt           sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
-	CreatedAt             time.Time      `db:"created_at" json:"created_at"`
+	ID                     string         `db:"id" json:"id"`
+	SourceServerID         string         `db:"source_server_id" json:"source_server_id"`
+	TargetServerID         string         `db:"target_server_id" json:"target_server_id"`
+	AccountUsername        string         `db:"account_username" json:"account_username"`
+	Status                 string         `db:"status" json:"status"`
+	CurrentStep            sql.NullString `db:"current_step" json:"current_step,omitempty"`
+	TotalSteps             int            `db:"total_steps" json:"total_steps"`
+	CompletedSteps         int            `db:"completed_steps" json:"completed_steps"`
+	BytesTransferred       int64          `db:"bytes_transferred" json:"bytes_transferred"`
+	TotalBytes             int64          `db:"total_bytes" json:"total_bytes"`
+	ErrorMessage           sql.NullString `db:"error_message" json:"error_message,omitempty"`
+	ExportData             NullableJSON   `db:"export_data" json:"export_data,omitempty"`
+	TargetIP               NullString     `db:"target_ip" json:"target_ip"`
+	TargetNode             NullString     `db:"target_node" json:"target_node"`
+	Warnings               int            `db:"warnings" json:"warnings"`
+	SourceSuspendedAt      sql.NullTime   `db:"source_suspended_at" json:"source_suspended_at,omitempty"`
+	ScanRequested          bool           `db:"scan_requested" json:"scan_requested"`
+	ScanReport             NullableJSON   `db:"scan_report" json:"scan_report,omitempty"`
+	ScanDecision           NullString     `db:"scan_decision" json:"scan_decision"`
+	TargetClusterServerID  NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
+	TargetDomain           NullString     `db:"target_domain" json:"target_domain"`
+	BatchID                NullString     `db:"batch_id" json:"batch_id"`
+	CloudflareDNSUpdatedAt sql.NullTime   `db:"cloudflare_dns_updated_at" json:"cloudflare_dns_updated_at,omitempty"`
+	StartedAt              sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
+	CompletedAt            sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
+	CreatedAt              time.Time      `db:"created_at" json:"created_at"`
 }
 
 // MigrationLog represents a log entry for a migration
@@ -727,6 +738,13 @@ func (d *Database) SetMigrationWarnings(ctx context.Context, id string, warnings
 // SetMigrationSourceSuspended records when the source account was suspended after migration (NULL = active)
 func (d *Database) SetMigrationSourceSuspended(ctx context.Context, id string, suspended bool) error {
 	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET source_suspended_at = CASE WHEN $2 THEN NOW() ELSE NULL END WHERE id = $1", id, suspended)
+	return err
+}
+
+// SetMigrationCloudflareDNSUpdated records when the Cloudflare DNS for this migration's domain(s)
+// was repointed at the new server (NULL = not done).
+func (d *Database) SetMigrationCloudflareDNSUpdated(ctx context.Context, id string, done bool) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE migrations SET cloudflare_dns_updated_at = CASE WHEN $2 THEN NOW() ELSE NULL END WHERE id = $1", id, done)
 	return err
 }
 

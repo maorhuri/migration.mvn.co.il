@@ -111,6 +111,8 @@ export interface Migration {
   warnings?: number;
   /** Set once the source account was suspended after the migration (manual step after the IP/DNS switch). */
   source_suspended_at?: string;
+  /** Set once the domain's Cloudflare DNS was repointed to the new server (post-migration step). */
+  cloudflare_dns_updated_at?: string;
   /** Malware scan requested for this run (scan happens on the staging server before upload). */
   scan_requested?: boolean;
   scan_report?: ScanReport;
@@ -179,6 +181,58 @@ export interface CompatibilityResult {
   warnings: string[];
   errors: string[];
   mappings: Record<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Cloudflare DNS (post-migration repointing)
+// ---------------------------------------------------------------------------
+
+/** GET /settings/cloudflare — never includes the token itself. */
+export interface CloudflareSettings {
+  configured: boolean;
+  target_ip: string;
+  target_ipv6: string;
+}
+
+/** What happened for one domain's zone during an "Update Cloudflare DNS" run. */
+export interface CloudflareZoneResult {
+  domain: string;
+  zone?: string;
+  zone_id?: string;
+  found: boolean;
+  /** True when the full exported zone was replicated (vs the @/www fallback). */
+  full_zone: boolean;
+  /** Records created, human lines, e.g. "MX example.com -> 10 mail.example.com". */
+  created?: string[];
+  /** Records changed, human lines. */
+  updated?: string[];
+  /** AAAA records removed because no IPv6 target was configured. */
+  deleted?: string[];
+  /** Mail records left untouched because mail is external, e.g. "skipping external mail: MX 10 -> aspmx.l.google.com ...". */
+  skipped_mail?: string[];
+  /** Records already correct. */
+  unchanged: number;
+  /** Re-read verification per web record. */
+  verified?: string[];
+  purged: boolean;
+  /** Reason the zone was not acted on (e.g. not in our account). */
+  skipped?: string;
+}
+
+/** POST /migrations/:id/cloudflare/dns result. */
+export interface CloudflareDNSResult {
+  target_ip: string;
+  target_ipv6?: string;
+  old_ip?: string;
+  zones: CloudflareZoneResult[];
+  records_created: number;
+  records_updated: number;
+  records_deleted: number;
+  unchanged: number;
+  mail_skipped: number;
+  /** created + updated + deleted. */
+  records_changed: number;
+  zones_updated: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -1041,7 +1041,7 @@ func (da *DirectAdmin) exportDNSRecords(ctx context.Context, username, domain st
 		// Try to identify record type
 		for i, part := range parts {
 			switch strings.ToUpper(part) {
-			case "A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR":
+			case "A", "AAAA", "CNAME", "MX", "TXT", "NS", "PTR", "SRV", "CAA":
 				record := common.DNSRecord{
 					Type: strings.ToUpper(part),
 					Name: parts[0],

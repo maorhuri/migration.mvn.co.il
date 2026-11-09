@@ -25,6 +25,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.cancel': 'בטל מיגרציה',
     'migrationdetail.actions.suspend': 'השעה את המקור',
     'migrationdetail.actions.unsuspend': 'בטל השעיה',
+    'migrationdetail.actions.cloudflare': 'עדכן DNS ב-Cloudflare',
     'migrationdetail.actions.repair': 'תקן WordPress',
     'migrationdetail.actions.remigrateDb': 'העבר שוב רק את ה-DB',
     'migrationdetail.actions.rerun': 'התחל מהתחלה',
@@ -48,6 +49,10 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.suspendFailed': 'השעיית החשבון במקור נכשלה',
     'migrationdetail.toast.unsuspended': '{account} הופעל מחדש בשרת המקור',
     'migrationdetail.toast.unsuspendFailed': 'ביטול ההשעיה נכשל',
+    'migrationdetail.toast.cloudflareDone': 'Cloudflare: {created} רשומות נוצרו, {updated} עודכנו ב-{zones} זונות',
+    'migrationdetail.toast.cloudflareMailSkipped': 'Cloudflare: {count} רשומות דואר חיצוני דולגו (הדואר לא על השרת שהועבר) — ראה לוג',
+    'migrationdetail.toast.cloudflareNone': 'Cloudflare: לא נמצאה זונה בחשבון שלנו לדומיינים האלה (ראה לוג)',
+    'migrationdetail.toast.cloudflareFailed': 'עדכון ה-DNS ב-Cloudflare נכשל',
 
     'migrationdetail.confirm.sourceServer': 'המקור',
     'migrationdetail.confirm.cancel.title': 'לבטל את המיגרציה?',
@@ -63,6 +68,11 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.unsuspend.title': 'להפעיל מחדש את החשבון במקור?',
     'migrationdetail.confirm.unsuspend.message': '{account} יחזור להיות פעיל בשרת {server}.',
     'migrationdetail.confirm.unsuspend.confirm': 'בטל השעיה',
+    'migrationdetail.confirm.cloudflare.title': 'לעדכן את ה-DNS ב-Cloudflare?',
+    'migrationdetail.confirm.cloudflare.message':
+      'עבור כל דומיין של {account} שהזונה שלו נמצאת בחשבון ה-Cloudflare שלנו, הזונה המלאה שיוצאה מהמקור תשוכפל (A/AAAA/CNAME/MX/TXT/SRV/CAA): רשומות ה-A של @, www וכל רשומה שמצביעה על ה-IP הישן יופנו לשרת החדש ({ip}), SPF יעודכן ל-IP החדש, ורשומות NS/SOA יישארו של Cloudflare. אם הדואר חיצוני (ה-MX לא על השרת שהועבר) — רשומות הדואר לא ייגעו וידולגו עם רישום בלוג. לבסוף המטמון ינוקה והתוצאה תיבדק. דומיין שאינו בחשבון שלנו ידולג.',
+    'migrationdetail.confirm.cloudflare.confirm': 'עדכן DNS',
+    'migrationdetail.confirm.cloudflare.noIp': 'ה-IP של שרת היעד אינו ידוע. הגדר IP יעד בעמוד ההגדרות.',
     'migrationdetail.confirm.repair.title': 'לתקן את רישום ה-WordPress?',
     'migrationdetail.confirm.repair.message':
       'מריץ שוב את השלבים שאחרי הייבוא ביעד: מגדיר את גרסת ה-PHP לפי המקור, מעביר התקנות WordPress ישנות שמסד הנתונים שלהן לא קיים אל מחוץ ל-web root (הן נשמרות תחת {leftovers}, לא נמחקות), מסיר רשומות אפליקציה ישנות, מפעיל שוב את זיהוי ה-WordPress של Enhance ומתקן בעלות על קבצים. מתאים כשכפתור ההתחברות ל-WP או רשימת המשתמשים ב-Enhance לא עובדים. ההתקדמות נכתבת לקונסולה למטה.',
@@ -169,6 +179,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.cancel': 'Cancel migration',
     'migrationdetail.actions.suspend': 'Suspend source',
     'migrationdetail.actions.unsuspend': 'Unsuspend source',
+    'migrationdetail.actions.cloudflare': 'Update Cloudflare DNS',
     'migrationdetail.actions.repair': 'Repair WordPress',
     'migrationdetail.actions.remigrateDb': 'Re-migrate DB only',
     'migrationdetail.actions.rerun': 'Start from scratch',
@@ -192,6 +203,10 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.suspendFailed': 'Failed to suspend the source account',
     'migrationdetail.toast.unsuspended': '{account} re-enabled on the source server',
     'migrationdetail.toast.unsuspendFailed': 'Failed to unsuspend the source account',
+    'migrationdetail.toast.cloudflareDone': 'Cloudflare: {created} record(s) created, {updated} updated across {zones} zone(s)',
+    'migrationdetail.toast.cloudflareMailSkipped': 'Cloudflare: {count} external-mail record(s) left untouched (mail is off the migrated server) — see the log',
+    'migrationdetail.toast.cloudflareNone': 'Cloudflare: no zone in our account matched these domains (see the log)',
+    'migrationdetail.toast.cloudflareFailed': 'Updating Cloudflare DNS failed',
 
     'migrationdetail.confirm.sourceServer': 'the source server',
     'migrationdetail.confirm.cancel.title': 'Cancel this migration?',
@@ -207,6 +222,11 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.unsuspend.title': 'Re-enable the source account?',
     'migrationdetail.confirm.unsuspend.message': '{account} will be active again on {server}.',
     'migrationdetail.confirm.unsuspend.confirm': 'Unsuspend',
+    'migrationdetail.confirm.cloudflare.title': 'Update Cloudflare DNS?',
+    'migrationdetail.confirm.cloudflare.message':
+      "For each of {account}'s domains whose zone is in our Cloudflare account, the full exported zone is replicated (A/AAAA/CNAME/MX/TXT/SRV/CAA): A records for @, www and anything still pointing at the old IP are repointed to the new server ({ip}), SPF is rewritten to the new IP, and NS/SOA are left to Cloudflare. If mail is external (the MX is not on the migrated server), mail records are left untouched and skipped with a log line. Finally the cache is purged and the result is verified. A domain not in our account is skipped.",
+    'migrationdetail.confirm.cloudflare.confirm': 'Update DNS',
+    'migrationdetail.confirm.cloudflare.noIp': "The target server IP is unknown. Set a target IP on the Settings page.",
     'migrationdetail.confirm.repair.title': 'Repair WordPress registration?',
     'migrationdetail.confirm.repair.message':
       'Re-runs the post-import steps on the target: sets the PHP version to match the source, moves old WordPress installs whose database does not exist out of the web root (kept under {leftovers}, not deleted), removes stale app records, triggers the WordPress discovery of Enhance again and fixes file ownership. Use it when the WP login button or the user list in Enhance does not work. Progress is written to the console below.',

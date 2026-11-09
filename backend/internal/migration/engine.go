@@ -62,28 +62,29 @@ type MigrationRequest struct {
 
 // MigrationResult represents the state of a migration as exposed by the API
 type MigrationResult struct {
-	ID                string                    `json:"id"`
-	BatchID           string                    `json:"batch_id,omitempty"`
-	SourceServerID    string                    `json:"source_server_id"`
-	TargetServerID    string                    `json:"target_server_id"`
-	AccountUsername   string                    `json:"account_username"`
-	Status            string                    `json:"status"`
-	CurrentStep       string                    `json:"current_step,omitempty"`
-	TotalSteps        int                       `json:"total_steps"`
-	CompletedSteps    int                       `json:"completed_steps"`
-	TargetIP          string                    `json:"target_ip,omitempty"`
-	TargetNode        string                    `json:"target_node,omitempty"`
-	Warnings          int                       `json:"warnings"`
-	ExportData        *common.ExportData        `json:"export_data,omitempty"`
-	Error             string                    `json:"error,omitempty"`
-	CreatedAt         time.Time                 `json:"created_at"`
-	StartedAt         time.Time                 `json:"started_at"`
-	CompletedAt       *time.Time                `json:"completed_at,omitempty"`
-	SourceSuspendedAt *time.Time                `json:"source_suspended_at,omitempty"` // source account suspended after migration
-	ScanRequested     bool                      `json:"scan_requested"`
-	ScanReport        *security.Report          `json:"scan_report,omitempty"`
-	ScanDecision      string                    `json:"scan_decision,omitempty"`
-	Progress          *common.MigrationProgress `json:"progress,omitempty"`
+	ID                     string                    `json:"id"`
+	BatchID                string                    `json:"batch_id,omitempty"`
+	SourceServerID         string                    `json:"source_server_id"`
+	TargetServerID         string                    `json:"target_server_id"`
+	AccountUsername        string                    `json:"account_username"`
+	Status                 string                    `json:"status"`
+	CurrentStep            string                    `json:"current_step,omitempty"`
+	TotalSteps             int                       `json:"total_steps"`
+	CompletedSteps         int                       `json:"completed_steps"`
+	TargetIP               string                    `json:"target_ip,omitempty"`
+	TargetNode             string                    `json:"target_node,omitempty"`
+	Warnings               int                       `json:"warnings"`
+	ExportData             *common.ExportData        `json:"export_data,omitempty"`
+	Error                  string                    `json:"error,omitempty"`
+	CreatedAt              time.Time                 `json:"created_at"`
+	StartedAt              time.Time                 `json:"started_at"`
+	CompletedAt            *time.Time                `json:"completed_at,omitempty"`
+	SourceSuspendedAt      *time.Time                `json:"source_suspended_at,omitempty"`       // source account suspended after migration
+	CloudflareDNSUpdatedAt *time.Time                `json:"cloudflare_dns_updated_at,omitempty"` // Cloudflare DNS repointed to the new server
+	ScanRequested          bool                      `json:"scan_requested"`
+	ScanReport             *security.Report          `json:"scan_report,omitempty"`
+	ScanDecision           string                    `json:"scan_decision,omitempty"`
+	Progress               *common.MigrationProgress `json:"progress,omitempty"`
 }
 
 // StartMigration starts a new migration
@@ -395,6 +396,8 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		migrationLog("info", "Migration completed successfully")
 	}
 	e.refreshAccountsCacheAsync(sourceServer.ID)
+	// If a Cloudflare token is configured, repoint DNS automatically now. Never fails the migration.
+	e.maybeAutoUpdateCloudflareDNS(ctx, migrationID)
 }
 
 // connectEnhanceTarget connects to the Enhance API and to the cluster node that will host the website.
@@ -984,6 +987,9 @@ func toResult(m *storage.Migration) *MigrationResult {
 	}
 	if m.SourceSuspendedAt.Valid {
 		result.SourceSuspendedAt = &m.SourceSuspendedAt.Time
+	}
+	if m.CloudflareDNSUpdatedAt.Valid {
+		result.CloudflareDNSUpdatedAt = &m.CloudflareDNSUpdatedAt.Time
 	}
 	result.ScanRequested = m.ScanRequested
 	result.ScanDecision = m.ScanDecision.String

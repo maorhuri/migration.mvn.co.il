@@ -8,6 +8,7 @@ import { sshkeys } from './pages/sshkeys';
 import { migrations } from './pages/migrations';
 import { newmigration } from './pages/newmigration';
 import { migrationdetail } from './pages/migrationdetail';
+import { settings } from './pages/settings';
 
 export type { Dict, PageDict } from './types';
 
@@ -25,6 +26,7 @@ export const dictionaries: Record<Lang, Dict> = {
     ...migrations.he,
     ...newmigration.he,
     ...migrationdetail.he,
+    ...settings.he,
   },
   en: {
     ...common.en,
@@ -35,5 +37,6 @@ export const dictionaries: Record<Lang, Dict> = {
     ...migrations.en,
     ...newmigration.en,
     ...migrationdetail.en,
+    ...settings.en,
   },
 };

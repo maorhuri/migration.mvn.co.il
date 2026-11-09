@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, CircleStackIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { cancelMigration, getMigration, getMigrationLogsPage, getServer, remigrateMigrationDatabases, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { ArrowPathIcon, CircleStackIcon, CloudIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
+import { cancelMigration, getMigration, getMigrationLogsPage, getServer, remigrateMigrationDatabases, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource, updateMigrationCloudflareDNS } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -74,6 +74,8 @@ export default function MigrationDetail() {
   const [remigrateDbOpen, setRemigrateDbOpen] = useState(false);
   const [remigratingDb, setRemigratingDb] = useState(false);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
+  const [cloudflareOpen, setCloudflareOpen] = useState(false);
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [jumpToId, setJumpToId] = useState<string | null>(null);
   const deepLinkedRef = useRef(false);
   const consoleRef = useRef<HTMLElement | null>(null);
@@ -224,6 +226,7 @@ export default function MigrationDetail() {
   const awaitingReview = migration.status === 'awaiting_review';
   const isCompleted = migration.status === 'completed';
   const sourceSuspended = !!migration.source_suspended_at;
+  const dnsUpdated = !!migration.cloudflare_dns_updated_at;
   // FTP / WordPress source: nothing to suspend from here; the old site is disabled by hand after DNS.
   // Sources the tool cannot suspend after the switch (no panel to do it through): the operator disables the old site by hand.
   const manualSourceDisable = isAgentlessPanel(sourceServer?.panel_type) || sourceServer?.panel_type === 'cloudways';
@@ -331,6 +334,34 @@ export default function MigrationDetail() {
       toast.error(apiError(error, t('migrationdetail.toast.unsuspendFailed')));
     }
   };
+  const handleCloudflareDNS = async () => {
+    setCloudflareBusy(true);
+    try {
+      const { result } = await updateMigrationCloudflareDNS(migration.id);
+      if (result.records_changed > 0 || result.zones_updated > 0) {
+        toast.success(
+          t('migrationdetail.toast.cloudflareDone', {
+            created: result.records_created,
+            updated: result.records_updated,
+            zones: result.zones_updated,
+          }),
+          { duration: 7000 },
+        );
+      } else {
+        toast(t('migrationdetail.toast.cloudflareNone'), { duration: 7000 });
+      }
+      // External mail is a safety outcome worth calling out on its own line.
+      if (result.mail_skipped > 0) {
+        toast(t('migrationdetail.toast.cloudflareMailSkipped', { count: result.mail_skipped }), { duration: 9000, icon: '✉️' });
+      }
+      setCloudflareOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, t('migrationdetail.toast.cloudflareFailed')));
+    } finally {
+      setCloudflareBusy(false);
+    }
+  };
   const warningLogs = logs.filter((log) => log.level === 'warn');
   const domains = migration.export_data?.domains?.map((d) => d.target_domain || d.name).filter(Boolean) ?? [];
   const hostsEntry = migration.target_ip && domains.length > 0 ? `${migration.target_ip} ${domains.join(' ')}` : null;
@@ -357,6 +388,11 @@ export default function MigrationDetail() {
                   {sourceSuspended ? t('status.sourceSuspended') : t('status.sourceActive')}
                 </Badge>
               )}
+              {isCompleted && dnsUpdated && (
+                <Badge tone="success" dot>
+                  {t('status.dnsUpdated')}
+                </Badge>
+              )}
             </div>
           }
           actions={
@@ -377,6 +413,11 @@ export default function MigrationDetail() {
               {canSuspend && sourceSuspended && (
                 <Button variant="outline" leftIcon={<PlayCircleIcon />} onClick={() => setUnsuspendOpen(true)}>
                   {t('migrationdetail.actions.unsuspend')}
+                </Button>
+              )}
+              {isCompleted && (
+                <Button variant="outline" leftIcon={<CloudIcon />} onClick={() => setCloudflareOpen(true)} loading={cloudflareBusy}>
+                  {t('migrationdetail.actions.cloudflare')}
                 </Button>
               )}
               {isCompleted && (
@@ -530,6 +571,23 @@ export default function MigrationDetail() {
         message={t.rich('migrationdetail.confirm.unsuspend.message', { account: accountMono, server: sourceMono })}
         confirmLabel={t('migrationdetail.confirm.unsuspend.confirm')}
         onConfirm={handleUnsuspendSource}
+      />
+
+      <ConfirmDialog
+        open={cloudflareOpen}
+        onClose={() => setCloudflareOpen(false)}
+        tone="brand"
+        title={t('migrationdetail.confirm.cloudflare.title')}
+        message={
+          migration.target_ip
+            ? t.rich('migrationdetail.confirm.cloudflare.message', {
+                account: accountMono,
+                ip: <Mono>{migration.target_ip}</Mono>,
+              })
+            : t('migrationdetail.confirm.cloudflare.noIp')
+        }
+        confirmLabel={t('migrationdetail.confirm.cloudflare.confirm')}
+        onConfirm={handleCloudflareDNS}
       />
 
       <ConfirmDialog
