@@ -550,15 +550,21 @@ func (cp *CPanel) ExportEmails(ctx context.Context, username string, outputDir s
 // (excluding main/cache and the *_SSL variants) is one site, with its real servername, document
 // root, PHP version and aliases -- which sidesteps cPanel's addon/parked/subdomain bookkeeping.
 func (cp *CPanel) exportDomains(ctx context.Context, username, mainDomain string) ([]common.Domain, error) {
-	// For each vhost file emit one pipe-delimited line: VHOST|<file>|<servername>|<documentroot>|<serveralias>|<phpversion>
+	// For each vhost file emit one pipe-delimited line: VHOST|<file>|<servername>|<documentroot>|<serveralias>|<phpversion>.
+	// The userdata directory also holds non-vhost files (main, cache, <domain>_SSL, and notably
+	// per-domain "<domain>.php-fpm.yaml" PHP-FPM pool configs). Those are skipped by name, and --
+	// the authoritative filter -- any file without a "documentroot:" line is not a website and is
+	// dropped (that alone keeps a config file like adbarot4me.info.php-fpm.yaml from appearing as a
+	// fake site). A real vhost file is named exactly after the domain, with no extension.
 	script := fmt.Sprintf(`U=%s
 DIR=/var/cpanel/userdata/$U
 for f in "$DIR"/*; do
   b=$(basename "$f")
-  case "$b" in main|cache|*.cache|*_SSL) continue;; esac
+  case "$b" in main|cache|*.cache|*_SSL|*.yaml|*.yml|*.json|*.db) continue;; esac
   [ -f "$f" ] || continue
-  sn=$(awk -F": " '/^servername:/{print $2; exit}' "$f")
   dr=$(awk -F": " '/^documentroot:/{print $2; exit}' "$f")
+  [ -z "$dr" ] && continue
+  sn=$(awk -F": " '/^servername:/{print $2; exit}' "$f")
   sa=$(awk -F": " '/^serveralias:/{sub(/^serveralias: /,""); print; exit}' "$f")
   ph=$(awk -F": " '/^phpversion:/{print $2; exit}' "$f")
   [ -z "$sn" ] && sn="$b"
