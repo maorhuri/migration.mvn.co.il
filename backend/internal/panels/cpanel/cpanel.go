@@ -166,15 +166,18 @@ func (cp *CPanel) GetAccount(ctx context.Context, username string) (*common.Acco
 			}
 			key := strings.TrimSpace(kv[0])
 			value := strings.TrimSpace(kv[1])
-			switch key {
-			case "DNS":
+			switch {
+			case key == "DNS":
 				account.Domain = value
-			case "CONTACTEMAIL":
+			case key == "CONTACTEMAIL":
 				account.Email = value
-			case "PLAN":
+			case key == "PLAN":
 				account.Package = value
-			case "SUSPENDED":
+			case key == "SUSPENDED":
 				account.Suspended = value == "1" || strings.EqualFold(value, "yes")
+			case strings.HasPrefix(key, "DNS") && value != "":
+				// DNS1=, DNS2=, ... are the account's additional (addon/parked) domains.
+				account.AddonDomains = append(account.AddonDomains, value)
 			}
 		}
 	}
@@ -218,35 +221,41 @@ func (cp *CPanel) GetAccount(ctx context.Context, username string) (*common.Acco
 	return account, nil
 }
 
-// getAccountScript builds the single discovery script GetAccount runs. Kept separate so the
-// (doubly-interpolated) LIKE pattern is spliced through shq exactly once per use.
+// getAccountScript builds the single discovery script GetAccount runs. It is a plain multi-line
+// script (NOT wrapped in `bash -c '...'`): RunCommand already runs it through the remote shell, and
+// the wrapper made the embedded single-quoted SQL and awk programs impossible to quote correctly
+// (the whole script exited status 1 on a real cPanel box). USER and LIKE are passed as shell
+// variables -- shq-quoted once -- so the SQL below can quote cleanly. `set +e` plus the trailing
+// `true` keep the exit status 0 even when a probe (missing mysql, a vhost file, ...) fails, so one
+// unreadable field never aborts the whole account. `du` is capped with `timeout` because a large
+// home directory (seen: 143 GB) otherwise makes the per-account listing take tens of seconds.
 func (cp *CPanel) getAccountScript(username, likePattern string) string {
-	showDBs := shq("SHOW DATABASES LIKE '" + likePattern + "'")
-	sumSize := shq("SELECT COALESCE(ROUND(SUM(data_length + index_length)/1024/1024,1),0) FROM information_schema.tables WHERE table_schema LIKE '" + likePattern + "'")
-	return fmt.Sprintf(`bash -c '
+	return fmt.Sprintf(`set +e
 USER=%s
-USERFILE=/var/cpanel/users/$USER
-cat "$USERFILE" 2>/dev/null
+LIKE=%s
+UF=/var/cpanel/users/$USER
+cat "$UF" 2>/dev/null
 echo "---SEPARATOR---"
-du -sh /home/$USER 2>/dev/null | cut -f1
+timeout 12 du -sh /home/"$USER" 2>/dev/null | cut -f1
 echo "---SEPARATOR---"
-mysql -N -e %s 2>/dev/null | tr "\n" ","
+mysql -N -e "SHOW DATABASES LIKE '$LIKE'" 2>/dev/null | tr '\n' ','
 echo "---SEPARATOR---"
-DNS=$(grep "^DNS=" "$USERFILE" 2>/dev/null | head -1 | cut -d= -f2)
-VHOST=/var/cpanel/userdata/$USER/$DNS
-DOCROOT=$(awk -F": " "/^documentroot:/{print \$2; exit}" "$VHOST" 2>/dev/null)
-[ -z "$DOCROOT" ] && DOCROOT=/home/$USER/public_html
-if [ -f "/home/$USER/etc/$DNS/passwd" ]; then cut -d: -f1 "/home/$USER/etc/$DNS/passwd" 2>/dev/null | tr "\n" ","; fi
+DNS=$(grep '^DNS=' "$UF" 2>/dev/null | head -1 | cut -d= -f2)
+VH=/var/cpanel/userdata/$USER/$DNS
+DR=$(awk -F': ' '/^documentroot:/{print $2; exit}' "$VH" 2>/dev/null)
+[ -z "$DR" ] && DR=/home/$USER/public_html
+[ -f "/home/$USER/etc/$DNS/passwd" ] && cut -d: -f1 "/home/$USER/etc/$DNS/passwd" 2>/dev/null | tr '\n' ','
 echo "---SEPARATOR---"
-if [ -f "$DOCROOT/wp-config.php" ]; then echo "yes"; else echo "no"; fi
+if [ -f "$DR/wp-config.php" ]; then echo yes; else echo no; fi
 echo "---SEPARATOR---"
-if [ -f "/var/cpanel/userdata/$USER/${DNS}_SSL" ] || [ -f "/var/cpanel/ssl/apache_tls/$DNS/combined" ]; then echo "yes"; else echo "no"; fi
+if [ -f "/var/cpanel/userdata/$USER/${DNS}_SSL" ] || [ -f "/var/cpanel/ssl/apache_tls/$DNS/combined" ]; then echo yes; else echo no; fi
 echo "---SEPARATOR---"
-awk -F": " "/^phpversion:/{print \$2; exit}" "$VHOST" 2>/dev/null
+awk -F': ' '/^phpversion:/{print $2; exit}' "$VH" 2>/dev/null
 echo "---SEPARATOR---"
-mysql -N -e %s 2>/dev/null || echo "0"
+mysql -N -e "SELECT COALESCE(ROUND(SUM(data_length+index_length)/1024/1024,1),0) FROM information_schema.tables WHERE table_schema LIKE '$LIKE'" 2>/dev/null
 echo "---SEPARATOR---"
-'`, shq(username), showDBs, sumSize)
+true
+`, shq(username), shq(likePattern))
 }
 
 // ExportAccount exports all data for an account (same six-step flow as the DirectAdmin exporter).
