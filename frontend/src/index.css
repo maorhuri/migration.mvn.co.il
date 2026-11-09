@@ -20,6 +20,8 @@
   body {
     @apply bg-slate-50 text-slate-900 text-sm font-sans dark:bg-slate-950 dark:text-slate-100;
     line-height: 1.45;
+    font-kerning: normal;
+    font-feature-settings: 'kern', 'liga', 'calt';
   }
 
   /* Hebrew needs a little more air between lines and no letter-spacing on headings. */
@@ -44,6 +46,8 @@
   code, kbd, pre, samp {
     @apply font-mono;
     font-feature-settings: normal;
+    /* Console digits are unmistakable — a slashed zero never reads as an O at 2am. */
+    font-variant-numeric: slashed-zero;
   }
 
   /* Visible focus for keyboard users only. Components add their own ring where needed. */
@@ -130,7 +134,7 @@
    * (Latin words inside Hebrew labels stay as written) and reads at 12px.
    */
   .eyebrow {
-    @apply text-2xs font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400;
+    @apply text-2xs font-semibold uppercase tracking-[0.1em] text-slate-500 dark:text-slate-400;
   }
   [dir="rtl"] .eyebrow {
     letter-spacing: 0;
@@ -147,7 +151,7 @@
     text-wrap: balance;
   }
   .tabular {
-    font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums slashed-zero;
   }
   /* Hide scrollbar but keep scrolling (used in horizontal chip rows). */
   .scrollbar-none {

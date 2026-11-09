@@ -20,10 +20,10 @@ function ThemedToaster() {
         duration: 3500,
         style: {
           direction: dir,
-          background: dark ? '#0f172a' : '#ffffff',
-          color: dark ? '#f1f5f9' : '#0f172a',
-          border: `1px solid ${dark ? 'rgba(255,255,255,0.1)' : '#e2e8f0'}`,
-          boxShadow: dark ? '0 12px 32px -16px rgba(0,0,0,0.7)' : '0 8px 24px -12px rgba(15,23,42,0.18)',
+          background: dark ? '#1d141e' : '#ffffff',
+          color: dark ? '#f7f3f8' : '#1d141e',
+          border: `1px solid ${dark ? 'rgba(255,255,255,0.1)' : '#ece5ed'}`,
+          boxShadow: dark ? '0 18px 40px -14px rgba(0,0,0,0.72)' : '0 10px 24px -10px rgba(29,20,30,0.16)',
           borderRadius: '10px',
           padding: '10px 14px',
           fontSize: '13px',
@@ -32,14 +32,14 @@ function ThemedToaster() {
           maxWidth: '420px',
         },
         success: {
-          iconTheme: { primary: '#10b981', secondary: dark ? '#0f172a' : '#ffffff' },
+          iconTheme: { primary: '#10b981', secondary: dark ? '#1d141e' : '#ffffff' },
         },
         error: {
-          iconTheme: { primary: '#f43f5e', secondary: dark ? '#0f172a' : '#ffffff' },
+          iconTheme: { primary: '#f43f5e', secondary: dark ? '#1d141e' : '#ffffff' },
           duration: 5000,
         },
         loading: {
-          iconTheme: { primary: '#c62c85', secondary: dark ? '#0f172a' : '#ffffff' },
+          iconTheme: { primary: '#c62c85', secondary: dark ? '#1d141e' : '#ffffff' },
         },
       }}
     />

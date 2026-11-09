@@ -20,6 +20,27 @@ const brand = {
   950: '#3a0a27',
 };
 
+/**
+ * Bespoke neutral — a warm "plum-ink graphite" that replaces stock Tailwind slate app-wide.
+ * Every step keeps slate's own lightness (so existing contrast / dark-mode pairings hold), with a
+ * faint magenta undertone (hue ~322, aligned to the brand's pink) folded in. Dark steps carry the
+ * most of it, so dark mode reads as a deep aubergine-ink control room, not generic blue-black.
+ * It is wired in as `slate`, so no class name in any component changes.
+ */
+const slate = {
+  50: '#fcf8fc',
+  100: '#f7f3f8',
+  200: '#ece5ed',
+  300: '#d9d1da',
+  400: '#a79ea8',
+  500: '#787079',
+  600: '#59515a',
+  700: '#463c47',
+  800: '#2e252f',
+  900: '#1d141e',
+  950: '#0b050c',
+};
+
 export default {
   darkMode: 'class',
   content: [
@@ -57,6 +78,8 @@ export default {
       },
       colors: {
         brand,
+        // Bespoke neutral (overrides Tailwind's default slate everywhere it is referenced).
+        slate,
         // Pages historically reference `primary-*`; it is the brand scale.
         primary: brand,
         // Semantic aliases (use the semantic name in new code; the raw scale still works).
@@ -78,10 +101,11 @@ export default {
         '2xl': '1rem',
       },
       boxShadow: {
-        sm: '0 1px 2px 0 rgb(15 23 42 / 0.03)',
+        // Tinted with the neutral ink (rgb 29 20 30 = slate-900), layered rather than one flat grey.
+        sm: '0 1px 2px 0 rgb(29 20 30 / 0.05), 0 1px 1px -0.5px rgb(29 20 30 / 0.04)',
         card: 'none',
-        pop: '0 8px 24px -12px rgb(15 23 42 / 0.18), 0 0 0 1px rgb(15 23 42 / 0.04)',
-        'pop-dark': '0 12px 32px -16px rgb(0 0 0 / 0.7)',
+        pop: '0 1px 1px 0 rgb(29 20 30 / 0.04), 0 10px 20px -8px rgb(29 20 30 / 0.14), 0 24px 40px -24px rgb(29 20 30 / 0.12), 0 0 0 1px rgb(29 20 30 / 0.04)',
+        'pop-dark': '0 2px 4px 0 rgb(0 0 0 / 0.4), 0 18px 40px -14px rgb(0 0 0 / 0.72), 0 0 0 1px rgb(0 0 0 / 0.5)',
       },
       keyframes: {
         'fade-in': {
