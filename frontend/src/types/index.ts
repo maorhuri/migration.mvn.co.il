@@ -238,6 +238,42 @@ export interface CloudflareDNSResult {
 }
 
 // ---------------------------------------------------------------------------
+// Email deliverability (FluentSMTP per site + SPF/DMARC in DNS)
+// ---------------------------------------------------------------------------
+
+/** GET /settings/email — never includes the SMTP password itself. */
+export interface EmailSettings {
+  /** A mail host is set (central email is usable). */
+  configured: boolean;
+  /** An SMTP auth password is stored (its value is never returned). */
+  password_configured: boolean;
+  host: string;
+  port: string;
+  encryption: string; // tls | ssl | none
+  auth_user: string;
+  from_name: string;
+  /** Full address, "local@", or a bare local-part used per site (e.g. no-reply@<domain>). */
+  from_email: string;
+  /** Extra SPF term(s) merged into the record, e.g. "include:_spf.relay.net". */
+  spf_extra: string;
+  dmarc_policy: string; // none | quarantine | reject
+  dmarc_rua: string; // mailbox for aggregate reports (rua=mailto:)
+}
+
+/** POST /migrations/:id/email/setup result. */
+export interface EmailSetupResult {
+  domains: string[];
+  /** Per-site FluentSMTP summary lines. */
+  fluent_smtp?: string[];
+  /** Per-zone SPF lines. */
+  spf_ensured?: string[];
+  /** Per-zone DMARC lines. */
+  dmarc_ensured?: string[];
+  /** Reason SPF/DMARC were not touched (e.g. no Cloudflare token). */
+  dns_skipped?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Malware scan (staging server, before upload)
 // ---------------------------------------------------------------------------
 

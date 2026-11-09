@@ -96,6 +96,8 @@ type CloudflareZoneResult struct {
 	Verified    []string `json:"verified,omitempty"`     // re-read result per web record
 	Purged      bool     `json:"purged"`
 	Skipped     string   `json:"skipped,omitempty"` // reason when the zone was not acted on
+	SPF         string   `json:"spf,omitempty"`     // SPF record ensured for outbound mail (email setup)
+	DMARC       string   `json:"dmarc,omitempty"`   // DMARC record ensured for outbound mail (email setup)
 }
 
 // CloudflareDNSResult summarizes an Update Cloudflare DNS run across all of a migration's domains.
@@ -207,6 +209,9 @@ func (e *Engine) UpdateCloudflareDNS(ctx context.Context, migrationID string) (*
 	}
 	targetIPv6, _ := e.db.GetCloudflareTargetIPv6(ctx)
 
+	// When central email is configured, the DNS run also ensures SPF/DMARC for outbound mail.
+	smtp, _ := e.db.GetSMTPSettings(ctx)
+
 	result, err := e.GetMigrationStatus(ctx, migrationID)
 	if err != nil {
 		return nil, nil, err
@@ -257,6 +262,13 @@ func (e *Engine) UpdateCloudflareDNS(ctx context.Context, migrationID string) (*
 		doneZones[zone.ID] = true
 
 		e.applyZoneDNS(ctx, client, &zr, out, zone, domain, result, targetIP, targetIPv6, oldIP, logFn)
+
+		// Outbound-mail DNS (SPF + DMARC, never DKIM): only when central email is configured.
+		if strings.TrimSpace(smtp.Host) != "" {
+			oc := e.ensureMailDNS(ctx, client, zone.ID, zone.Name, targetIP, smtp, logFn)
+			zr.SPF = oc.SPF
+			zr.DMARC = oc.DMARC
+		}
 		out.Zones = append(out.Zones, zr)
 	}
 
