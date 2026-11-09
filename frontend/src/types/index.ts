@@ -95,6 +95,8 @@ export interface Account {
   node?: string;
   /** An Enhance staging copy of another website. */
   staging?: boolean;
+  /** The account's domain (primary or an addon) is a zone in our Cloudflare account. */
+  has_cloudflare?: boolean;
 }
 
 export interface Migration {

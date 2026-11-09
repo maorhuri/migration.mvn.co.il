@@ -1879,6 +1879,10 @@ type AccountInfo struct {
 	Node   string `json:"node,omitempty"`
 	// Staging: an Enhance staging copy of another website (Enhance sources only).
 	Staging bool `json:"staging,omitempty"`
+	// HasCloudflare: the account's domain (primary or an addon) is a zone in OUR Cloudflare
+	// account (the configured token can see it). Set by MarkCloudflareAccounts when a token is
+	// configured; always false otherwise.
+	HasCloudflare bool `json:"has_cloudflare"`
 }
 
 // ServerInfo represents server system information
@@ -2037,6 +2041,19 @@ func (e *Engine) DeleteEnhanceWebsite(ctx context.Context, serverID, websiteID s
 }
 
 func (e *Engine) GetServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
+	accounts, err := e.collectServerAccounts(ctx, server, password)
+	if err != nil {
+		return nil, err
+	}
+	// Flag accounts whose domain lives in our Cloudflare account (one ListZones call total; a
+	// no-op when no token is configured, and never fatal — see MarkCloudflareAccounts).
+	e.MarkCloudflareAccounts(ctx, accounts)
+	return accounts, nil
+}
+
+// collectServerAccounts lists the raw accounts of a source server by panel type, without any
+// Cloudflare enrichment (its public wrapper GetServerAccounts adds that).
+func (e *Engine) collectServerAccounts(ctx context.Context, server *storage.Server, password string) ([]AccountInfo, error) {
 	switch common.PanelType(server.PanelType) {
 	case common.PanelTypeDirectAdmin:
 		da, err := e.connectDirectAdmin(ctx, server, password, nil)

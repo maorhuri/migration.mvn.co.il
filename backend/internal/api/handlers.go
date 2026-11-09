@@ -420,6 +420,9 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 					}
 				}
 			}
+			// Cached accounts bypass the engine's live listing, so flag Cloudflare-hosted ones here
+			// too (no-op without a token; never fails the listing).
+			h.engine.MarkCloudflareAccounts(c.Request.Context(), accounts)
 			c.JSON(http.StatusOK, gin.H{
 				"accounts": accounts,
 				"total":    len(accounts),
@@ -446,6 +449,10 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 			return
 		}
 		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, clusterServerID)
+		// GetEnhanceSourceAccounts does not enrich; GetServerAccounts (else branch) already did.
+		if err == nil {
+			h.engine.MarkCloudflareAccounts(c.Request.Context(), accounts)
+		}
 	} else {
 		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	}
@@ -535,6 +542,10 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 			return
 		}
 		accounts, err = h.engine.GetEnhanceSourceAccounts(c.Request.Context(), server, clusterServerID)
+		// GetEnhanceSourceAccounts does not enrich; GetServerAccounts (else branch) already did.
+		if err == nil {
+			h.engine.MarkCloudflareAccounts(c.Request.Context(), accounts)
+		}
 	} else {
 		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
 	}

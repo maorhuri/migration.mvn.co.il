@@ -84,6 +84,8 @@ export const newmigration: PageDict = {
     'newmigration.table.selectAll': 'בחר את כל החשבונות',
     'newmigration.table.wordpress': 'WordPress',
     'newmigration.table.ssl': 'SSL',
+    'newmigration.table.cf': 'CF',
+    'newmigration.table.cloudflare': 'הדומיין מתארח בחשבון ה-Cloudflare שלנו',
     'newmigration.table.viewItems': 'הצג {items} של {name}',
 
     // Selection tray
@@ -104,6 +106,10 @@ export const newmigration: PageDict = {
     'newmigration.tray.alreadyMigrated': '(כבר עברו)',
     'newmigration.tray.show': 'הצג',
     'newmigration.tray.hide': 'הסתר',
+    'newmigration.tray.cloudflareCount_one': 'אתר אחד ב-Cloudflare',
+    'newmigration.tray.cloudflareCount_other': '{count} אתרים ב-Cloudflare',
+    'newmigration.tray.cloudflareOnly': 'רק Cloudflare',
+    'newmigration.tray.cloudflareShowAll': 'הצג הכול',
 
     // Account list modals
     'newmigration.modal.mailboxes': 'תיבות דואר',
@@ -327,6 +333,8 @@ export const newmigration: PageDict = {
     'newmigration.table.selectAll': 'Select all accounts',
     'newmigration.table.wordpress': 'WordPress',
     'newmigration.table.ssl': 'SSL',
+    'newmigration.table.cf': 'CF',
+    'newmigration.table.cloudflare': 'Domain is in our Cloudflare account',
     'newmigration.table.viewItems': 'View {items} for {name}',
 
     // Selection tray
@@ -347,6 +355,10 @@ export const newmigration: PageDict = {
     'newmigration.tray.alreadyMigrated': '(already migrated)',
     'newmigration.tray.show': 'Show',
     'newmigration.tray.hide': 'Hide',
+    'newmigration.tray.cloudflareCount_one': '{count} on Cloudflare',
+    'newmigration.tray.cloudflareCount_other': '{count} on Cloudflare',
+    'newmigration.tray.cloudflareOnly': 'Cloudflare only',
+    'newmigration.tray.cloudflareShowAll': 'Show all',
 
     // Account list modals
     'newmigration.modal.mailboxes': 'Mailboxes',
