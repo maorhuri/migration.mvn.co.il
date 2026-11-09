@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ArrowPathIcon, CircleStackIcon, CloudIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
-import { cancelMigration, getMigration, getMigrationLogsPage, getServer, remigrateMigrationDatabases, repairMigrationWordPress, rerunMigration, resumeMigration, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource, updateMigrationCloudflareDNS } from '../api/client';
+import { ArrowPathIcon, CircleStackIcon, CloudIcon, EnvelopeIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon, WrenchScrewdriverIcon } from '@heroicons/react/20/solid';
+import { cancelMigration, getMigration, getMigrationLogsPage, getServer, remigrateMigrationDatabases, repairMigrationWordPress, rerunMigration, resumeMigration, runMigrationEmailSetup, submitScanDecision, suspendMigrationSource, unsuspendMigrationSource, updateMigrationCloudflareDNS } from '../api/client';
 import type { Migration, MigrationLog, Server } from '../types';
 import { Badge, Button, Card, ConfirmDialog, EmptyState, LogViewer, Mono, PageHeader, Skeleton, SkeletonCard, StatusBadge } from '../components/ui';
 import { formatRelativeTime } from '../lib/format';
@@ -76,6 +76,8 @@ export default function MigrationDetail() {
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
   const [cloudflareOpen, setCloudflareOpen] = useState(false);
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
   const [jumpToId, setJumpToId] = useState<string | null>(null);
   const deepLinkedRef = useRef(false);
   const consoleRef = useRef<HTMLElement | null>(null);
@@ -362,6 +364,25 @@ export default function MigrationDetail() {
       setCloudflareBusy(false);
     }
   };
+  const handleEmailSetup = async () => {
+    setEmailBusy(true);
+    try {
+      const { result } = await runMigrationEmailSetup(migration.id);
+      const sites = result.fluent_smtp?.length ?? 0;
+      const spf = result.spf_ensured?.length ?? 0;
+      const dmarc = result.dmarc_ensured?.length ?? 0;
+      toast.success(t('migrationdetail.toast.emailDone', { sites, spf, dmarc }), { duration: 8000 });
+      if (result.dns_skipped) {
+        toast(t('migrationdetail.toast.emailDnsSkipped'), { duration: 9000, icon: '✉️' });
+      }
+      setEmailOpen(false);
+      await fetchData();
+    } catch (error) {
+      toast.error(apiError(error, t('migrationdetail.toast.emailFailed')));
+    } finally {
+      setEmailBusy(false);
+    }
+  };
   const warningLogs = logs.filter((log) => log.level === 'warn');
   const domains = migration.export_data?.domains?.map((d) => d.target_domain || d.name).filter(Boolean) ?? [];
   const hostsEntry = migration.target_ip && domains.length > 0 ? `${migration.target_ip} ${domains.join(' ')}` : null;
@@ -418,6 +439,11 @@ export default function MigrationDetail() {
               {isCompleted && (
                 <Button variant="outline" leftIcon={<CloudIcon />} onClick={() => setCloudflareOpen(true)} loading={cloudflareBusy}>
                   {t('migrationdetail.actions.cloudflare')}
+                </Button>
+              )}
+              {isCompleted && (
+                <Button variant="outline" leftIcon={<EnvelopeIcon />} onClick={() => setEmailOpen(true)} loading={emailBusy}>
+                  {t('migrationdetail.actions.email')}
                 </Button>
               )}
               {isCompleted && (
@@ -588,6 +614,16 @@ export default function MigrationDetail() {
         }
         confirmLabel={t('migrationdetail.confirm.cloudflare.confirm')}
         onConfirm={handleCloudflareDNS}
+      />
+
+      <ConfirmDialog
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        tone="brand"
+        title={t('migrationdetail.confirm.email.title')}
+        message={t.rich('migrationdetail.confirm.email.message', { account: accountMono })}
+        confirmLabel={t('migrationdetail.confirm.email.confirm')}
+        onConfirm={handleEmailSetup}
       />
 
       <ConfirmDialog

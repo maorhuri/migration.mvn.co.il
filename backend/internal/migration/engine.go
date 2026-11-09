@@ -398,6 +398,8 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 	e.refreshAccountsCacheAsync(sourceServer.ID)
 	// If a Cloudflare token is configured, repoint DNS automatically now. Never fails the migration.
 	e.maybeAutoUpdateCloudflareDNS(ctx, migrationID)
+	// If central SMTP settings are configured, set up outbound email (FluentSMTP + SPF/DMARC). Never fails the migration.
+	e.maybeAutoEmailSetup(ctx, migrationID)
 }
 
 // connectEnhanceTarget connects to the Enhance API and to the cluster node that will host the website.

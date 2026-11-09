@@ -36,6 +36,19 @@ func (h *Handler) updateCloudflareDNS(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"migration": migration, "result": result})
 }
 
+// emailSetup configures FluentSMTP on the migrated site(s) and ensures SPF+DMARC in DNS (never
+// DKIM). A post-migration step for completed migrations; needs central SMTP settings configured.
+func (h *Handler) emailSetup(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	migration, result, err := h.engine.EmailSetup(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"migration": migration, "result": result})
+}
+
 // clearMigrations deletes every finished migration (completed, failed, cancelled) with its logs.
 func (h *Handler) clearMigrations(c *gin.Context) {
 	n, err := h.engine.ClearFinishedMigrations(c.Request.Context())

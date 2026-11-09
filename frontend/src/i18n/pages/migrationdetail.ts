@@ -26,6 +26,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'השעה את המקור',
     'migrationdetail.actions.unsuspend': 'בטל השעיה',
     'migrationdetail.actions.cloudflare': 'עדכן DNS ב-Cloudflare',
+    'migrationdetail.actions.email': 'הגדר דואר יוצא',
     'migrationdetail.actions.repair': 'תקן WordPress',
     'migrationdetail.actions.remigrateDb': 'העבר שוב רק את ה-DB',
     'migrationdetail.actions.rerun': 'התחל מהתחלה',
@@ -53,6 +54,9 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.cloudflareMailSkipped': 'Cloudflare: {count} רשומות דואר חיצוני דולגו (הדואר לא על השרת שהועבר) — ראה לוג',
     'migrationdetail.toast.cloudflareNone': 'Cloudflare: לא נמצאה זונה בחשבון שלנו לדומיינים האלה (ראה לוג)',
     'migrationdetail.toast.cloudflareFailed': 'עדכון ה-DNS ב-Cloudflare נכשל',
+    'migrationdetail.toast.emailDone': 'דואר: {sites} אתרים הוגדרו, {spf} רשומות SPF ו-{dmarc} DMARC (ראה לוג)',
+    'migrationdetail.toast.emailDnsSkipped': 'דואר: SPF/DMARC לא עודכנו ב-DNS (ראה לוג) — ייתכן שחסר טוקן Cloudflare',
+    'migrationdetail.toast.emailFailed': 'הגדרת הדואר היוצא נכשלה',
 
     'migrationdetail.confirm.sourceServer': 'המקור',
     'migrationdetail.confirm.cancel.title': 'לבטל את המיגרציה?',
@@ -73,6 +77,10 @@ export const migrationdetail: PageDict = {
       'עבור כל דומיין של {account} שהזונה שלו נמצאת בחשבון ה-Cloudflare שלנו, הזונה המלאה שיוצאה מהמקור תשוכפל (A/AAAA/CNAME/MX/TXT/SRV/CAA): רשומות ה-A של @, www וכל רשומה שמצביעה על ה-IP הישן יופנו לשרת החדש ({ip}), SPF יעודכן ל-IP החדש, ורשומות NS/SOA יישארו של Cloudflare. אם הדואר חיצוני (ה-MX לא על השרת שהועבר) — רשומות הדואר לא ייגעו וידולגו עם רישום בלוג. לבסוף המטמון ינוקה והתוצאה תיבדק. דומיין שאינו בחשבון שלנו ידולג.',
     'migrationdetail.confirm.cloudflare.confirm': 'עדכן DNS',
     'migrationdetail.confirm.cloudflare.noIp': 'ה-IP של שרת היעד אינו ידוע. הגדר IP יעד בעמוד ההגדרות.',
+    'migrationdetail.confirm.email.title': 'להגדיר דואר יוצא?',
+    'migrationdetail.confirm.email.message':
+      'עבור כל אתר WordPress של {account}: התוסף FluentSMTP יותקן ויופעל (אם חסר) ויוגדר לשלוח דרך שרת ה-SMTP המרכזי מההגדרות. בנוסף יובטחו רשומות SPF (שמאשרת את שרת היעד) ו-DMARC ב-Cloudflare עבור הדומיינים שהזונה שלהם בחשבון שלנו. לא נוגעים ב-DKIM. דורש שהגדרות ה-SMTP המרכזיות יוגדרו תחילה. ההתקדמות נכתבת לקונסולה למטה.',
+    'migrationdetail.confirm.email.confirm': 'הגדר דואר',
     'migrationdetail.confirm.repair.title': 'לתקן את רישום ה-WordPress?',
     'migrationdetail.confirm.repair.message':
       'מריץ שוב את השלבים שאחרי הייבוא ביעד: מגדיר את גרסת ה-PHP לפי המקור, מעביר התקנות WordPress ישנות שמסד הנתונים שלהן לא קיים אל מחוץ ל-web root (הן נשמרות תחת {leftovers}, לא נמחקות), מסיר רשומות אפליקציה ישנות, מפעיל שוב את זיהוי ה-WordPress של Enhance ומתקן בעלות על קבצים. מתאים כשכפתור ההתחברות ל-WP או רשימת המשתמשים ב-Enhance לא עובדים. ההתקדמות נכתבת לקונסולה למטה.',
@@ -180,6 +188,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.actions.suspend': 'Suspend source',
     'migrationdetail.actions.unsuspend': 'Unsuspend source',
     'migrationdetail.actions.cloudflare': 'Update Cloudflare DNS',
+    'migrationdetail.actions.email': 'Set up email',
     'migrationdetail.actions.repair': 'Repair WordPress',
     'migrationdetail.actions.remigrateDb': 'Re-migrate DB only',
     'migrationdetail.actions.rerun': 'Start from scratch',
@@ -207,6 +216,9 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.cloudflareMailSkipped': 'Cloudflare: {count} external-mail record(s) left untouched (mail is off the migrated server) — see the log',
     'migrationdetail.toast.cloudflareNone': 'Cloudflare: no zone in our account matched these domains (see the log)',
     'migrationdetail.toast.cloudflareFailed': 'Updating Cloudflare DNS failed',
+    'migrationdetail.toast.emailDone': 'Email: {sites} site(s) configured, {spf} SPF and {dmarc} DMARC record(s) (see the log)',
+    'migrationdetail.toast.emailDnsSkipped': 'Email: SPF/DMARC were not written to DNS (see the log) — a Cloudflare token may be missing',
+    'migrationdetail.toast.emailFailed': 'Setting up outbound email failed',
 
     'migrationdetail.confirm.sourceServer': 'the source server',
     'migrationdetail.confirm.cancel.title': 'Cancel this migration?',
@@ -227,6 +239,10 @@ export const migrationdetail: PageDict = {
       "For each of {account}'s domains whose zone is in our Cloudflare account, the full exported zone is replicated (A/AAAA/CNAME/MX/TXT/SRV/CAA): A records for @, www and anything still pointing at the old IP are repointed to the new server ({ip}), SPF is rewritten to the new IP, and NS/SOA are left to Cloudflare. If mail is external (the MX is not on the migrated server), mail records are left untouched and skipped with a log line. Finally the cache is purged and the result is verified. A domain not in our account is skipped.",
     'migrationdetail.confirm.cloudflare.confirm': 'Update DNS',
     'migrationdetail.confirm.cloudflare.noIp': "The target server IP is unknown. Set a target IP on the Settings page.",
+    'migrationdetail.confirm.email.title': 'Set up outbound email?',
+    'migrationdetail.confirm.email.message':
+      'For every WordPress site of {account}: the FluentSMTP plugin is installed and activated (if missing) and configured to send through the central SMTP host from Settings. It also ensures an SPF record (authorizing the target server) and a DMARC record in Cloudflare for domains whose zone is in our account. DKIM is never touched. Requires the central SMTP settings to be configured first. Progress is written to the console below.',
+    'migrationdetail.confirm.email.confirm': 'Set up email',
     'migrationdetail.confirm.repair.title': 'Repair WordPress registration?',
     'migrationdetail.confirm.repair.message':
       'Re-runs the post-import steps on the target: sets the PHP version to match the source, moves old WordPress installs whose database does not exist out of the web root (kept under {leftovers}, not deleted), removes stale app records, triggers the WordPress discovery of Enhance again and fixes file ownership. Use it when the WP login button or the user list in Enhance does not work. Progress is written to the console below.',

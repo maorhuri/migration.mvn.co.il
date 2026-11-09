@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Server, SSHKey, Migration, MigrationBatch, MigrationLog, Account, CompatibilityResult, ServerTestResponse, CloudflareSettings, CloudflareDNSResult } from '../types';
+import type { Server, SSHKey, Migration, MigrationBatch, MigrationLog, Account, CompatibilityResult, ServerTestResponse, CloudflareSettings, CloudflareDNSResult, EmailSettings, EmailSetupResult } from '../types';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -263,6 +263,41 @@ export const updateCloudflareSettings = async (params: {
 /** Repoint the migrated domain(s) at the new server in Cloudflare (find zone, update A/AAAA, purge, verify). Completed migrations only. */
 export const updateMigrationCloudflareDNS = async (id: string): Promise<{ migration: Migration; result: CloudflareDNSResult }> => {
   const { data } = await api.post(`/migrations/${id}/cloudflare/dns`);
+  return data;
+};
+
+// Settings — central email (SMTP + SPF/DMARC)
+/** Whether central email is configured, plus the non-secret fields. The SMTP password itself is never returned. */
+export const getEmailSettings = async (): Promise<EmailSettings> => {
+  const { data } = await api.get('/settings/email');
+  return data;
+};
+
+/**
+ * Store the central email settings. The SMTP password is write-only: omit `auth_password` to keep
+ * the stored one, send a value to set it, or `clear_password: true` to remove it. Every other field
+ * sent replaces the stored value (an empty string clears it).
+ */
+export const updateEmailSettings = async (params: {
+  host?: string;
+  port?: string;
+  encryption?: string;
+  auth_user?: string;
+  auth_password?: string;
+  from_name?: string;
+  from_email?: string;
+  spf_extra?: string;
+  dmarc_policy?: string;
+  dmarc_rua?: string;
+  clear_password?: boolean;
+}): Promise<EmailSettings> => {
+  const { data } = await api.put('/settings/email', params);
+  return data;
+};
+
+/** Configure FluentSMTP on the migrated site(s) and ensure SPF+DMARC in DNS (no DKIM). Completed migrations only. */
+export const runMigrationEmailSetup = async (id: string): Promise<{ migration: Migration; result: EmailSetupResult }> => {
+  const { data } = await api.post(`/migrations/${id}/email/setup`);
   return data;
 };
 

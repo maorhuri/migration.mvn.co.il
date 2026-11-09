@@ -10,6 +10,19 @@ const (
 	settingCloudflareToken    = "cloudflare_api_token"   // encrypted
 	settingCloudflareTargetIP = "cloudflare_target_ip"   // plain IPv4 fallback
 	settingCloudflareTargetV6 = "cloudflare_target_ipv6" // plain IPv6 fallback (optional)
+
+	// Central outbound-email (SMTP) settings applied to migrated sites via FluentSMTP, plus the
+	// SPF/DMARC policy used when ensuring those records in DNS. Only the auth password is a secret.
+	settingSMTPHost       = "smtp_host"         // plain: relay/mail host FluentSMTP sends through
+	settingSMTPPort       = "smtp_port"         // plain: e.g. 587
+	settingSMTPEncryption = "smtp_encryption"   // plain: tls | ssl | none
+	settingSMTPAuthUser   = "smtp_auth_user"    // plain: SMTP auth username
+	settingSMTPAuthPass   = "smtp_auth_pass"    // encrypted: SMTP auth password (write-only)
+	settingSMTPFromName   = "smtp_from_name"    // plain: default From name
+	settingSMTPFromEmail  = "smtp_from_email"   // plain: default From email / local-part pattern
+	settingSMTPSPFExtra   = "smtp_spf_extra"    // plain: extra SPF term(s), e.g. "include:_spf.example.net"
+	settingDMARCPolicy    = "smtp_dmarc_policy" // plain: none | quarantine | reject
+	settingDMARCRua       = "smtp_dmarc_rua"    // plain: aggregate-report mailbox for rua=mailto:
 )
 
 // setEncryptedSetting stores an encrypted value under key (empty clears it).
@@ -117,4 +130,99 @@ func (d *Database) SetCloudflareTargetIPv6(ctx context.Context, ip string) error
 // GetCloudflareTargetIPv6 returns the optional fallback target IPv6 ("" when unset).
 func (d *Database) GetCloudflareTargetIPv6(ctx context.Context) (string, error) {
 	return d.getPlainSetting(ctx, settingCloudflareTargetV6)
+}
+
+// ---------------------------------------------------------------------------
+// Central email (SMTP + SPF/DMARC) settings
+// ---------------------------------------------------------------------------
+
+// SMTPSettings holds the non-secret central outbound-email configuration. The auth password is a
+// separate, encrypted, write-only value (see SetSMTPPassword / GetSMTPPassword).
+type SMTPSettings struct {
+	Host        string `json:"host"`
+	Port        string `json:"port"`
+	Encryption  string `json:"encryption"` // tls | ssl | none
+	AuthUser    string `json:"auth_user"`
+	FromName    string `json:"from_name"`
+	FromEmail   string `json:"from_email"` // full address, "local@", or bare local-part used per site
+	SPFExtra    string `json:"spf_extra"`
+	DMARCPolicy string `json:"dmarc_policy"` // none | quarantine | reject
+	DMARCRua    string `json:"dmarc_rua"`    // mailbox for aggregate reports (rua=mailto:)
+}
+
+// GetSMTPSettings returns the non-secret central email settings (all "" when unset).
+func (d *Database) GetSMTPSettings(ctx context.Context) (SMTPSettings, error) {
+	var s SMTPSettings
+	var err error
+	if s.Host, err = d.getPlainSetting(ctx, settingSMTPHost); err != nil {
+		return s, err
+	}
+	if s.Port, err = d.getPlainSetting(ctx, settingSMTPPort); err != nil {
+		return s, err
+	}
+	if s.Encryption, err = d.getPlainSetting(ctx, settingSMTPEncryption); err != nil {
+		return s, err
+	}
+	if s.AuthUser, err = d.getPlainSetting(ctx, settingSMTPAuthUser); err != nil {
+		return s, err
+	}
+	if s.FromName, err = d.getPlainSetting(ctx, settingSMTPFromName); err != nil {
+		return s, err
+	}
+	if s.FromEmail, err = d.getPlainSetting(ctx, settingSMTPFromEmail); err != nil {
+		return s, err
+	}
+	if s.SPFExtra, err = d.getPlainSetting(ctx, settingSMTPSPFExtra); err != nil {
+		return s, err
+	}
+	if s.DMARCPolicy, err = d.getPlainSetting(ctx, settingDMARCPolicy); err != nil {
+		return s, err
+	}
+	if s.DMARCRua, err = d.getPlainSetting(ctx, settingDMARCRua); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
+// SetSMTPSettings stores the non-secret central email settings (an empty field clears that key).
+func (d *Database) SetSMTPSettings(ctx context.Context, s SMTPSettings) error {
+	pairs := []struct {
+		key, val string
+	}{
+		{settingSMTPHost, s.Host},
+		{settingSMTPPort, s.Port},
+		{settingSMTPEncryption, s.Encryption},
+		{settingSMTPAuthUser, s.AuthUser},
+		{settingSMTPFromName, s.FromName},
+		{settingSMTPFromEmail, s.FromEmail},
+		{settingSMTPSPFExtra, s.SPFExtra},
+		{settingDMARCPolicy, s.DMARCPolicy},
+		{settingDMARCRua, s.DMARCRua},
+	}
+	for _, p := range pairs {
+		if err := d.setPlainSetting(ctx, p.key, p.val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetSMTPPassword stores the SMTP auth password, encrypted. Empty clears it.
+func (d *Database) SetSMTPPassword(ctx context.Context, password string) error {
+	return d.setEncryptedSetting(ctx, settingSMTPAuthPass, password)
+}
+
+// GetSMTPPassword decrypts and returns the stored SMTP auth password ("" when unset).
+func (d *Database) GetSMTPPassword(ctx context.Context) (string, error) {
+	return d.getEncryptedSetting(ctx, settingSMTPAuthPass)
+}
+
+// HasSMTPPassword reports whether an SMTP auth password is stored, without decrypting it.
+func (d *Database) HasSMTPPassword(ctx context.Context) (bool, error) {
+	return d.hasSetting(ctx, settingSMTPAuthPass)
+}
+
+// HasSMTPConfigured reports whether central email is usable (a mail host is set).
+func (d *Database) HasSMTPConfigured(ctx context.Context) (bool, error) {
+	return d.hasSetting(ctx, settingSMTPHost)
 }
