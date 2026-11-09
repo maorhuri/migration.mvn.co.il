@@ -33,6 +33,12 @@ type Engine struct {
 	mu        sync.Mutex
 	cancels   map[string]context.CancelFunc // live workers by migration id
 	decisions map[string]chan string        // scan-review decisions for workers waiting on the operator
+
+	// Cached per-domain "is this domain a zone in our Cloudflare account?" answers, so flagging
+	// accounts queries Cloudflare per domain (not a full zone list) and only once per TTL.
+	cfMu        sync.Mutex
+	cfDomainIn  map[string]bool
+	cfCheckedAt time.Time
 }
 
 // NewEngine creates a new migration engine

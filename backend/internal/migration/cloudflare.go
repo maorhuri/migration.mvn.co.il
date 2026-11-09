@@ -6,6 +6,8 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/migration-tool/backend/internal/cloudflare"
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -20,11 +22,10 @@ func (e *Engine) cloudflareClient(ctx context.Context, token string) *cloudflare
 }
 
 // MarkCloudflareAccounts flags each account whose domain (its primary Domain or any AddonDomains)
-// is hosted in OUR Cloudflare account -- i.e. its registrable domain is a zone the configured
-// token can see. It makes at most one ListZones call for the whole slice (not one per domain):
-// when no Cloudflare token is configured it is a cheap no-op, and ANY Cloudflare failure is logged
-// and leaves every account's HasCloudflare false so an accounts listing never fails because of
-// Cloudflare. It mutates accounts in place.
+// is a zone in OUR Cloudflare account. It asks Cloudflare per domain (?name=), concurrently and
+// bounded by a timeout, rather than listing every zone -- which matters with a Global API Key that
+// can span thousands of zones -- and caches the answers. No token -> cheap no-op; any Cloudflare
+// failure leaves that domain's flag false and never fails or hangs the accounts listing.
 func (e *Engine) MarkCloudflareAccounts(ctx context.Context, accounts []AccountInfo) {
 	if len(accounts) == 0 || e.db == nil {
 		return
@@ -38,38 +39,118 @@ func (e *Engine) MarkCloudflareAccounts(ctx context.Context, accounts []AccountI
 		return
 	}
 
-	client := e.cloudflareClient(ctx, token)
-	zones, err := client.ListZones(ctx)
-	if err != nil {
-		if e.logger != nil {
-			e.logger.Warn("Cloudflare: could not list zones to flag accounts", map[string]interface{}{"error": err.Error()})
-		}
-		return
-	}
-
-	// Set of zone apexes (normalized) to test each account's domains against.
-	zoneSet := make(map[string]bool, len(zones))
-	for _, z := range zones {
-		if name := normalizeDomain(z.Name); name != "" {
-			zoneSet[name] = true
+	// Unique set of domains to check (primary + addons across all accounts).
+	seen := map[string]bool{}
+	var domains []string
+	addDomain := func(d string) {
+		if d = normalizeDomain(d); d != "" && !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
 		}
 	}
-	if len(zoneSet) == 0 {
-		return
-	}
-
 	for i := range accounts {
-		if domainInZoneSet(accounts[i].Domain, zoneSet) {
+		addDomain(accounts[i].Domain)
+		for _, d := range accounts[i].AddonDomains {
+			addDomain(d)
+		}
+	}
+	if len(domains) == 0 {
+		return
+	}
+
+	inCF := e.cloudflareDomainsInAccount(ctx, token, domains)
+	for i := range accounts {
+		if inCF[normalizeDomain(accounts[i].Domain)] {
 			accounts[i].HasCloudflare = true
 			continue
 		}
 		for _, d := range accounts[i].AddonDomains {
-			if domainInZoneSet(d, zoneSet) {
+			if inCF[normalizeDomain(d)] {
 				accounts[i].HasCloudflare = true
 				break
 			}
 		}
 	}
+}
+
+// cloudflareDomainsInAccount answers, for each domain, whether it is a zone in our Cloudflare
+// account -- querying Cloudflare per domain (FindZoneForDomain uses ?name=, which also matches a
+// parent zone) concurrently and bounded by an overall timeout, so it never enumerates every zone
+// and never hangs the accounts listing. Answers are cached for a short TTL; errors are not cached.
+func (e *Engine) cloudflareDomainsInAccount(ctx context.Context, token string, domains []string) map[string]bool {
+	const ttl = 10 * time.Minute
+	result := make(map[string]bool, len(domains))
+	var toQuery []string
+
+	e.cfMu.Lock()
+	fresh := e.cfDomainIn != nil && time.Since(e.cfCheckedAt) < ttl
+	for _, d := range domains {
+		if fresh {
+			if v, ok := e.cfDomainIn[d]; ok {
+				result[d] = v
+				continue
+			}
+		}
+		toQuery = append(toQuery, d)
+	}
+	e.cfMu.Unlock()
+	if len(toQuery) == 0 {
+		return result
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	client := e.cloudflareClient(ctx, token)
+
+	type answer struct {
+		domain string
+		in     bool
+		ok     bool
+	}
+	ans := make(chan answer, len(toQuery))
+	sem := make(chan struct{}, 8) // cap concurrent Cloudflare lookups
+	var wg sync.WaitGroup
+	for _, d := range toQuery {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			zone, err := client.FindZoneForDomain(cctx, d)
+			if err != nil {
+				ans <- answer{d, false, false}
+				return
+			}
+			ans <- answer{d, zone != nil, true}
+		}(d)
+	}
+	go func() { wg.Wait(); close(ans) }()
+
+	hadErr := false
+	cacheable := map[string]bool{}
+	for a := range ans {
+		result[a.domain] = a.in
+		if a.ok {
+			cacheable[a.domain] = a.in
+		} else {
+			hadErr = true
+		}
+	}
+	if hadErr && e.logger != nil {
+		e.logger.Warn("Cloudflare: some per-domain zone lookups failed while flagging accounts (timeout or API error)", nil)
+	}
+
+	// Merge the fresh answers into the cache (keep errors out so they are retried next time).
+	e.cfMu.Lock()
+	if e.cfDomainIn == nil || time.Since(e.cfCheckedAt) >= ttl {
+		e.cfDomainIn = make(map[string]bool)
+		e.cfCheckedAt = time.Now()
+	}
+	for d, v := range cacheable {
+		e.cfDomainIn[d] = v
+	}
+	e.cfMu.Unlock()
+	return result
 }
 
 // domainInZoneSet reports whether domain is one of the zone apexes in zoneSet, or a subdomain of
