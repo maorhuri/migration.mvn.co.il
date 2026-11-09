@@ -159,7 +159,7 @@ func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, z
 			oc.SPF = fmt.Sprintf("SPF %s already authorizes the target (%s)", apex, desiredSPF)
 			logFn("info", "Email DNS: "+oc.SPF)
 		} else {
-			up, err := client.UpsertRecords(ctx, zoneID, existing, []cloudflare.DesiredRecord{{Type: "TXT", Name: apex, Content: desiredSPF, TTL: 3600}})
+			up, err := client.UpsertRecords(ctx, zoneID, existing, []cloudflare.DesiredRecord{{Type: "TXT", Name: apex, Content: desiredSPF, TTL: 3600}}, "")
 			if err != nil {
 				logFn("error", fmt.Sprintf("Email DNS %s: could not set SPF: %v", apex, err))
 			} else {
@@ -193,7 +193,7 @@ func (e *Engine) ensureMailDNS(ctx context.Context, client *cloudflare.Client, z
 		logFn("info", "Email DNS: "+oc.DMARC)
 	} else {
 		desiredDMARC := buildDMARC("none", "")
-		up, err := client.UpsertRecords(ctx, zoneID, existing, []cloudflare.DesiredRecord{{Type: "TXT", Name: dmarcName, Content: desiredDMARC, TTL: 3600}})
+		up, err := client.UpsertRecords(ctx, zoneID, existing, []cloudflare.DesiredRecord{{Type: "TXT", Name: dmarcName, Content: desiredDMARC, TTL: 3600}}, "")
 		if err != nil {
 			logFn("error", fmt.Sprintf("Email DNS %s: could not create DMARC: %v", dmarcName, err))
 		} else if len(up.Created) > 0 {

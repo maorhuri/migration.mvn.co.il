@@ -464,30 +464,118 @@ type UpsertResult struct {
 	Created   []DesiredRecord
 	Updated   []DesiredRecord
 	Unchanged []DesiredRecord
+	Deleted   []DNSRecord // stale records removed (an old-source-IP A/AAAA, or a duplicate SPF/DKIM/DMARC)
 }
 
 func eqName(a, b string) bool {
 	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
 }
 
+// decodeTXT reduces a TXT value to the plain form a DNS provider stores, so idempotency
+// comparisons match regardless of zone-file quoting/escaping: it concatenates the character-
+// strings (`"a" "b"` -> `ab`), removes BIND backslash escaping (`\;` -> `;`, `\"` -> `"`,
+// `\\` -> `\`, and `\X` -> `X` otherwise), and trims trailing separators.
+func decodeTXT(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if !strings.ContainsAny(s, "\"\\") {
+		return strings.TrimRight(s, "; \t")
+	}
+	var b strings.Builder
+	inQuote := false
+	sawQuote := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' && i+1 < len(s) {
+			b.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		if ch == '"' {
+			inQuote = !inQuote
+			sawQuote = true
+			continue
+		}
+		if sawQuote && !inQuote {
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return strings.TrimRight(b.String(), "; \t")
+}
+
+// sameContent reports whether an existing record's content already matches a desired one, tolerant
+// of representation differences a provider normalizes away: TXT is compared after decoding
+// quoting/escaping; hostname-valued types are compared case- and trailing-dot-insensitively.
+func sameContent(typ, existing, desired string) bool {
+	switch strings.ToUpper(typ) {
+	case "TXT":
+		return decodeTXT(existing) == decodeTXT(desired)
+	case "CNAME", "MX", "NS":
+		return strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(existing), "."), strings.TrimSuffix(strings.TrimSpace(desired), "."))
+	default:
+		return strings.TrimSpace(existing) == strings.TrimSpace(desired)
+	}
+}
+
+// isDKIMName reports whether a record name is a DKIM selector (`<selector>._domainkey.<domain>`).
+func isDKIMName(name string) bool {
+	for _, label := range strings.Split(strings.ToLower(strings.Trim(name, ".")), ".") {
+		if label == "_domainkey" {
+			return true
+		}
+	}
+	return false
+}
+
+// isDMARCName reports whether a record name is a DMARC policy name (`_dmarc.<domain>`).
+func isDMARCName(name string) bool {
+	name = strings.ToLower(strings.Trim(name, "."))
+	return name == "_dmarc" || strings.HasPrefix(name, "_dmarc.")
+}
+
+// apiErrHasCode reports whether err is a Cloudflare APIError carrying the given error code.
+func apiErrHasCode(err error, code int) bool {
+	if ae, ok := err.(*APIError); ok {
+		for _, e := range ae.Errors {
+			if e.Code == code {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // UpsertRecords makes the zone contain every record in `desired`, in one batch and idempotently:
 //   - a desired record already present unchanged (same type, name, content and — for MX — priority)
-//     is left alone (reported in Unchanged);
-//   - a desired record whose (type, name) exists but with different content is PATCHED
-//     (CNAME: the single record at that name; MX: the record at the same priority; A/AAAA: the
-//     single record at that name — when several exist and none matches, a new one is created so
-//     an existing round-robin set is never clobbered; TXT: an existing SPF record at that name
-//     when the desired one is SPF, otherwise matched by exact content);
+//     is left alone (reported in Unchanged); content is compared tolerantly (TXT after decoding
+//     BIND quoting/escaping; hostnames case- and trailing-dot-insensitively);
+//   - SPF, DKIM (`*._domainkey`) and DMARC (`_dmarc`) TXT records are SINGLETON-by-name: the
+//     record at that name is PATCHED to the clean content and any duplicate copies (e.g. an
+//     escaped leftover from an earlier run) are removed, so a selector never gets a second record;
+//   - a desired record whose (type, name) exists but with different content is otherwise PATCHED
+//     (CNAME: the single record at that name; MX: the record at the same priority; A/AAAA: an
+//     existing record still at the old source IP, else the single record at that name — when
+//     several exist and none is stale/matching, a new one is created so a real round-robin set is
+//     never clobbered);
 //   - anything else is CREATED.
 //
-// It never deletes records. `existing` is the current full record set (ListAllDNSRecords).
-func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DNSRecord, desired []DesiredRecord) (*UpsertResult, error) {
+// It also removes any stale A/AAAA still pointing at `oldIP` at a name it is repointing, so the
+// apex/www resolve only to the new IP even if an earlier run left a duplicate. If the atomic batch
+// is rejected because a POST duplicates an existing record (Cloudflare 81058), it reapplies the
+// patches/deletes and posts the rest one at a time, treating a duplicate as already-present rather
+// than failing the whole zone. `existing` is the current full record set (ListAllDNSRecords);
+// pass oldIP="" when there is no source IP to repoint from.
+func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DNSRecord, desired []DesiredRecord, oldIP string) (*UpsertResult, error) {
 	res := &UpsertResult{}
 	var req batchRequest
 
 	isSPF := func(s string) bool {
 		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(strings.Trim(s, `"`))), "v=spf1")
 	}
+	consumed := map[string]bool{} // existing record ids patched or deleted this run
 
 	for _, d := range desired {
 		// Candidates: existing records of the same type at the same name.
@@ -498,10 +586,52 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 			}
 		}
 
-		// Already present exactly? (content, and priority for MX)
+		// Singleton TXT (SPF, and DKIM/DMARC by name): exactly one clean record must remain at the
+		// name. Patch one to the clean content and delete the rest (never create a second).
+		if strings.EqualFold(d.Type, "TXT") && (isSPF(d.Content) || isDKIMName(d.Name) || isDMARCName(d.Name)) {
+			group := cands
+			if isSPF(d.Content) {
+				group = nil // an apex may also carry unrelated TXT; only collapse the SPF records
+				for _, e := range cands {
+					if isSPF(e.Content) {
+						group = append(group, e)
+					}
+				}
+			}
+			keep := -1
+			for i, e := range group { // prefer a record already byte-identical to the clean value
+				if e.Content == d.Content {
+					keep = i
+					break
+				}
+			}
+			switch {
+			case keep >= 0:
+				res.Unchanged = append(res.Unchanged, d)
+			case len(group) > 0:
+				keep = 0
+				req.Patches = append(req.Patches, batchPatch{ID: group[0].ID, Content: d.Content})
+				res.Updated = append(res.Updated, d)
+				consumed[group[0].ID] = true
+			default:
+				req.Posts = append(req.Posts, batchPost{Type: "TXT", Name: d.Name, Content: d.Content, TTL: d.TTL, Proxied: d.Proxied})
+				res.Created = append(res.Created, d)
+			}
+			for i, e := range group {
+				if i == keep || consumed[e.ID] {
+					continue
+				}
+				req.Deletes = append(req.Deletes, batchDelete{ID: e.ID})
+				res.Deleted = append(res.Deleted, e)
+				consumed[e.ID] = true
+			}
+			continue
+		}
+
+		// Already present exactly? (content tolerantly, and priority for MX)
 		exact := false
 		for _, e := range cands {
-			if e.Content == d.Content && (!strings.EqualFold(d.Type, "MX") || e.Priority == d.Priority) {
+			if sameContent(d.Type, e.Content, d.Content) && (!strings.EqualFold(d.Type, "MX") || e.Priority == d.Priority) {
 				exact = true
 				break
 			}
@@ -526,20 +656,22 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 				}
 			}
 		case "TXT":
-			if isSPF(d.Content) {
+			// non-singleton TXT with no exact match: always create (do not clobber unrelated TXT).
+		case "A", "AAAA":
+			// Prefer repointing a stale record still at the old source IP, so a leftover
+			// old-server record is reused instead of duplicated; else patch the sole record; with
+			// several unrelated records, create so a legitimate round-robin set is preserved.
+			if oldIP != "" {
 				for _, e := range cands {
-					if isSPF(e.Content) {
+					if e.Content == oldIP {
 						patchID = e.ID
 						break
 					}
 				}
 			}
-			// non-SPF TXT with no exact match: always create (do not clobber unrelated TXT).
-		case "A", "AAAA":
-			if len(cands) == 1 {
+			if patchID == "" && len(cands) == 1 {
 				patchID = cands[0].ID
 			}
-			// several A/AAAA at a name and none matched: create, don't clobber a round-robin set.
 		default: // SRV, CAA, others: no exact match -> create.
 		}
 
@@ -551,6 +683,7 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 			}
 			req.Patches = append(req.Patches, p)
 			res.Updated = append(res.Updated, d)
+			consumed[patchID] = true
 		} else {
 			post := batchPost{Type: strings.ToUpper(d.Type), Name: d.Name, Content: d.Content, TTL: d.TTL, Proxied: d.Proxied}
 			if strings.EqualFold(d.Type, "MX") || (strings.EqualFold(d.Type, "SRV") && d.Priority > 0) {
@@ -562,12 +695,66 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 		}
 	}
 
-	if len(req.Patches) == 0 && len(req.Posts) == 0 {
+	// Remove any stale A/AAAA still pointing at the old source IP at a name we repointed, so the
+	// apex/www resolve only to the new IP even when an earlier run left a duplicate next to the new
+	// record (a legitimate new-server round-robin is never at the old IP, so it is preserved).
+	if oldIP != "" {
+		repoint := map[string]bool{}
+		for _, d := range desired {
+			if strings.EqualFold(d.Type, "A") || strings.EqualFold(d.Type, "AAAA") {
+				repoint[strings.ToLower(strings.TrimSuffix(d.Name, "."))] = true
+			}
+		}
+		for _, e := range existing {
+			if consumed[e.ID] {
+				continue
+			}
+			if (strings.EqualFold(e.Type, "A") || strings.EqualFold(e.Type, "AAAA")) &&
+				e.Content == oldIP && repoint[strings.ToLower(strings.TrimSuffix(e.Name, "."))] {
+				req.Deletes = append(req.Deletes, batchDelete{ID: e.ID})
+				res.Deleted = append(res.Deleted, e)
+				consumed[e.ID] = true
+			}
+		}
+	}
+
+	if len(req.Patches) == 0 && len(req.Posts) == 0 && len(req.Deletes) == 0 {
 		return res, nil
 	}
 	if _, err := c.apiRequest(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/batch", req); err != nil {
+		if apiErrHasCode(err, 81058) && len(req.Posts) > 0 {
+			return c.upsertTolerant(ctx, zoneID, req, res)
+		}
 		return nil, err
 	}
+	return res, nil
+}
+
+// upsertTolerant retries a batch that Cloudflare rejected with 81058 ("an identical record already
+// exists"). Patches and deletes (which never trip 81058) are reapplied together; the posts are then
+// sent one at a time so a single duplicate our comparison did not catch is treated as already
+// present (moved to Unchanged) instead of aborting the whole zone.
+func (c *Client) upsertTolerant(ctx context.Context, zoneID string, req batchRequest, res *UpsertResult) (*UpsertResult, error) {
+	if len(req.Patches) > 0 || len(req.Deletes) > 0 {
+		pd := batchRequest{Patches: req.Patches, Deletes: req.Deletes}
+		if _, err := c.apiRequest(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/batch", pd); err != nil {
+			return nil, err
+		}
+	}
+	var created []DesiredRecord
+	for i, post := range req.Posts {
+		one := batchRequest{Posts: []batchPost{post}}
+		if _, err := c.apiRequest(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/batch", one); err != nil {
+			if apiErrHasCode(err, 81058) {
+				c.logf("info", "Cloudflare: %s %s already exists; treating as unchanged", post.Type, post.Name)
+				res.Unchanged = append(res.Unchanged, res.Created[i])
+				continue
+			}
+			return nil, err
+		}
+		created = append(created, res.Created[i])
+	}
+	res.Created = created
 	return res, nil
 }
 
