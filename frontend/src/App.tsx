@@ -7,6 +7,7 @@ import Migrations from './pages/Migrations';
 import SSHKeys from './pages/SSHKeys';
 import NewMigration from './pages/NewMigration';
 import MigrationDetail from './pages/MigrationDetail';
+import BatchMigration from './pages/BatchMigration';
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
         <Route path="/servers/:id" element={<ServerDetail />} />
         <Route path="/migrations" element={<Migrations />} />
         <Route path="/migrations/new" element={<NewMigration />} />
+        <Route path="/migrations/batch/:batchId" element={<BatchMigration />} />
         <Route path="/migrations/:id" element={<MigrationDetail />} />
         <Route path="/ssh-keys" element={<SSHKeys />} />
       </Routes>

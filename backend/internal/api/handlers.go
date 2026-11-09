@@ -84,6 +84,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 		{
 			migrations.GET("", h.listMigrations)
 			migrations.POST("", h.startMigration)
+			migrations.GET("/batches/:batch_id", h.getBatch)
 			migrations.GET("/:id", h.getMigration)
 			migrations.GET("/:id/logs", h.getMigrationLogs)
 			migrations.POST("/:id/cancel", h.cancelMigration)
@@ -775,6 +776,7 @@ type StartMigrationRequest struct {
 	Username              string `json:"username" binding:"required"`
 	NewPassword           string `json:"new_password,omitempty"`
 	TargetDomain          string `json:"target_domain,omitempty"` // register the site under this domain instead of the source's name
+	BatchID               string `json:"batch_id,omitempty"`      // groups the accounts started together into one consolidated window
 }
 
 type CheckCompatibilityRequest struct {
@@ -793,6 +795,24 @@ func (h *Handler) listMigrations(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": migrations})
 }
 
+// getBatch returns every migration started together under one batch id plus the aggregate tally,
+// backing the consolidated batch window (one screen that watches all of them at once).
+func (h *Handler) getBatch(c *gin.Context) {
+	batchID := c.Param("batch_id")
+
+	batch, err := h.engine.GetBatch(c.Request.Context(), batchID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if batch.Total == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, batch)
+}
+
 func (h *Handler) startMigration(c *gin.Context) {
 	var req StartMigrationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -807,6 +827,7 @@ func (h *Handler) startMigration(c *gin.Context) {
 		Username:              req.Username,
 		NewPassword:           req.NewPassword,
 		TargetDomain:          req.TargetDomain,
+		BatchID:               req.BatchID,
 	})
 	if err != nil {
 		if errors.Is(err, migration.ErrClusterServerRequired) {

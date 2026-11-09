@@ -55,11 +55,15 @@ type MigrationRequest struct {
 	// of whatever the source calls it (an app that only ever had its platform hostname, e.g. on
 	// Cloudways). A WordPress site's URLs are rewritten to it after the database import.
 	TargetDomain string `json:"target_domain,omitempty"`
+	// BatchID groups every migration kicked off together from one New-migration run so the
+	// consolidated batch window can list and finish them as a unit. Empty for a single migration.
+	BatchID string `json:"batch_id,omitempty"`
 }
 
 // MigrationResult represents the state of a migration as exposed by the API
 type MigrationResult struct {
 	ID                string                    `json:"id"`
+	BatchID           string                    `json:"batch_id,omitempty"`
 	SourceServerID    string                    `json:"source_server_id"`
 	TargetServerID    string                    `json:"target_server_id"`
 	AccountUsername   string                    `json:"account_username"`
@@ -88,6 +92,7 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		SourceServerID:  req.SourceServerID,
 		TargetServerID:  req.TargetServerID,
 		AccountUsername: req.Username,
+		BatchID:         storage.NewNullString(req.BatchID),
 	}
 	if err := e.db.CreateMigration(ctx, migration); err != nil {
 		return nil, fmt.Errorf("failed to create migration record: %w", err)
@@ -106,6 +111,7 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 
 	result := &MigrationResult{
 		ID:              migrationID,
+		BatchID:         req.BatchID,
 		SourceServerID:  req.SourceServerID,
 		TargetServerID:  req.TargetServerID,
 		AccountUsername: req.Username,
@@ -959,6 +965,7 @@ func capText(s string, head, tail int) string {
 func toResult(m *storage.Migration) *MigrationResult {
 	result := &MigrationResult{
 		ID:              m.ID,
+		BatchID:         m.BatchID.String,
 		SourceServerID:  m.SourceServerID,
 		TargetServerID:  m.TargetServerID,
 		AccountUsername: m.AccountUsername,
@@ -1031,6 +1038,58 @@ func (e *Engine) ListMigrations(ctx context.Context) ([]*MigrationResult, error)
 		results = append(results, r)
 	}
 	return results, nil
+}
+
+// BatchResult is the aggregate view of one batch of migrations started together: every migration
+// in the batch plus the running tally the consolidated window shows (X of N done / running / failed).
+type BatchResult struct {
+	BatchID        string             `json:"batch_id"`
+	Total          int                `json:"total"`
+	Pending        int                `json:"pending"`
+	Running        int                `json:"running"`
+	AwaitingReview int                `json:"awaiting_review"`
+	Completed      int                `json:"completed"`
+	Failed         int                `json:"failed"`
+	Cancelled      int                `json:"cancelled"`
+	Warnings       int                `json:"warnings"`
+	CreatedAt      time.Time          `json:"created_at"`
+	Migrations     []*MigrationResult `json:"migrations"`
+}
+
+// GetBatch returns every migration started under one batch id together with the aggregate tally.
+// A rerun lands in the same batch, so a batch can hold more than one attempt for an account; the
+// counts here are over the raw rows (the UI collapses superseded attempts per account for display).
+func (e *Engine) GetBatch(ctx context.Context, batchID string) (*BatchResult, error) {
+	rows, err := e.db.ListMigrationsByBatch(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	batch := &BatchResult{BatchID: batchID, Migrations: make([]*MigrationResult, 0, len(rows))}
+	for i := range rows {
+		r := toResult(&rows[i])
+		r.Error = capText(r.Error, 500, 0) // polled; the per-account detail carries the full text
+		batch.Migrations = append(batch.Migrations, r)
+		batch.Total++
+		batch.Warnings += r.Warnings
+		switch r.Status {
+		case "pending":
+			batch.Pending++
+		case "running":
+			batch.Running++
+		case "awaiting_review":
+			batch.AwaitingReview++
+		case "completed":
+			batch.Completed++
+		case "failed":
+			batch.Failed++
+		case "cancelled":
+			batch.Cancelled++
+		}
+		if batch.CreatedAt.IsZero() || rows[i].CreatedAt.Before(batch.CreatedAt) {
+			batch.CreatedAt = rows[i].CreatedAt
+		}
+	}
+	return batch, nil
 }
 
 // GetMigrationLogs gets logs for a migration
@@ -1196,6 +1255,8 @@ func (e *Engine) RerunMigration(ctx context.Context, migrationID string) (*Migra
 		Username:              m.AccountUsername,
 		ScanMalware:           m.ScanRequested,
 		TargetDomain:          m.TargetDomain.String,
+		// Keep the fresh attempt in the same consolidated batch as the one it replaces.
+		BatchID: m.BatchID.String,
 	}
 	e.db.AddMigrationLog(ctx, migrationID, "info", "Start from scratch requested; a new migration was started", nil)
 	result, err := e.StartMigration(ctx, req)

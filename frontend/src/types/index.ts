@@ -99,6 +99,8 @@ export interface Account {
 
 export interface Migration {
   id: string;
+  /** Groups the accounts started together in one New-migration run; empty for a single migration. */
+  batch_id?: string;
   source_server_id: string;
   target_server_id: string;
   account_username: string;
@@ -142,6 +144,24 @@ export interface Migration {
   };
   /** Live progress block returned by the API; transfer byte counters live here rather than at the top level. */
   progress?: { bytes_transferred?: number; total_bytes?: number };
+}
+
+/**
+ * Aggregate view of one batch of migrations started together (GET /migrations/batches/:batch_id):
+ * every migration in the batch plus the running tally the consolidated window shows.
+ */
+export interface MigrationBatch {
+  batch_id: string;
+  total: number;
+  pending: number;
+  running: number;
+  awaiting_review: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  warnings: number;
+  created_at: string;
+  migrations: Migration[];
 }
 
 export interface MigrationLog {

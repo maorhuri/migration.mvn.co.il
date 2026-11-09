@@ -187,6 +187,9 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS scan_decision VARCHAR(16)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_cluster_server_id VARCHAR(64)`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS target_domain VARCHAR(255)`,
+		// Groups migrations started together from one New-migration run so they can be watched and
+		// finished from a single consolidated window. NULL for the pre-existing single migrations.
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS batch_id UUID`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
 		// Create indexes
@@ -194,6 +197,7 @@ func (d *Database) Migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_source ON migrations(source_server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_migrations_target ON migrations(target_server_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_migrations_batch ON migrations(batch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_migration_logs_migration ON migration_logs(migration_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_server_accounts_server ON server_accounts(server_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_server_accounts_domain ON server_accounts(domain)`,
@@ -307,6 +311,7 @@ type Migration struct {
 	ScanDecision          NullString     `db:"scan_decision" json:"scan_decision"`
 	TargetClusterServerID NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
 	TargetDomain          NullString     `db:"target_domain" json:"target_domain"`
+	BatchID               NullString     `db:"batch_id" json:"batch_id"`
 	StartedAt             sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt           sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
 	CreatedAt             time.Time      `db:"created_at" json:"created_at"`
@@ -639,14 +644,14 @@ func (d *Database) CreateMigration(ctx context.Context, migration *Migration) er
 	migration.Status = "pending"
 
 	query := `
-		INSERT INTO migrations (id, source_server_id, target_server_id, account_username, 
-			status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO migrations (id, source_server_id, target_server_id, account_username,
+			status, batch_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
 
 	_, err := d.db.ExecContext(ctx, query,
 		migration.ID, migration.SourceServerID, migration.TargetServerID,
-		migration.AccountUsername, migration.Status, migration.CreatedAt,
+		migration.AccountUsername, migration.Status, migration.BatchID, migration.CreatedAt,
 	)
 
 	return err
@@ -668,6 +673,15 @@ func (d *Database) ListMigrations(ctx context.Context) ([]Migration, error) {
 	var migrations []Migration
 	err := d.db.SelectContext(ctx, &migrations,
 		"SELECT * FROM migrations ORDER BY created_at DESC")
+	return migrations, err
+}
+
+// ListMigrationsByBatch lists every migration started together under the same batch id,
+// oldest first (the order they were kicked off in the New-migration run).
+func (d *Database) ListMigrationsByBatch(ctx context.Context, batchID string) ([]Migration, error) {
+	var migrations []Migration
+	err := d.db.SelectContext(ctx, &migrations,
+		"SELECT * FROM migrations WHERE batch_id = $1 ORDER BY created_at", batchID)
 	return migrations, err
 }
 
