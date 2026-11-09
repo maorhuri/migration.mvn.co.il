@@ -11,6 +11,14 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 )
 
+// cloudflareClient builds a Cloudflare client for the stored credentials: the token is used as a
+// Bearer API token, or -- when a Cloudflare account email is configured -- as that account's
+// legacy Global API Key (X-Auth-Email + X-Auth-Key), which spans every zone the account can see.
+func (e *Engine) cloudflareClient(ctx context.Context, token string) *cloudflare.Client {
+	email, _ := e.db.GetCloudflareEmail(ctx)
+	return cloudflare.New(token, email)
+}
+
 // MarkCloudflareAccounts flags each account whose domain (its primary Domain or any AddonDomains)
 // is hosted in OUR Cloudflare account -- i.e. its registrable domain is a zone the configured
 // token can see. It makes at most one ListZones call for the whole slice (not one per domain):
@@ -30,7 +38,7 @@ func (e *Engine) MarkCloudflareAccounts(ctx context.Context, accounts []AccountI
 		return
 	}
 
-	client := cloudflare.New(token)
+	client := e.cloudflareClient(ctx, token)
 	zones, err := client.ListZones(ctx)
 	if err != nil {
 		if e.logger != nil {
@@ -228,7 +236,7 @@ func (e *Engine) UpdateCloudflareDNS(ctx context.Context, migrationID string) (*
 		oldIP = resolveOldSourceIP(src.Host)
 	}
 
-	client := cloudflare.New(token)
+	client := e.cloudflareClient(ctx, token)
 	client.SetLogger(logFn)
 
 	out := &CloudflareDNSResult{TargetIP: targetIP, TargetIPv6: targetIPv6, OldIP: oldIP}

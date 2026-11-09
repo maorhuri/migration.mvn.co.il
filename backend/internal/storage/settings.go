@@ -7,9 +7,10 @@ import (
 
 // Global settings keys. Secrets are stored in app_settings.value_encrypted; plain values in value.
 const (
-	settingCloudflareToken    = "cloudflare_api_token"   // encrypted
-	settingCloudflareTargetIP = "cloudflare_target_ip"   // plain IPv4 fallback
-	settingCloudflareTargetV6 = "cloudflare_target_ipv6" // plain IPv6 fallback (optional)
+	settingCloudflareToken    = "cloudflare_api_token"     // encrypted
+	settingCloudflareEmail    = "cloudflare_account_email" // plain; set => token is a Global API Key
+	settingCloudflareTargetIP = "cloudflare_target_ip"     // plain IPv4 fallback
+	settingCloudflareTargetV6 = "cloudflare_target_ipv6"   // plain IPv6 fallback (optional)
 
 	// Central outbound-email (SMTP) settings applied to migrated sites via FluentSMTP, plus the
 	// SPF/DMARC policy used when ensuring those records in DNS. Only the auth password is a secret.
@@ -110,6 +111,17 @@ func (d *Database) GetCloudflareToken(ctx context.Context) (string, error) {
 // HasCloudflareToken reports whether a token is stored, without decrypting it.
 func (d *Database) HasCloudflareToken(ctx context.Context) (bool, error) {
 	return d.hasSetting(ctx, settingCloudflareToken)
+}
+
+// SetCloudflareEmail stores the Cloudflare account email. When set, the stored token is used as
+// that account's Global API Key (X-Auth-Email + X-Auth-Key) instead of as a Bearer API token.
+func (d *Database) SetCloudflareEmail(ctx context.Context, email string) error {
+	return d.setPlainSetting(ctx, settingCloudflareEmail, email)
+}
+
+// GetCloudflareEmail returns the stored Cloudflare account email ("" => use the token as a Bearer API token).
+func (d *Database) GetCloudflareEmail(ctx context.Context) (string, error) {
+	return d.getPlainSetting(ctx, settingCloudflareEmail)
 }
 
 // SetCloudflareTargetIP stores the fallback target IPv4 used when a migration did not record one.

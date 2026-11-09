@@ -21,21 +21,37 @@ const BaseURL = "https://api.cloudflare.com/client/v4"
 // LogFunc receives log lines from the client (level: info|warn|error).
 type LogFunc func(level, message string)
 
-// Client talks to the Cloudflare API with a single account-wide API token.
+// Client talks to the Cloudflare API with either an API token (Bearer) or the legacy
+// Global API Key (X-Auth-Email + X-Auth-Key). When email is set the key is treated as a
+// Global API Key; otherwise the token is used as a Bearer API token.
 type Client struct {
 	token      string
+	email      string
 	baseURL    string
 	httpClient *http.Client
 	logFn      LogFunc
 }
 
-// New builds a client for the given API token.
-func New(token string) *Client {
+// New builds a client. Pass email="" to authenticate with an API token (Bearer); pass the
+// Cloudflare account email to authenticate with that account's Global API Key instead.
+func New(token, email string) *Client {
 	return &Client{
 		token:      strings.TrimSpace(token),
+		email:      strings.TrimSpace(email),
 		baseURL:    BaseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// setAuth applies the right Cloudflare auth headers: Global API Key (X-Auth-Email + X-Auth-Key)
+// when an account email is configured, otherwise a Bearer API token.
+func (c *Client) setAuth(req *http.Request) {
+	if c.email != "" {
+		req.Header.Set("X-Auth-Email", c.email)
+		req.Header.Set("X-Auth-Key", c.token)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
 }
 
 // SetLogger routes client log lines to fn.
@@ -174,7 +190,7 @@ func (c *Client) doAPIRequest(ctx context.Context, method, endpoint string, body
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.setAuth(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -248,7 +264,7 @@ func (c *Client) zonePageInfo(ctx context.Context, page int) (*resultInfo, error
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.setAuth(req)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

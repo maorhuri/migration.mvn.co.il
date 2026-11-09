@@ -13,11 +13,13 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [token, setToken] = useState('');
+  const [email, setEmail] = useState('');
 
   const load = async () => {
     try {
       const s = await getCloudflareSettings();
       setConfigured(s.configured);
+      setEmail(s.email || '');
     } catch {
       toast.error(t('settings.cf.loadFailed'));
     } finally {
@@ -38,8 +40,10 @@ export default function Settings() {
     try {
       const s = await updateCloudflareSettings({
         api_token: token.trim() ? token.trim() : undefined,
+        email: email.trim(),
       });
       setConfigured(s.configured);
+      setEmail(s.email || '');
       setToken('');
       toast.success(t('settings.cf.saved'));
     } catch (error) {
@@ -55,6 +59,7 @@ export default function Settings() {
       const s = await updateCloudflareSettings({ clear: true });
       setConfigured(s.configured);
       setToken('');
+      setEmail('');
       toast.success(t('settings.cf.cleared'));
     } catch (error) {
       toast.error(apiError(error, t('settings.cf.saveFailed')));
@@ -113,6 +118,17 @@ export default function Settings() {
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 placeholder={t('settings.cf.tokenPlaceholder')}
+              />
+            </Field>
+
+            <Field label={t('settings.cf.emailLabel')} hint={t('settings.cf.emailHint')}>
+              <Input
+                type="email"
+                autoComplete="off"
+                mono
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={t('settings.cf.emailPlaceholder')}
               />
             </Field>
           </div>

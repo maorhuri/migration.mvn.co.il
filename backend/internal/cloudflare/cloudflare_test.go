@@ -12,7 +12,7 @@ import (
 
 // newTestClient points a Client at an httptest server standing in for the Cloudflare API.
 func newTestClient(srv *httptest.Server) *Client {
-	c := New("test-token")
+	c := New("test-token", "")
 	c.baseURL = srv.URL
 	return c
 }

@@ -192,6 +192,7 @@ export interface CompatibilityResult {
 /** GET /settings/cloudflare — never includes the token itself. */
 export interface CloudflareSettings {
   configured: boolean;
+  email: string;
   target_ip: string;
   target_ipv6: string;
 }

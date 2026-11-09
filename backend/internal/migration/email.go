@@ -319,7 +319,7 @@ func (e *Engine) EmailSetup(ctx context.Context, migrationID string) (*Migration
 	default:
 		status, _ := e.GetMigrationStatus(ctx, migrationID)
 		mailDomains := e.migrationDomains(status, m.TargetDomain.String)
-		client := cloudflare.New(token)
+		client := e.cloudflareClient(ctx, token)
 		client.SetLogger(logFn)
 		doneZones := map[string]bool{}
 		for _, domain := range mailDomains {

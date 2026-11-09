@@ -11,6 +11,7 @@ import (
 // token itself: only whether one is stored, and the (non-secret) fallback target IPs.
 type CloudflareSettingsResponse struct {
 	Configured bool   `json:"configured"`
+	Email      string `json:"email"` // when set, the stored token is used as a Global API Key
 	TargetIP   string `json:"target_ip"`
 	TargetIPv6 string `json:"target_ipv6"`
 }
@@ -23,9 +24,10 @@ func (h *Handler) getCloudflareSettings(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	email, _ := h.db.GetCloudflareEmail(ctx)
 	targetIP, _ := h.db.GetCloudflareTargetIP(ctx)
 	targetIPv6, _ := h.db.GetCloudflareTargetIPv6(ctx)
-	c.JSON(http.StatusOK, CloudflareSettingsResponse{Configured: configured, TargetIP: targetIP, TargetIPv6: targetIPv6})
+	c.JSON(http.StatusOK, CloudflareSettingsResponse{Configured: configured, Email: email, TargetIP: targetIP, TargetIPv6: targetIPv6})
 }
 
 // UpdateCloudflareSettingsRequest is the body of PUT /settings/cloudflare. The token is
@@ -34,6 +36,7 @@ func (h *Handler) getCloudflareSettings(c *gin.Context) {
 // string clears them).
 type UpdateCloudflareSettingsRequest struct {
 	APIToken   *string `json:"api_token,omitempty"`
+	Email      *string `json:"email,omitempty"` // set to use the token as a Global API Key; empty string = API token
 	TargetIP   *string `json:"target_ip,omitempty"`
 	TargetIPv6 *string `json:"target_ipv6,omitempty"`
 	Clear      bool    `json:"clear,omitempty"`
@@ -55,8 +58,20 @@ func (h *Handler) updateCloudflareSettings(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+		if err := h.db.SetCloudflareEmail(ctx, ""); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	case req.APIToken != nil && strings.TrimSpace(*req.APIToken) != "":
 		if err := h.db.SetCloudflareToken(ctx, strings.TrimSpace(*req.APIToken)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	// Email set (non-empty) => use the token as that account's Global API Key; empty => API token (Bearer).
+	if req.Email != nil {
+		if err := h.db.SetCloudflareEmail(ctx, strings.TrimSpace(*req.Email)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}

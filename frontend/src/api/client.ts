@@ -252,6 +252,7 @@ export const getCloudflareSettings = async (): Promise<CloudflareSettings> => {
  */
 export const updateCloudflareSettings = async (params: {
   api_token?: string;
+  email?: string;
   target_ip?: string;
   target_ipv6?: string;
   clear?: boolean;
