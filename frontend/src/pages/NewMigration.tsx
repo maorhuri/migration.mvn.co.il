@@ -136,6 +136,8 @@ export default function NewMigration() {
   // Accounts already migrated to the chosen target (any domain/alias already hosted there):
   // hidden by default, same as suspended source accounts.
   const [showMigrated, setShowMigrated] = useState(false);
+  // Show only accounts whose domain is hosted in our Cloudflare account (off by default).
+  const [onlyCloudflare, setOnlyCloudflare] = useState(false);
   const [existingDomains, setExistingDomains] = useState<string[]>([]);
   const [loadingExistingDomains, setLoadingExistingDomains] = useState(false);
   const [sourceSearchTerm, setSourceSearchTerm] = useState('');
@@ -726,14 +728,22 @@ export default function NewMigration() {
     (!!acc.domain && existingDomainsSet.has(acc.domain.toLowerCase())) ||
     !!acc.pointers?.some((p) => existingDomainsSet.has(p.toLowerCase()));
   const migratedCount = existingDomainsSet.size > 0 ? accounts.filter(isAlreadyMigrated).length : 0;
+  const cloudflareCount = accounts.filter((acc: Account) => acc.has_cloudflare).length;
   const filteredAccounts = accounts
     .filter((acc: Account) => showSuspended || !acc.suspended)
     .filter((acc: Account) => showMigrated || !isAlreadyMigrated(acc))
+    .filter((acc: Account) => !onlyCloudflare || acc.has_cloudflare)
     .filter((acc: Account) =>
       acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .sort((a: Account, b: Account) => {
+      // Cloudflare-hosted sites always float to the top, regardless of the active column sort
+      // (stable within each group, so the column order below still applies inside them).
+      const aCf = a.has_cloudflare ? 1 : 0;
+      const bCf = b.has_cloudflare ? 1 : 0;
+      if (aCf !== bCf) return bCf - aCf;
+
       let aVal: string | number = '';
       let bVal: string | number = '';
 
@@ -861,6 +871,16 @@ export default function NewMigration() {
       <span>{showMigrated ? t('newmigration.tray.onTargetShown', { count: migratedCount }) : t('newmigration.tray.onTargetHidden', { count: migratedCount })}</span>
       <Button size="sm" variant="ghost" onClick={() => setShowMigrated((v) => !v)} disabled={loadingExistingDomains}>
         {showMigrated ? t('newmigration.tray.hide') : t('newmigration.tray.show')}
+      </Button>
+    </span>
+  );
+
+  // Narrow the list to accounts hosted in our Cloudflare account (only offered when there are any).
+  const cloudflareToggle = cloudflareCount > 0 && (
+    <span className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+      <span>{t('newmigration.tray.cloudflareCount', { count: cloudflareCount })}</span>
+      <Button size="sm" variant="ghost" onClick={() => setOnlyCloudflare((v) => !v)}>
+        {onlyCloudflare ? t('newmigration.tray.cloudflareShowAll') : t('newmigration.tray.cloudflareOnly')}
       </Button>
     </span>
   );
@@ -1158,6 +1178,7 @@ export default function NewMigration() {
                 </span>
                 {!isAgentlessSource && suspendedToggle}
                 {!isAgentlessSource && migratedToggle}
+                {!isAgentlessSource && cloudflareToggle}
                 {selectedAccounts.length === 0 && !isAgentlessSource && (
                   <div className="ms-auto flex items-center gap-2">
                     <Button size="sm" variant="ghost" onClick={handleSelectAllAccounts} disabled={filteredAccounts.length === 0}>

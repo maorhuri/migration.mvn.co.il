@@ -119,6 +119,11 @@ export function AccountsTable({ accounts, sortField, sortDirection, onSort, onOp
               <TDPrimary className="whitespace-nowrap">
                 <div className="flex min-w-0 items-center gap-2">
                   {displayDomain ? <Mono className="text-[13px] font-medium">{displayDomain}</Mono> : <Dash />}
+                  {account.has_cloudflare && (
+                    <Badge tone="orange" size="sm" title={t('serverdetail.table.cloudflare')}>
+                      {t('serverdetail.table.cf')}
+                    </Badge>
+                  )}
                   {account.ssl_enabled && (
                     <Badge
                       tone="success"

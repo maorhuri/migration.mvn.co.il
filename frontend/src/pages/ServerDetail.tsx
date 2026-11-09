@@ -215,6 +215,12 @@ export default function ServerDetail() {
       acc.username?.toLowerCase().includes(searchTerm.toLowerCase())
     )
     .sort((a, b) => {
+      // Cloudflare-hosted sites always float to the top, regardless of the active column sort
+      // (stable within each group, so the column order below still applies inside them).
+      const aCf = a.has_cloudflare ? 1 : 0;
+      const bCf = b.has_cloudflare ? 1 : 0;
+      if (aCf !== bCf) return bCf - aCf;
+
       let aVal: string | number = '';
       let bVal: string | number = '';
 

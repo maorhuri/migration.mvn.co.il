@@ -11,6 +11,76 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 )
 
+// MarkCloudflareAccounts flags each account whose domain (its primary Domain or any AddonDomains)
+// is hosted in OUR Cloudflare account -- i.e. its registrable domain is a zone the configured
+// token can see. It makes at most one ListZones call for the whole slice (not one per domain):
+// when no Cloudflare token is configured it is a cheap no-op, and ANY Cloudflare failure is logged
+// and leaves every account's HasCloudflare false so an accounts listing never fails because of
+// Cloudflare. It mutates accounts in place.
+func (e *Engine) MarkCloudflareAccounts(ctx context.Context, accounts []AccountInfo) {
+	if len(accounts) == 0 || e.db == nil {
+		return
+	}
+	hasToken, err := e.db.HasCloudflareToken(ctx)
+	if err != nil || !hasToken {
+		return
+	}
+	token, err := e.db.GetCloudflareToken(ctx)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return
+	}
+
+	client := cloudflare.New(token)
+	zones, err := client.ListZones(ctx)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("Cloudflare: could not list zones to flag accounts", map[string]interface{}{"error": err.Error()})
+		}
+		return
+	}
+
+	// Set of zone apexes (normalized) to test each account's domains against.
+	zoneSet := make(map[string]bool, len(zones))
+	for _, z := range zones {
+		if name := normalizeDomain(z.Name); name != "" {
+			zoneSet[name] = true
+		}
+	}
+	if len(zoneSet) == 0 {
+		return
+	}
+
+	for i := range accounts {
+		if domainInZoneSet(accounts[i].Domain, zoneSet) {
+			accounts[i].HasCloudflare = true
+			continue
+		}
+		for _, d := range accounts[i].AddonDomains {
+			if domainInZoneSet(d, zoneSet) {
+				accounts[i].HasCloudflare = true
+				break
+			}
+		}
+	}
+}
+
+// domainInZoneSet reports whether domain is one of the zone apexes in zoneSet, or a subdomain of
+// one: it walks up the labels (shop.example.com -> example.com -> com) and matches the first apex
+// present, mirroring how the registrable domain is found elsewhere.
+func domainInZoneSet(domain string, zoneSet map[string]bool) bool {
+	domain = normalizeDomain(domain)
+	if domain == "" {
+		return false
+	}
+	labels := strings.Split(domain, ".")
+	for i := 0; i+1 < len(labels); i++ {
+		if zoneSet[strings.Join(labels[i:], ".")] {
+			return true
+		}
+	}
+	return false
+}
+
 // CloudflareZoneResult is what happened for one domain's zone during an Update Cloudflare DNS run.
 type CloudflareZoneResult struct {
 	Domain      string   `json:"domain"`

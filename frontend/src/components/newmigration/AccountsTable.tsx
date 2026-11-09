@@ -136,6 +136,11 @@ export function AccountsTable({
                   ) : (
                     <span className="font-normal text-slate-400 dark:text-slate-500">{t('newmigration.table.noDomain')}</span>
                   )}
+                  {account.has_cloudflare && (
+                    <Badge tone="orange" size="sm" title={t('newmigration.table.cloudflare')}>
+                      {t('newmigration.table.cf')}
+                    </Badge>
+                  )}
                   {account.is_wordpress && (
                     <Badge tone="brand" size="sm">
                       {t('newmigration.table.wordpress')}

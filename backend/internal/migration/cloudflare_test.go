@@ -205,3 +205,29 @@ type cloudflare_DesiredLite struct {
 	content string
 	prio    int
 }
+
+func TestDomainInZoneSet(t *testing.T) {
+	zones := map[string]bool{"example.com": true, "co.example.org": true}
+	cases := []struct {
+		domain string
+		want   bool
+	}{
+		{"example.com", true},           // apex
+		{"www.example.com", true},       // www. is stripped before matching
+		{"shop.example.com", true},      // subdomain of a zone
+		{"a.b.example.com", true},       // deep subdomain
+		{"EXAMPLE.COM", true},           // case-insensitive
+		{"https://example.com/x", true}, // scheme/path tolerated
+		{"co.example.org", true},        // multi-label apex
+		{"x.co.example.org", true},      // subdomain of multi-label apex
+		{"example.org", false},          // only co.example.org is a zone, not example.org
+		{"notours.com", false},          // not in the set
+		{"", false},                     // empty
+		{"localhost", false},            // single label
+	}
+	for _, c := range cases {
+		if got := domainInZoneSet(c.domain, zones); got != c.want {
+			t.Errorf("domainInZoneSet(%q) = %v, want %v", c.domain, got, c.want)
+		}
+	}
+}
