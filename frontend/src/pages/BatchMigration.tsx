@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@heroicons/react/16/solid';
-import { ArrowTopRightOnSquareIcon, CheckCircleIcon, EnvelopeIcon, PauseCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
+import { ArrowTopRightOnSquareIcon, CheckCircleIcon, EnvelopeIcon, PauseCircleIcon, PlayCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
 import {
   Badge,
   Button,
@@ -45,6 +45,7 @@ import {
   resumeMigration,
   runMigrationEmailSetup,
   suspendMigrationSource,
+  unsuspendMigrationSource,
 } from '../api/client';
 import type { Migration, MigrationBatch, MigrationLog, Server } from '../types';
 
@@ -206,11 +207,15 @@ export default function BatchMigration() {
 
   // Failed / cancelled rows can be retried; completed rows on a panel we can suspend offer the post-step.
   const failedRows = rows.filter((m) => m.status === 'failed' || m.status === 'cancelled');
-  const canSuspend = (m: Migration) => {
+  // The source panel can be driven programmatically (not agentless/Cloudways), so suspend is reversible.
+  const suspendable = (m: Migration) => {
     const src = servers[m.source_server_id];
     const manual = isAgentlessPanel(src?.panel_type) || src?.panel_type === 'cloudways';
-    return m.status === 'completed' && !m.source_suspended_at && !manual;
+    return m.status === 'completed' && !manual;
   };
+  // Not yet suspended -> offer "Suspend"; already suspended -> offer the reversing "Unsuspend".
+  const canSuspend = (m: Migration) => suspendable(m) && !m.source_suspended_at;
+  const canUnsuspend = (m: Migration) => suspendable(m) && !!m.source_suspended_at;
   const suspendableRows = rows.filter(canSuspend);
   // Completed rows can have their Cloudflare DNS repointed and central email set up (same gating as
   // the single-migration page), per row or for the whole batch at once.
@@ -289,6 +294,21 @@ export default function BatchMigration() {
       await fetchBatch();
     } catch (error) {
       toast.error(apiError(error, t('batch.toast.suspendRowFailed', { site })));
+    } finally {
+      setRowBusyFor(m.id, null);
+    }
+  };
+
+  // Per-row "Unsuspend site" — the reverse of handleRowSuspend, re-enabling the account on the source.
+  const handleRowUnsuspend = async (m: Migration) => {
+    const site = siteLabel(m);
+    setRowBusyFor(m.id, 'suspend');
+    try {
+      await unsuspendMigrationSource(m.id);
+      toast.success(t('batch.toast.unsuspendedRow', { site }), { duration: 6000 });
+      await fetchBatch();
+    } catch (error) {
+      toast.error(apiError(error, t('batch.toast.unsuspendRowFailed', { site })));
     } finally {
       setRowBusyFor(m.id, null);
     }
@@ -617,6 +637,18 @@ export default function BatchMigration() {
                             onClick={() => handleRowSuspend(m)}
                           >
                             {t('batch.row.suspend')}
+                          </Button>
+                        )}
+                        {canUnsuspend(m) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            leftIcon={<PlayCircleIcon />}
+                            loading={rowBusy[m.id] === 'suspend'}
+                            disabled={!!rowBusy[m.id]}
+                            onClick={() => handleRowUnsuspend(m)}
+                          >
+                            {t('batch.row.unsuspend')}
                           </Button>
                         )}
                         {isActive && (
