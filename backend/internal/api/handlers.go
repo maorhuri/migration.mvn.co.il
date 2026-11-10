@@ -444,6 +444,14 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 		"panel_type": server.PanelType,
 	})
 
+	// The non-Enhance live scan can take ~a minute on a full server (per-account du + DB-size over
+	// SSH). Run it, and the cache write, on a context detached from the HTTP request so a browser/
+	// proxy timeout or the operator navigating away does not cancel it mid-scan and throw the result
+	// away -- that left the cache cold ("Failed to cache accounts: context canceled") and made every
+	// reload slow again. Detached, the scan finishes and caches regardless, so the next load is instant.
+	scanCtx, cancelScan := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelScan()
+
 	var accounts []migration.AccountInfo
 	if server.PanelType == "enhance" {
 		// An Enhance source lists the websites of one cluster server (?cluster_server_id=),
@@ -458,7 +466,7 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 			h.engine.MarkCloudflareAccounts(c.Request.Context(), accounts)
 		}
 	} else {
-		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
+		accounts, err = h.engine.GetServerAccounts(scanCtx, server, password)
 	}
 	if err != nil {
 		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
@@ -494,7 +502,7 @@ func (h *Handler) listServerAccounts(c *gin.Context) {
 				SSLExpiry:     acc.SSLExpiry,
 			}
 		}
-		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
+		if err := h.db.SaveServerAccounts(scanCtx, id, commonAccounts); err != nil {
 			h.logger.Error("Failed to cache accounts", err, nil)
 		}
 	}
@@ -539,6 +547,12 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 		}
 	}
 
+	// Detached from the HTTP request (see listServerAccounts): a full-server rescan outruns the
+	// browser/proxy timeout, and we must not lose the result -- and the fresh cache -- when the
+	// client gives up mid-scan.
+	scanCtx, cancelScan := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelScan()
+
 	var accounts []migration.AccountInfo
 	if server.PanelType == "enhance" {
 		clusterServerID, ok := queryClusterServerID(c)
@@ -551,7 +565,7 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 			h.engine.MarkCloudflareAccounts(c.Request.Context(), accounts)
 		}
 	} else {
-		accounts, err = h.engine.GetServerAccounts(c.Request.Context(), server, password)
+		accounts, err = h.engine.GetServerAccounts(scanCtx, server, password)
 	}
 	if err != nil {
 		h.logger.Error("Failed to get accounts", err, map[string]interface{}{
@@ -586,7 +600,7 @@ func (h *Handler) refreshServerAccounts(c *gin.Context) {
 				SSLExpiry:     acc.SSLExpiry,
 			}
 		}
-		if err := h.db.SaveServerAccounts(c.Request.Context(), id, commonAccounts); err != nil {
+		if err := h.db.SaveServerAccounts(scanCtx, id, commonAccounts); err != nil {
 			h.logger.Error("Failed to cache accounts", err, nil)
 		}
 	}

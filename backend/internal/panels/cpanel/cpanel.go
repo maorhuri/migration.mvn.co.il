@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -118,19 +119,54 @@ func (cp *CPanel) ListAccounts(ctx context.Context) ([]common.Account, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list users: %w", err)
 	}
-	var accounts []common.Account
-	var errs []string
+
+	var usernames []string
 	for _, username := range strings.Fields(output) {
 		switch username {
 		case "system", "nobody", "root":
 			continue
 		}
-		account, err := cp.GetAccount(ctx, username)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", username, err))
+		usernames = append(usernames, username)
+	}
+
+	// Each GetAccount is one SSH round-trip whose `du -sh /home/<user>` can take seconds on a large
+	// home, so a serial scan of a full server (seen: 72 accounts ≈ 50s) outruns the browser/proxy
+	// timeout and never returns a list. Fan the per-account probes out over a bounded worker pool:
+	// RunCommand opens a fresh session on the shared *ssh.Client each call (safe for concurrent use),
+	// and the cap stays under OpenSSH's default MaxSessions (10) so we never exhaust the connection.
+	type slot struct {
+		account *common.Account
+		err     error
+	}
+	results := make([]slot, len(usernames))
+	const workers = 6
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, username := range usernames {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, username string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			account, err := cp.GetAccount(ctx, username)
+			results[i] = slot{account: account, err: err}
+		}(i, username)
+	}
+	wg.Wait()
+
+	var accounts []common.Account
+	var errs []string
+	for i, r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", usernames[i], r.err))
 			continue
 		}
-		accounts = append(accounts, *account)
+		if r.account != nil {
+			accounts = append(accounts, *r.account)
+		}
 	}
 	if len(errs) > 0 && len(accounts) == 0 {
 		return nil, fmt.Errorf("failed to get any accounts. Errors: %v", errs)
