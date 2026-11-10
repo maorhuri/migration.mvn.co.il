@@ -68,16 +68,16 @@ type MigrationRequest struct {
 
 // MigrationResult represents the state of a migration as exposed by the API
 type MigrationResult struct {
-	ID                     string                    `json:"id"`
-	BatchID                string                    `json:"batch_id,omitempty"`
-	BatchDismissedAt       *time.Time                `json:"batch_dismissed_at,omitempty"` // set when the batch was marked "done handling"
-	SourceServerID         string                    `json:"source_server_id"`
-	TargetServerID         string                    `json:"target_server_id"`
-	AccountUsername        string                    `json:"account_username"`
+	ID               string     `json:"id"`
+	BatchID          string     `json:"batch_id,omitempty"`
+	BatchDismissedAt *time.Time `json:"batch_dismissed_at,omitempty"` // set when the batch was marked "done handling"
+	SourceServerID   string     `json:"source_server_id"`
+	TargetServerID   string     `json:"target_server_id"`
+	AccountUsername  string     `json:"account_username"`
 	// Domain the account's main site is registered under on the target (a DirectAdmin pointer or
 	// the operator's chosen target domain, falling back to the source name). Surfaced for the batch
 	// view so each row links to and is labelled by the real site, not just the account username.
-	Domain string `json:"domain,omitempty"`
+	Domain                 string                    `json:"domain,omitempty"`
 	Status                 string                    `json:"status"`
 	CurrentStep            string                    `json:"current_step,omitempty"`
 	TotalSteps             int                       `json:"total_steps"`
