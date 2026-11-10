@@ -402,9 +402,9 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		migrationLog("info", "Migration completed successfully")
 	}
 	e.refreshAccountsCacheAsync(sourceServer.ID)
-	// If a Cloudflare token is configured, repoint DNS automatically now. Never fails the migration.
-	e.maybeAutoUpdateCloudflareDNS(ctx, migrationID)
-	// If central SMTP settings are configured, set up outbound email (FluentSMTP + SPF/DMARC). Never fails the migration.
+	// Cloudflare DNS is NOT repointed automatically -- the operator does it by clicking
+	// "Update Cloudflare DNS" on the migration, so DNS never changes mid-migration unexpectedly.
+	// Email setup (FluentSMTP + SPF/DMARC) still runs automatically. Never fails the migration.
 	e.maybeAutoEmailSetup(ctx, migrationID)
 }
 
