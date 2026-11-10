@@ -670,14 +670,18 @@ func (d *Database) CreateMigration(ctx context.Context, migration *Migration) er
 	// is still active. Doing the check and the insert in one statement keeps two near-simultaneous
 	// starts from both getting through -- a plain SELECT-then-INSERT would let them race. When the
 	// guard blocks the insert, 0 rows are affected and we return ErrActiveMigrationExists.
+	// The params carry explicit casts: unlike INSERT ... VALUES, an INSERT ... SELECT does not
+	// propagate the target column types onto bare parameters, so Postgres defaults them to text and
+	// then rejects the statement (uuid columns, and $2/$4 reused in the WHERE, deduce conflicting
+	// types). Casting each param to its column type keeps the deduction consistent.
 	query := `
 		INSERT INTO migrations (id, source_server_id, target_server_id, account_username,
 			status, batch_id, created_at)
-		SELECT $1, $2, $3, $4, $5, $6, $7
+		SELECT $1::uuid, $2::uuid, $3::uuid, $4::varchar, $5::varchar, $6::uuid, $7::timestamptz
 		WHERE NOT EXISTS (
 			SELECT 1 FROM migrations
-			WHERE source_server_id = $2
-			  AND account_username = $4
+			WHERE source_server_id = $2::uuid
+			  AND account_username = $4::varchar
 			  AND status IN ('pending', 'running', 'awaiting_review')
 		)
 	`
