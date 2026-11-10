@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@heroicons/react/16/solid';
-import { ArrowTopRightOnSquareIcon, CheckCircleIcon, CloudIcon, EnvelopeIcon, PauseCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
+import { ArrowTopRightOnSquareIcon, CheckCircleIcon, EnvelopeIcon, PauseCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
 import {
   Badge,
   Button,
@@ -45,7 +45,6 @@ import {
   resumeMigration,
   runMigrationEmailSetup,
   suspendMigrationSource,
-  updateMigrationCloudflareDNS,
 } from '../api/client';
 import type { Migration, MigrationBatch, MigrationLog, Server } from '../types';
 
@@ -137,9 +136,8 @@ export default function BatchMigration() {
   const [retrying, setRetrying] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [suspending, setSuspending] = useState(false);
-  // Per-row post-migration action in flight, keyed by migration id ('cf' = Cloudflare DNS, 'email' = SMTP).
-  const [rowBusy, setRowBusy] = useState<Record<string, 'cf' | 'email'>>({});
-  const [cfAllBusy, setCfAllBusy] = useState(false);
+  // Per-row post-migration action in flight, keyed by migration id ('email' = SMTP, 'suspend' = suspend source).
+  const [rowBusy, setRowBusy] = useState<Record<string, 'email' | 'suspend'>>({});
   const [emailAllBusy, setEmailAllBusy] = useState(false);
   const [dismissOpen, setDismissOpen] = useState(false);
   const [dismissing, setDismissing] = useState(false);
@@ -273,7 +271,7 @@ export default function BatchMigration() {
     }
   };
 
-  const setRowBusyFor = (id: string, action: 'cf' | 'email' | null) =>
+  const setRowBusyFor = (id: string, action: 'email' | 'suspend' | null) =>
     setRowBusy((prev) => {
       const next = { ...prev };
       if (action) next[id] = action;
@@ -281,23 +279,16 @@ export default function BatchMigration() {
       return next;
     });
 
-  // Per-row "Update Cloudflare DNS" — mirrors MigrationDetail's handleCloudflareDNS, scoped to one row.
-  const handleRowCloudflare = async (m: Migration) => {
+  // Per-row "Suspend site" — suspends the account on the source panel, scoped to one row.
+  const handleRowSuspend = async (m: Migration) => {
     const site = siteLabel(m);
-    setRowBusyFor(m.id, 'cf');
+    setRowBusyFor(m.id, 'suspend');
     try {
-      const { result } = await updateMigrationCloudflareDNS(m.id);
-      if (result.records_changed > 0 || result.zones_updated > 0) {
-        toast.success(t('batch.toast.cloudflareRow', { site }), { duration: 6000 });
-      } else {
-        toast(t('batch.toast.cloudflareRowNone', { site }), { duration: 6000 });
-      }
-      if (result.mail_skipped > 0) {
-        toast(t('migrationdetail.toast.cloudflareMailSkipped', { count: result.mail_skipped }), { duration: 8000, icon: '✉️' });
-      }
+      await suspendMigrationSource(m.id);
+      toast.success(t('batch.toast.suspendedRow', { site }), { duration: 6000 });
       await fetchBatch();
     } catch (error) {
-      toast.error(apiError(error, t('batch.toast.cloudflareRowFailed', { site })));
+      toast.error(apiError(error, t('batch.toast.suspendRowFailed', { site })));
     } finally {
       setRowBusyFor(m.id, null);
     }
@@ -319,25 +310,6 @@ export default function BatchMigration() {
     } finally {
       setRowBusyFor(m.id, null);
     }
-  };
-
-  // Batch-level "Update Cloudflare DNS (all)" — iterate the completed rows, summarise the outcome.
-  const handleCloudflareAll = async () => {
-    setCfAllBusy(true);
-    let ok = 0;
-    let bad = 0;
-    for (const m of completedRows) {
-      try {
-        await updateMigrationCloudflareDNS(m.id);
-        ok++;
-      } catch {
-        bad++;
-      }
-    }
-    setCfAllBusy(false);
-    if (ok > 0) toast.success(t('batch.toast.cloudflareAll', { count: ok }));
-    if (bad > 0) toast.error(t('batch.toast.cloudflareAllFailed', { count: bad }));
-    await fetchBatch();
   };
 
   // Batch-level "Set up email (all)" — iterate the completed rows, summarise the outcome.
@@ -471,11 +443,6 @@ export default function BatchMigration() {
             {suspendableRows.length > 0 && (
               <Button variant="outline" leftIcon={<PauseCircleIcon />} onClick={() => setSuspendOpen(true)} loading={suspending}>
                 {t('batch.action.suspendAll', { count: suspendableRows.length })}
-              </Button>
-            )}
-            {completedRows.length > 0 && (
-              <Button variant="outline" leftIcon={<CloudIcon />} onClick={handleCloudflareAll} loading={cfAllBusy}>
-                {t('batch.action.cloudflareAll', { count: completedRows.length })}
               </Button>
             )}
             {completedRows.length > 0 && (
@@ -632,24 +599,24 @@ export default function BatchMigration() {
                           <Button
                             variant="outline"
                             size="sm"
-                            leftIcon={<CloudIcon />}
-                            loading={rowBusy[m.id] === 'cf'}
-                            disabled={!!rowBusy[m.id]}
-                            onClick={() => handleRowCloudflare(m)}
-                          >
-                            {t('batch.row.cloudflare')}
-                          </Button>
-                        )}
-                        {m.status === 'completed' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
                             leftIcon={<EnvelopeIcon />}
                             loading={rowBusy[m.id] === 'email'}
                             disabled={!!rowBusy[m.id]}
                             onClick={() => handleRowEmail(m)}
                           >
                             {t('batch.row.email')}
+                          </Button>
+                        )}
+                        {canSuspend(m) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            leftIcon={<PauseCircleIcon />}
+                            loading={rowBusy[m.id] === 'suspend'}
+                            disabled={!!rowBusy[m.id]}
+                            onClick={() => handleRowSuspend(m)}
+                          >
+                            {t('batch.row.suspend')}
                           </Button>
                         )}
                         {isActive && (
