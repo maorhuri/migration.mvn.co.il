@@ -2106,7 +2106,20 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 	}
 	tables := lastInt(countOut)
 	if tables == 0 {
-		return 0, fmt.Errorf("database %s has no tables after import (verification output: %q)", actualDB, countOut)
+		// A legitimately empty source database dumps to a valid file with zero CREATE TABLE
+		// statements -- common for a static HTML site whose MySQL database was never populated, or
+		// a site that keeps nothing in its DB. That is not an import failure, so only treat "0 tables
+		// after import" as an error when the dump actually carried tables that then failed to land.
+		srcTables := 0
+		if c, cerr := e.nodeRun(ctx, fmt.Sprintf("%s | grep -aEc 'CREATE TABLE' || true", reader)); cerr == nil {
+			srcTables = lastInt(c)
+		}
+		if srcTables == 0 {
+			e.nodeRun(ctx, "rm -f "+shq(remoteDump))
+			e.logf("info", "Database %s: the source dump has no tables (empty database) -- nothing to load, continuing", actualDB)
+			return 0, nil
+		}
+		return 0, fmt.Errorf("database %s has no tables after import though its dump defines %d (verification output: %q)", actualDB, srcTables, countOut)
 	}
 	e.nodeRun(ctx, "rm -f "+shq(remoteDump))
 	e.logf("info", "Database %s imported on node in %s: %d tables (user %s, host %s)", actualDB, time.Since(loadStart).Round(time.Second), tables, actualUser, hostLabel)
