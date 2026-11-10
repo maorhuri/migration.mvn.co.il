@@ -2,10 +2,11 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowPathIcon, ChevronRightIcon, ExclamationTriangleIcon } from '@heroicons/react/16/solid';
-import { ArrowTopRightOnSquareIcon, PauseCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
+import { ArrowTopRightOnSquareIcon, CheckCircleIcon, CloudIcon, EnvelopeIcon, PauseCircleIcon, PlayIcon, StopIcon } from '@heroicons/react/20/solid';
 import {
   Badge,
   Button,
+  buttonClasses,
   Card,
   CardDescription,
   CardHeader,
@@ -35,13 +36,16 @@ import { deriveTimeline, matchStepId } from '../lib/migrationSteps';
 import { formatDuration, formatRelativeTime, percent, realDate, runWindow, shortId } from '../lib/format';
 import {
   cancelMigration,
+  dismissMigrationBatch,
   getMigration,
   getMigrationBatch,
   getMigrationLogsPage,
   getServers,
   rerunMigration,
   resumeMigration,
+  runMigrationEmailSetup,
   suspendMigrationSource,
+  updateMigrationCloudflareDNS,
 } from '../api/client';
 import type { Migration, MigrationBatch, MigrationLog, Server } from '../types';
 
@@ -133,9 +137,20 @@ export default function BatchMigration() {
   const [retrying, setRetrying] = useState(false);
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [suspending, setSuspending] = useState(false);
+  // Per-row post-migration action in flight, keyed by migration id ('cf' = Cloudflare DNS, 'email' = SMTP).
+  const [rowBusy, setRowBusy] = useState<Record<string, 'cf' | 'email'>>({});
+  const [cfAllBusy, setCfAllBusy] = useState(false);
+  const [emailAllBusy, setEmailAllBusy] = useState(false);
+  const [dismissOpen, setDismissOpen] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
 
   const apiError = (error: unknown, fallback: string) =>
     (error as { response?: { data?: { error?: string } } })?.response?.data?.error || fallback;
+
+  // Each row links to and is labelled by the real site (the domain the batch API surfaces),
+  // falling back to the account username until the export has recorded a domain.
+  const siteLabel = (m: Migration) => m.domain || m.account_username;
+  const siteHref = (m: Migration) => (m.domain ? `https://${m.domain}` : null);
 
   const fetchBatch = useCallback(async () => {
     if (!batchId) return;
@@ -199,6 +214,9 @@ export default function BatchMigration() {
     return m.status === 'completed' && !m.source_suspended_at && !manual;
   };
   const suspendableRows = rows.filter(canSuspend);
+  // Completed rows can have their Cloudflare DNS repointed and central email set up (same gating as
+  // the single-migration page), per row or for the whole batch at once.
+  const completedRows = rows.filter((m) => m.status === 'completed');
 
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {
@@ -252,6 +270,107 @@ export default function BatchMigration() {
       await fetchBatch();
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const setRowBusyFor = (id: string, action: 'cf' | 'email' | null) =>
+    setRowBusy((prev) => {
+      const next = { ...prev };
+      if (action) next[id] = action;
+      else delete next[id];
+      return next;
+    });
+
+  // Per-row "Update Cloudflare DNS" — mirrors MigrationDetail's handleCloudflareDNS, scoped to one row.
+  const handleRowCloudflare = async (m: Migration) => {
+    const site = siteLabel(m);
+    setRowBusyFor(m.id, 'cf');
+    try {
+      const { result } = await updateMigrationCloudflareDNS(m.id);
+      if (result.records_changed > 0 || result.zones_updated > 0) {
+        toast.success(t('batch.toast.cloudflareRow', { site }), { duration: 6000 });
+      } else {
+        toast(t('batch.toast.cloudflareRowNone', { site }), { duration: 6000 });
+      }
+      if (result.mail_skipped > 0) {
+        toast(t('migrationdetail.toast.cloudflareMailSkipped', { count: result.mail_skipped }), { duration: 8000, icon: '✉️' });
+      }
+      await fetchBatch();
+    } catch (error) {
+      toast.error(apiError(error, t('batch.toast.cloudflareRowFailed', { site })));
+    } finally {
+      setRowBusyFor(m.id, null);
+    }
+  };
+
+  // Per-row "Set up email (SMTP)" — mirrors MigrationDetail's handleEmailSetup, scoped to one row.
+  const handleRowEmail = async (m: Migration) => {
+    const site = siteLabel(m);
+    setRowBusyFor(m.id, 'email');
+    try {
+      const { result } = await runMigrationEmailSetup(m.id);
+      toast.success(t('batch.toast.emailRow', { site }), { duration: 6000 });
+      if (result.dns_skipped) {
+        toast(t('migrationdetail.toast.emailDnsSkipped'), { duration: 8000, icon: '✉️' });
+      }
+      await fetchBatch();
+    } catch (error) {
+      toast.error(apiError(error, t('batch.toast.emailRowFailed', { site })));
+    } finally {
+      setRowBusyFor(m.id, null);
+    }
+  };
+
+  // Batch-level "Update Cloudflare DNS (all)" — iterate the completed rows, summarise the outcome.
+  const handleCloudflareAll = async () => {
+    setCfAllBusy(true);
+    let ok = 0;
+    let bad = 0;
+    for (const m of completedRows) {
+      try {
+        await updateMigrationCloudflareDNS(m.id);
+        ok++;
+      } catch {
+        bad++;
+      }
+    }
+    setCfAllBusy(false);
+    if (ok > 0) toast.success(t('batch.toast.cloudflareAll', { count: ok }));
+    if (bad > 0) toast.error(t('batch.toast.cloudflareAllFailed', { count: bad }));
+    await fetchBatch();
+  };
+
+  // Batch-level "Set up email (all)" — iterate the completed rows, summarise the outcome.
+  const handleEmailAll = async () => {
+    setEmailAllBusy(true);
+    let ok = 0;
+    let bad = 0;
+    for (const m of completedRows) {
+      try {
+        await runMigrationEmailSetup(m.id);
+        ok++;
+      } catch {
+        bad++;
+      }
+    }
+    setEmailAllBusy(false);
+    if (ok > 0) toast.success(t('batch.toast.emailAll', { count: ok }));
+    if (bad > 0) toast.error(t('batch.toast.emailAllFailed', { count: bad }));
+    await fetchBatch();
+  };
+
+  // "Done handling": mark the batch dismissed so it drops off the batches list, then go back.
+  const handleDismiss = async () => {
+    if (!batchId) return;
+    setDismissing(true);
+    try {
+      await dismissMigrationBatch(batchId);
+      toast.success(t('batch.toast.dismissed'));
+      setDismissOpen(false);
+      navigate('/migrations');
+    } catch (error) {
+      toast.error(apiError(error, t('batch.toast.dismissFailed')));
+      setDismissing(false);
     }
   };
 
@@ -354,6 +473,19 @@ export default function BatchMigration() {
                 {t('batch.action.suspendAll', { count: suspendableRows.length })}
               </Button>
             )}
+            {completedRows.length > 0 && (
+              <Button variant="outline" leftIcon={<CloudIcon />} onClick={handleCloudflareAll} loading={cfAllBusy}>
+                {t('batch.action.cloudflareAll', { count: completedRows.length })}
+              </Button>
+            )}
+            {completedRows.length > 0 && (
+              <Button variant="outline" leftIcon={<EnvelopeIcon />} onClick={handleEmailAll} loading={emailAllBusy}>
+                {t('batch.action.emailAll', { count: completedRows.length })}
+              </Button>
+            )}
+            <Button variant="ghost" leftIcon={<CheckCircleIcon />} onClick={() => setDismissOpen(true)} loading={dismissing}>
+              {t('batch.action.dismiss')}
+            </Button>
           </>
         }
       />
@@ -395,7 +527,7 @@ export default function BatchMigration() {
         <Table bare stickyHeader maxHeight="70vh" className="[&_td]:px-3 [&_th]:px-3">
           <THead>
             <TR hoverable={false}>
-              <TH>{t('batch.col.account')}</TH>
+              <TH>{t('batch.col.site')}</TH>
               <TH>{t('batch.col.status')}</TH>
               <TH className="hidden lg:table-cell">{t('batch.col.node')}</TH>
               <TH>{t('batch.col.timing')}</TH>
@@ -425,9 +557,9 @@ export default function BatchMigration() {
                           aria-hidden="true"
                         />
                         <div className="min-w-0">
-                          <Mono className="text-[13px] font-medium text-slate-900 dark:text-slate-100">{m.account_username}</Mono>
+                          <Mono className="text-[13px] font-medium text-slate-900 dark:text-slate-100">{siteLabel(m)}</Mono>
                           <div className="mt-0.5">
-                            <Mono className="text-2xs text-slate-400 dark:text-slate-500">{shortId(m.id)}</Mono>
+                            <Mono className="text-2xs text-slate-400 dark:text-slate-500">{m.domain ? m.account_username : shortId(m.id)}</Mono>
                           </div>
                         </div>
                       </div>
@@ -482,6 +614,44 @@ export default function BatchMigration() {
 
                     <TD align="end" onClick={stop} onKeyDown={stop} className="whitespace-nowrap">
                       <div className="inline-flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                        {siteHref(m) && (
+                          <a
+                            href={siteHref(m)!}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={buttonClasses({ variant: 'ghost', size: 'sm' })}
+                            title={siteHref(m)!}
+                          >
+                            {t('batch.row.openSite')}
+                            <span className="inline-flex shrink-0" aria-hidden="true">
+                              <ArrowTopRightOnSquareIcon className="flip-rtl h-4 w-4" />
+                            </span>
+                          </a>
+                        )}
+                        {m.status === 'completed' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            leftIcon={<CloudIcon />}
+                            loading={rowBusy[m.id] === 'cf'}
+                            disabled={!!rowBusy[m.id]}
+                            onClick={() => handleRowCloudflare(m)}
+                          >
+                            {t('batch.row.cloudflare')}
+                          </Button>
+                        )}
+                        {m.status === 'completed' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            leftIcon={<EnvelopeIcon />}
+                            loading={rowBusy[m.id] === 'email'}
+                            disabled={!!rowBusy[m.id]}
+                            onClick={() => handleRowEmail(m)}
+                          >
+                            {t('batch.row.email')}
+                          </Button>
+                        )}
                         {isActive && (
                           <Button variant="outline" size="sm" leftIcon={<StopIcon />} onClick={() => handleRowCancel(m)}>
                             {t('migrations.row.cancel')}
@@ -540,6 +710,16 @@ export default function BatchMigration() {
         confirmLabel={t('batch.confirm.suspend.confirm')}
         cancelLabel={t('batch.confirm.suspend.notYet')}
         onConfirm={handleSuspendAll}
+      />
+
+      <ConfirmDialog
+        open={dismissOpen}
+        onClose={() => setDismissOpen(false)}
+        tone="brand"
+        title={t('batch.confirm.dismiss.title')}
+        message={t('batch.confirm.dismiss.message')}
+        confirmLabel={t('batch.confirm.dismiss.confirm')}
+        onConfirm={handleDismiss}
       />
     </div>
   );

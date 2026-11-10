@@ -70,9 +70,14 @@ type MigrationRequest struct {
 type MigrationResult struct {
 	ID                     string                    `json:"id"`
 	BatchID                string                    `json:"batch_id,omitempty"`
+	BatchDismissedAt       *time.Time                `json:"batch_dismissed_at,omitempty"` // set when the batch was marked "done handling"
 	SourceServerID         string                    `json:"source_server_id"`
 	TargetServerID         string                    `json:"target_server_id"`
 	AccountUsername        string                    `json:"account_username"`
+	// Domain the account's main site is registered under on the target (a DirectAdmin pointer or
+	// the operator's chosen target domain, falling back to the source name). Surfaced for the batch
+	// view so each row links to and is labelled by the real site, not just the account username.
+	Domain string `json:"domain,omitempty"`
 	Status                 string                    `json:"status"`
 	CurrentStep            string                    `json:"current_step,omitempty"`
 	TotalSteps             int                       `json:"total_steps"`
@@ -998,6 +1003,9 @@ func toResult(m *storage.Migration) *MigrationResult {
 	if m.CloudflareDNSUpdatedAt.Valid {
 		result.CloudflareDNSUpdatedAt = &m.CloudflareDNSUpdatedAt.Time
 	}
+	if m.BatchDismissedAt.Valid {
+		result.BatchDismissedAt = &m.BatchDismissedAt.Time
+	}
 	result.ScanRequested = m.ScanRequested
 	result.ScanDecision = m.ScanDecision.String
 	if m.ScanReport.Valid && len(m.ScanReport.Data) > 0 {
@@ -1020,6 +1028,31 @@ func toResult(m *storage.Migration) *MigrationResult {
 		StartedAt:        m.StartedAt.Time,
 	}
 	return result
+}
+
+// primaryDomain returns the domain this migration's main site is registered under on the target.
+// It prefers the exported main domain (a DirectAdmin pointer or the operator's chosen target
+// domain already supersede the source's own Name there, see applyTargetDomain), then the exported
+// account domain, then the operator's recorded target-domain choice (set at start, before the
+// export runs), and finally "" when nothing is known yet.
+func primaryDomain(m *storage.Migration) string {
+	if m.ExportData.Valid && len(m.ExportData.Data) > 0 {
+		var export common.ExportData
+		if json.Unmarshal(m.ExportData.Data, &export) == nil {
+			if len(export.Domains) > 0 {
+				if d := export.Domains[0].TargetDomain; d != "" {
+					return d
+				}
+				if export.Domains[0].Name != "" {
+					return export.Domains[0].Name
+				}
+			}
+			if export.Account.Domain != "" {
+				return export.Account.Domain
+			}
+		}
+	}
+	return m.TargetDomain.String
 }
 
 // GetMigrationStatus gets the current status of a migration
@@ -1081,6 +1114,7 @@ func (e *Engine) GetBatch(ctx context.Context, batchID string) (*BatchResult, er
 	for i := range rows {
 		r := toResult(&rows[i])
 		r.Error = capText(r.Error, 500, 0) // polled; the per-account detail carries the full text
+		r.Domain = primaryDomain(&rows[i]) // link + label each row by the real site, not just the username
 		batch.Migrations = append(batch.Migrations, r)
 		batch.Total++
 		batch.Warnings += r.Warnings
@@ -1103,6 +1137,13 @@ func (e *Engine) GetBatch(ctx context.Context, batchID string) (*BatchResult, er
 		}
 	}
 	return batch, nil
+}
+
+// DismissBatch marks a batch "done handling" so it drops off the batches listing. The migrations
+// are not deleted and the batch URL keeps working. Idempotent: dismissing an already-dismissed (or
+// empty) batch is a no-op that still succeeds. Returns how many rows were newly dismissed.
+func (e *Engine) DismissBatch(ctx context.Context, batchID string) (int64, error) {
+	return e.db.DismissBatch(ctx, batchID)
 }
 
 // GetMigrationLogs gets logs for a migration

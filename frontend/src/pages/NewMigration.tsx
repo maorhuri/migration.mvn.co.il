@@ -380,7 +380,7 @@ export default function NewMigration() {
   /** Runs one account's migration end-to-end (start + poll to completion), updating only its own
    * entry in `runs` (the authoritative final state read back from runsRef once the pool settles).
    * Independent of every other concurrently-running account. */
-  const runOneAccount = async (account: Account, steps: MigrationStepStatus[], runBatchId: string | null): Promise<void> => {
+  const runOneAccount = async (account: Account, steps: MigrationStepStatus[], runBatchId: string | null, onStarted?: () => void): Promise<void> => {
     const username = account.username;
     // Per-step wall-clock timestamps, local to this run (was a shared ref before; each run needs its own).
     const stepStartedAt: Record<number, number> = {};
@@ -424,6 +424,7 @@ export default function NewMigration() {
 
     patchRun(username, (r) => ({ ...r, migrationId: migration.id, status: 'running', startedAt: Date.now() }));
     setFocusedUsername((prev) => prev ?? username); // the first run to start becomes the focused panel
+    onStarted?.(); // the migration row now exists -> safe to hand a batch off to its consolidated window
 
     try {
       let completed = false;
@@ -637,6 +638,26 @@ export default function NewMigration() {
     }));
     setRuns(initialRuns);
     runsRef.current = initialRuns;
+
+    // A multi-account run is watched from the consolidated batch window: start every account's
+    // migration (still throttled to MAX_CONCURRENT_MIGRATIONS) and hand off to that window as soon
+    // as the first migration row exists -- instead of leaving the operator on this per-account step.
+    // Each migration runs in its own backend goroutine, so leaving this page never interrupts them.
+    if (runBatchId) {
+      let navigated = false;
+      const openBatch = () => {
+        if (navigated) return;
+        navigated = true;
+        navigate(`/migrations/batch/${runBatchId}`);
+      };
+      runWithConcurrency(selectedAccounts, MAX_CONCURRENT_MIGRATIONS, (account) => runOneAccount(account, steps, runBatchId, openBatch))
+        .catch(() => {})
+        // Nothing ever started (every create failed): stay here and let the failed runs show.
+        .finally(() => {
+          if (!navigated) setStarting(false);
+        });
+      return;
+    }
 
     try {
       // Every run catches its own errors internally (see runOneAccount) rather than aborting

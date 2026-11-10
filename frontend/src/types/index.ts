@@ -103,9 +103,17 @@ export interface Migration {
   id: string;
   /** Groups the accounts started together in one New-migration run; empty for a single migration. */
   batch_id?: string;
+  /** Set once the batch this migration belongs to was marked "done handling" (dropped off the batches listing). */
+  batch_dismissed_at?: string;
   source_server_id: string;
   target_server_id: string;
   account_username: string;
+  /**
+   * Domain the account's main site is registered under on the target (a DirectAdmin pointer or the
+   * operator's chosen target domain, falling back to the source name). Surfaced by the batch API so
+   * each row can link to and be labelled by the real site; empty until the export has run.
+   */
+  domain?: string;
   status: 'pending' | 'running' | 'awaiting_review' | 'completed' | 'failed' | 'cancelled';
   current_step?: string;
   target_ip?: string;
