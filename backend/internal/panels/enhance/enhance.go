@@ -3067,19 +3067,22 @@ func (e *Enhance) cleanupWordPress(ctx context.Context, ws *EnhanceWebsite) (str
 	if removed := e.removeReadmeAndLicense(ctx, ws); len(removed) > 0 {
 		report = append(report, fmt.Sprintf("removed %d stock file(s): %s", len(removed), strings.Join(removed, ", ")))
 	}
-	// 0c. A leftover index.html next to index.php (e.g. DirectAdmin's default placeholder page
-	//     from before the real site was uploaded) is almost always stale, and depending on the
-	//     web server's DirectoryIndex order can shadow the real application entirely.
-	if removed := e.removeStaleIndexHTML(ctx, ws); len(removed) > 0 {
-		report = append(report, fmt.Sprintf("removed %d stale index.html file(s): %s", len(removed), strings.Join(removed, ", ")))
-	}
-
 	wpConfig := ws.DocRoot + "/wp-config.php"
 	if _, err := e.nodeRun(ctx, "test -f "+shq(wpConfig)); err != nil {
 		if len(report) > 0 {
 			return fmt.Sprintf("%s: %s", ws.Domain.Domain, strings.Join(report, "; ")), nil
 		}
 		return "", nil
+	}
+
+	// 0c. A leftover index.html next to WordPress's index.php (e.g. DirectAdmin's default
+	//     placeholder page from before the real site was uploaded) is almost always stale and,
+	//     depending on the web server's DirectoryIndex order, can shadow the real application.
+	//     WordPress ONLY: on a static site index.html is the real homepage and index.php is the
+	//     vestigial stub, so removing it would delete the site (this is gated behind the wp-config
+	//     check above for exactly that reason).
+	if removed := e.removeStaleIndexHTML(ctx, ws); len(removed) > 0 {
+		report = append(report, fmt.Sprintf("removed %d stale index.html file(s): %s", len(removed), strings.Join(removed, ", ")))
 	}
 
 	// 1. Debug flags
