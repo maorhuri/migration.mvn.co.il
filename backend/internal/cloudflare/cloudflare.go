@@ -548,6 +548,16 @@ func apiErrHasCode(err error, code int) bool {
 	return false
 }
 
+// isRecordExistsErr reports whether a batch error is the "record is already there" family, which on
+// a POST (create) means the record (or a conflicting one at the same host) already exists and the
+// create can be safely skipped rather than aborting the whole zone:
+//   - 81053: an A/AAAA/CNAME record with that host already exists (type conflict)
+//   - 81057: record already exists
+//   - 81058: an identical record already exists
+func isRecordExistsErr(err error) bool {
+	return apiErrHasCode(err, 81053) || apiErrHasCode(err, 81057) || apiErrHasCode(err, 81058)
+}
+
 // UpsertRecords makes the zone contain every record in `desired`, in one batch and idempotently:
 //   - a desired record already present unchanged (same type, name, content and — for MX — priority)
 //     is left alone (reported in Unchanged); content is compared tolerantly (TXT after decoding
@@ -722,7 +732,7 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 		return res, nil
 	}
 	if _, err := c.apiRequest(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/batch", req); err != nil {
-		if apiErrHasCode(err, 81058) && len(req.Posts) > 0 {
+		if isRecordExistsErr(err) && len(req.Posts) > 0 {
 			return c.upsertTolerant(ctx, zoneID, req, res)
 		}
 		return nil, err
@@ -730,9 +740,10 @@ func (c *Client) UpsertRecords(ctx context.Context, zoneID string, existing []DN
 	return res, nil
 }
 
-// upsertTolerant retries a batch that Cloudflare rejected with 81058 ("an identical record already
-// exists"). Patches and deletes (which never trip 81058) are reapplied together; the posts are then
-// sent one at a time so a single duplicate our comparison did not catch is treated as already
+// upsertTolerant retries a batch that Cloudflare rejected with the "record already exists" family
+// (81053 host conflict / 81057 / 81058). Patches and deletes (which do not trip those) are reapplied
+// together -- so the apex-A repoint and stale-record cleanups still happen -- and the posts are then
+// sent one at a time so a single record that already exists or conflicts is treated as already
 // present (moved to Unchanged) instead of aborting the whole zone.
 func (c *Client) upsertTolerant(ctx context.Context, zoneID string, req batchRequest, res *UpsertResult) (*UpsertResult, error) {
 	if len(req.Patches) > 0 || len(req.Deletes) > 0 {
@@ -745,8 +756,8 @@ func (c *Client) upsertTolerant(ctx context.Context, zoneID string, req batchReq
 	for i, post := range req.Posts {
 		one := batchRequest{Posts: []batchPost{post}}
 		if _, err := c.apiRequest(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records/batch", one); err != nil {
-			if apiErrHasCode(err, 81058) {
-				c.logf("info", "Cloudflare: %s %s already exists; treating as unchanged", post.Type, post.Name)
+			if isRecordExistsErr(err) {
+				c.logf("info", "Cloudflare: %s %s already exists (or conflicts with an existing record at that host); leaving it as is", post.Type, post.Name)
 				res.Unchanged = append(res.Unchanged, res.Created[i])
 				continue
 			}
