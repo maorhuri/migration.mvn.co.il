@@ -402,10 +402,9 @@ func (e *Engine) runMigration(ctx context.Context, migrationID string, sourceSer
 		migrationLog("info", "Migration completed successfully")
 	}
 	e.refreshAccountsCacheAsync(sourceServer.ID)
-	// Cloudflare DNS is NOT repointed automatically -- the operator does it by clicking
-	// "Update Cloudflare DNS" on the migration, so DNS never changes mid-migration unexpectedly.
-	// Email setup (FluentSMTP + SPF/DMARC) still runs automatically. Never fails the migration.
-	e.maybeAutoEmailSetup(ctx, migrationID)
+	// Nothing runs automatically at completion: the operator triggers Cloudflare DNS and email
+	// setup (FluentSMTP + SPF/DMARC) by their buttons on the migration, so nothing touches DNS or
+	// the site's mail config mid-migration unexpectedly.
 }
 
 // connectEnhanceTarget connects to the Enhance API and to the cluster node that will host the website.
