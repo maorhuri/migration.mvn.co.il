@@ -52,7 +52,7 @@ export const migrationdetail: PageDict = {
     'migrationdetail.toast.unsuspendFailed': 'ביטול ההשעיה נכשל',
     'migrationdetail.toast.cloudflareDone': 'Cloudflare: {created} רשומות נוצרו, {updated} עודכנו ב-{zones} זונות',
     'migrationdetail.toast.cloudflareMailSkipped': 'Cloudflare: {count} רשומות דואר חיצוני דולגו (הדואר לא על השרת שהועבר) — ראה לוג',
-    'migrationdetail.toast.cloudflareNone': 'Cloudflare: לא נמצאה זונה בחשבון שלנו לדומיינים האלה (ראה לוג)',
+    'migrationdetail.toast.cloudflareNone': 'Cloudflare: לא נמצא zone בחשבון שלנו לדומיינים האלה (ראה לוג)',
     'migrationdetail.toast.cloudflareFailed': 'עדכון ה-DNS ב-Cloudflare נכשל',
     'migrationdetail.toast.emailDone': 'דואר: {sites} אתרים הוגדרו, {spf} רשומות SPF ו-{dmarc} DMARC (ראה לוג)',
     'migrationdetail.toast.emailDnsSkipped': 'דואר: SPF/DMARC לא עודכנו ב-DNS (ראה לוג) — ייתכן שחסר טוקן Cloudflare',
@@ -74,12 +74,12 @@ export const migrationdetail: PageDict = {
     'migrationdetail.confirm.unsuspend.confirm': 'בטל השעיה',
     'migrationdetail.confirm.cloudflare.title': 'לעדכן את ה-DNS ב-Cloudflare?',
     'migrationdetail.confirm.cloudflare.message':
-      'עבור כל דומיין של {account} שהזונה שלו נמצאת בחשבון ה-Cloudflare שלנו, הזונה המלאה שיוצאה מהמקור תשוכפל (A/AAAA/CNAME/MX/TXT/SRV/CAA): רשומות ה-A של @, www וכל רשומה שמצביעה על ה-IP הישן יופנו לשרת החדש ({ip}), SPF יעודכן ל-IP החדש, ורשומות NS/SOA יישארו של Cloudflare. אם הדואר חיצוני (ה-MX לא על השרת שהועבר) — רשומות הדואר לא ייגעו וידולגו עם רישום בלוג. לבסוף המטמון ינוקה והתוצאה תיבדק. דומיין שאינו בחשבון שלנו ידולג.',
+      'עבור כל דומיין של {account} שה-zone שלו נמצאת בחשבון ה-Cloudflare שלנו, ה-zone המלאה שיוצאה מהמקור תשוכפל (A/AAAA/CNAME/MX/TXT/SRV/CAA): רשומות ה-A של @, www וכל רשומה שמצביעה על ה-IP הישן יופנו לשרת החדש ({ip}), SPF יעודכן ל-IP החדש, ורשומות NS/SOA יישארו של Cloudflare. אם הדואר חיצוני (ה-MX לא על השרת שהועבר) — רשומות הדואר לא ייגעו וידולגו עם רישום בלוג. לבסוף המטמון ינוקה והתוצאה תיבדק. דומיין שאינו בחשבון שלנו ידולג.',
     'migrationdetail.confirm.cloudflare.confirm': 'עדכן DNS',
     'migrationdetail.confirm.cloudflare.noIp': 'ה-IP של שרת היעד אינו ידוע. הגדר IP יעד בעמוד ההגדרות.',
     'migrationdetail.confirm.email.title': 'להגדיר דואר יוצא?',
     'migrationdetail.confirm.email.message':
-      'עבור כל אתר WordPress של {account}: התוסף FluentSMTP יותקן ויופעל (אם חסר) ויוגדר לשלוח דרך שרת ה-SMTP המרכזי מההגדרות. בנוסף יובטחו רשומות SPF (שמאשרת את שרת היעד) ו-DMARC ב-Cloudflare עבור הדומיינים שהזונה שלהם בחשבון שלנו. לא נוגעים ב-DKIM. דורש שהגדרות ה-SMTP המרכזיות יוגדרו תחילה. ההתקדמות נכתבת לקונסולה למטה.',
+      'עבור כל אתר WordPress של {account}: התוסף FluentSMTP יותקן ויופעל (אם חסר) ויוגדר לשלוח דרך שרת ה-SMTP המרכזי מההגדרות. בנוסף יובטחו רשומות SPF (שמאשרת את שרת היעד) ו-DMARC ב-Cloudflare עבור הדומיינים שה-zone שלהם בחשבון שלנו. לא נוגעים ב-DKIM. דורש שהגדרות ה-SMTP המרכזיות יוגדרו תחילה. ההתקדמות נכתבת לקונסולה למטה.',
     'migrationdetail.confirm.email.confirm': 'הגדר דואר',
     'migrationdetail.confirm.repair.title': 'לתקן את רישום ה-WordPress?',
     'migrationdetail.confirm.repair.message':
