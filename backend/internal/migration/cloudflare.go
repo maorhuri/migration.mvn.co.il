@@ -475,7 +475,31 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 			}
 			out.RecordsDeleted += len(aaaaDelete)
 		}
-		changed = len(upres.Created)+len(upres.Updated)+len(upres.Deleted)+len(aaaaDelete) > 0
+		// Guarantee the web records are repointed even when the exported zone was missing the apex/www
+		// A record (a BIND parser can drop a blank- or @-owner line, so the exported zone can lack the
+		// apex A entirely): repoint @, www and ANY A still at the old source IP to the target, from the
+		// ACTUAL Cloudflare records (re-read so it sees what UpsertRecords just left).
+		webChanged := false
+		if cur, ferr := client.ListAllDNSRecords(ctx, zone.ID); ferr == nil {
+			if upd, uerr := client.UpdateARecords(ctx, zone.ID, cur, targetIP, targetIPv6, oldIP, names); uerr != nil {
+				logFn("warn", fmt.Sprintf("Cloudflare zone %s: web A repoint pass failed: %v", zone.Name, uerr))
+			} else {
+				for _, r := range upd.Patched {
+					line := fmt.Sprintf("%s %s -> %s", r.Type, r.Name, r.Content)
+					zr.Updated = append(zr.Updated, line)
+					logFn("info", "Cloudflare: updated "+line)
+				}
+				for _, r := range upd.Deleted {
+					line := fmt.Sprintf("%s %s (was %s)", r.Type, r.Name, r.Content)
+					zr.Deleted = append(zr.Deleted, line)
+					logFn("info", fmt.Sprintf("Cloudflare: removed %s so %s resolves to the new IPv4", line, r.Name))
+				}
+				out.RecordsUpdated += len(upd.Patched)
+				out.RecordsDeleted += len(upd.Deleted)
+				webChanged = len(upd.Patched)+len(upd.Deleted) > 0
+			}
+		}
+		changed = len(upres.Created)+len(upres.Updated)+len(upres.Deleted)+len(aaaaDelete) > 0 || webChanged
 		if !changed {
 			logFn("info", fmt.Sprintf("Cloudflare zone %s: already matches the source zone; nothing to change", zone.Name))
 		}
