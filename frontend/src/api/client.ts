@@ -138,6 +138,15 @@ export const getMigrationBatch = async (batchId: string): Promise<MigrationBatch
   return data;
 };
 
+/**
+ * Mark a batch "done handling": every migration in it is flagged dismissed so the batch drops off
+ * the batches listing. Nothing is deleted and the batch URL still works. Idempotent.
+ */
+export const dismissMigrationBatch = async (batchId: string): Promise<{ dismissed: number }> => {
+  const { data } = await api.post(`/migrations/batches/${batchId}/dismiss`);
+  return data;
+};
+
 export const startMigration = async (params: {
   source_server_id: string;
   target_server_id: string;

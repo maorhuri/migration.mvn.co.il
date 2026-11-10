@@ -85,6 +85,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			migrations.GET("", h.listMigrations)
 			migrations.POST("", h.startMigration)
 			migrations.GET("/batches/:batch_id", h.getBatch)
+			migrations.POST("/batches/:batch_id/dismiss", h.dismissBatch)
 			migrations.GET("/:id", h.getMigration)
 			migrations.GET("/:id/logs", h.getMigrationLogs)
 			migrations.POST("/:id/cancel", h.cancelMigration)
@@ -833,6 +834,21 @@ func (h *Handler) getBatch(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, batch)
+}
+
+// dismissBatch marks a batch "done handling": every migration in it gets batch_dismissed_at = NOW()
+// so the batch drops off the batches listing. The migrations are kept and the batch URL still works.
+// Idempotent — dismissing an already-dismissed (or unknown) batch succeeds with dismissed: 0.
+func (h *Handler) dismissBatch(c *gin.Context) {
+	batchID := c.Param("batch_id")
+
+	dismissed, err := h.engine.DismissBatch(c.Request.Context(), batchID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"dismissed": dismissed})
 }
 
 func (h *Handler) startMigration(c *gin.Context) {

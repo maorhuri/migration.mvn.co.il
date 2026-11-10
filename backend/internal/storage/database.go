@@ -199,6 +199,10 @@ func (d *Database) Migrate(ctx context.Context) error {
 		// Groups migrations started together from one New-migration run so they can be watched and
 		// finished from a single consolidated window. NULL for the pre-existing single migrations.
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS batch_id UUID`,
+		// Set (NOW()) for every migration of a batch the operator marked "done handling", so the
+		// batch drops off the batches listing. The migrations themselves are kept and the batch
+		// URL still works. NULL = the batch is still shown.
+		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS batch_dismissed_at TIMESTAMPTZ`,
 		`ALTER TABLE migrations ADD COLUMN IF NOT EXISTS cloudflare_dns_updated_at TIMESTAMPTZ`,
 		`ALTER TABLE ssh_keys ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE`,
 
@@ -322,6 +326,7 @@ type Migration struct {
 	TargetClusterServerID  NullString     `db:"target_cluster_server_id" json:"target_cluster_server_id"`
 	TargetDomain           NullString     `db:"target_domain" json:"target_domain"`
 	BatchID                NullString     `db:"batch_id" json:"batch_id"`
+	BatchDismissedAt       sql.NullTime   `db:"batch_dismissed_at" json:"batch_dismissed_at,omitempty"`
 	CloudflareDNSUpdatedAt sql.NullTime   `db:"cloudflare_dns_updated_at" json:"cloudflare_dns_updated_at,omitempty"`
 	StartedAt              sql.NullTime   `db:"started_at" json:"started_at,omitempty"`
 	CompletedAt            sql.NullTime   `db:"completed_at" json:"completed_at,omitempty"`
@@ -694,6 +699,20 @@ func (d *Database) ListMigrationsByBatch(ctx context.Context, batchID string) ([
 	err := d.db.SelectContext(ctx, &migrations,
 		"SELECT * FROM migrations WHERE batch_id = $1 ORDER BY created_at", batchID)
 	return migrations, err
+}
+
+// DismissBatch marks every migration of a batch as "done handling" so the batch drops off the
+// batches listing. The rows themselves are kept (the batch URL keeps working). Idempotent: rows
+// already dismissed are left as they are and it never errors when the batch is already dismissed.
+// Returns how many rows were newly dismissed.
+func (d *Database) DismissBatch(ctx context.Context, batchID string) (int64, error) {
+	res, err := d.db.ExecContext(ctx,
+		"UPDATE migrations SET batch_dismissed_at = NOW() WHERE batch_id = $1 AND batch_dismissed_at IS NULL", batchID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // UpdateMigrationProgress updates migration progress

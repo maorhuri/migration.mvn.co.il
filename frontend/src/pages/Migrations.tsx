@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { ArrowRightIcon } from '@heroicons/react/16/solid';
-import { PlusIcon, Squares2X2Icon, TrashIcon } from '@heroicons/react/20/solid';
+import { ArrowTopRightOnSquareIcon, CheckCircleIcon, PlusIcon, Squares2X2Icon, TrashIcon } from '@heroicons/react/20/solid';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import {
   Badge,
@@ -15,20 +15,153 @@ import {
   EmptyState,
   Mono,
   PageHeader,
+  PanelMonogram,
+  ProgressBar,
   SkeletonTable,
+  StatusBadge,
   Table,
   Tabs,
   TBody,
+  TD,
+  TDPrimary,
   TH,
   THead,
   TR,
 } from '../components/ui';
 import { MigrationRow } from '../components/migrations/MigrationRow';
 import { useT } from '../lib/i18n';
-import { getMigrations, getServers, cancelMigration, deleteMigration, clearFinishedMigrations, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
+import { cn } from '../lib/cn';
+import { formatRelativeTime, percent, shortId } from '../lib/format';
+import { getMigrations, getServers, cancelMigration, deleteMigration, clearFinishedMigrations, dismissMigrationBatch, suspendMigrationSource, unsuspendMigrationSource } from '../api/client';
 import type { Migration, Server } from '../types';
 
 type StatusFilter = 'all' | 'running' | 'completed' | 'failed';
+
+/** Aggregate of one batch, collapsed from its migrations for the single row that stands in for it. */
+interface BatchAgg {
+  id: string;
+  total: number;
+  completed: number;
+  failed: number;
+  active: number;
+  warnings: number;
+  createdAt: string;
+  sourceId: string;
+  targetId: string;
+  /** True once the batch was marked "done handling" (every migration carries batch_dismissed_at). */
+  dismissed: boolean;
+}
+
+/** One batch collapsed into a single list row: account count, aggregate status/progress, started
+ * time, linking to the consolidated batch view — instead of N separate migration rows. */
+function BatchListRow({
+  batch,
+  source,
+  target,
+  onOpen,
+  onDismiss,
+}: {
+  batch: BatchAgg;
+  source?: Server;
+  target?: Server;
+  onOpen: () => void;
+  onDismiss: () => void;
+}) {
+  const t = useT();
+  const done = batch.active === 0;
+  const status = done ? (batch.failed > 0 ? 'cancelled' : 'completed') : 'running';
+  const stateLabel = done ? (batch.failed > 0 ? t('batch.state.mixed') : t('batch.state.done')) : t('batch.state.running');
+  const finished = batch.completed + batch.failed;
+  const nameClass = (known: boolean) => cn('truncate max-w-[10rem]', known ? 'text-slate-700 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500');
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+  return (
+    <TR clickable onClick={onOpen} className={cn('group', !done && 'bg-brand-50/40 dark:bg-brand-500/[0.06]', batch.dismissed && 'opacity-60')}>
+      <TDPrimary>
+        <div className="flex items-center gap-2">
+          <Squares2X2Icon className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" aria-hidden="true" />
+          <div className="min-w-0">
+            <span className="text-[13px] font-medium text-slate-900 dark:text-slate-100">{t('batch.list.accounts', { count: batch.total })}</span>
+            <div className="mt-0.5 flex items-center gap-1.5">
+              <Mono className="text-2xs text-slate-400 dark:text-slate-500">{shortId(batch.id)}</Mono>
+              {batch.dismissed && (
+                <Badge tone="neutral" size="sm">
+                  {t('batch.list.dismissedBadge')}
+                </Badge>
+              )}
+            </div>
+          </div>
+        </div>
+      </TDPrimary>
+
+      <TD>
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            <PanelMonogram panelType={source?.panel_type} size="sm" />
+            <span className={nameClass(!!source)} title={source?.name}>
+              {source?.name ?? t('common.unknown')}
+            </span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            <ArrowRightIcon className="flip-rtl h-3.5 w-3.5 shrink-0 text-slate-400 dark:text-slate-500" aria-hidden="true" />
+            <PanelMonogram panelType={target?.panel_type} size="sm" />
+            <span className={nameClass(!!target)} title={target?.name}>
+              {target?.name ?? t('common.unknown')}
+            </span>
+          </span>
+        </div>
+      </TD>
+
+      <TD className="hidden 2xl:table-cell">
+        <span className="text-slate-400 dark:text-slate-500">{t('common.notAvailable')}</span>
+      </TD>
+
+      <TD className="min-w-[150px]">
+        <StatusBadge status={status} size="sm" label={stateLabel} />
+        <div className="mt-1.5 max-w-[220px]">
+          <ProgressBar size="xs" live={!done} value={percent(finished, batch.total)} label={stateLabel} />
+          <div className="mt-1 flex items-center justify-between gap-2 text-2xs text-slate-500 dark:text-slate-400">
+            <span className="flex flex-wrap gap-x-2">
+              <span className="text-emerald-600 dark:text-emerald-400">{t('batch.progress.completed', { count: batch.completed })}</span>
+              {batch.active > 0 && <span className="text-brand-700 dark:text-brand-300">{t('batch.progress.running', { count: batch.active })}</span>}
+              {batch.failed > 0 && <span className="text-rose-600 dark:text-rose-400">{t('batch.progress.failed', { count: batch.failed })}</span>}
+            </span>
+            <bdi dir="ltr" className="tabular shrink-0 font-medium text-brand-700 dark:text-brand-300">
+              {finished}/{batch.total}
+            </bdi>
+          </div>
+        </div>
+      </TD>
+
+      <TD>
+        {batch.warnings > 0 ? (
+          <Badge tone="warning" size="sm" icon={<ExclamationTriangleIcon />}>
+            {batch.warnings}
+          </Badge>
+        ) : (
+          <span className="text-slate-400 dark:text-slate-500">{t('common.notAvailable')}</span>
+        )}
+      </TD>
+
+      <TD muted className="whitespace-nowrap">
+        <div>{formatRelativeTime(batch.createdAt)}</div>
+      </TD>
+
+      <TD align="end" onClick={stop} onKeyDown={stop} className="whitespace-nowrap">
+        <div className="inline-flex items-center gap-1 opacity-70 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <Button variant="ghost" size="sm" rightIcon={<ArrowTopRightOnSquareIcon className="flip-rtl" />} onClick={onOpen}>
+            {t('batch.row.openBatch')}
+          </Button>
+          {!batch.dismissed && (
+            <Button variant="ghost" size="sm" leftIcon={<CheckCircleIcon />} onClick={onDismiss}>
+              {t('batch.action.dismiss')}
+            </Button>
+          )}
+        </div>
+      </TD>
+    </TR>
+  );
+}
 
 export default function Migrations() {
   const t = useT();
@@ -49,6 +182,11 @@ export default function Migrations() {
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [toUnsuspend, setToUnsuspend] = useState<Migration | null>(null);
   const [unsuspendOpen, setUnsuspendOpen] = useState(false);
+  // Batch to mark "done handling" (kept after close so the dialog does not blank mid-transition).
+  const [toDismiss, setToDismiss] = useState<string | null>(null);
+  const [dismissOpen, setDismissOpen] = useState(false);
+  // Dismissed batches drop off the listing; this reveals them again (with a "handled" marker).
+  const [showDismissed, setShowDismissed] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -143,17 +281,27 @@ export default function Migrations() {
     }
   };
 
-  const runningCount = migrations.filter((m) => m.status === 'running').length;
-  const completedCount = migrations.filter((m) => m.status === 'completed').length;
-  const failedCount = migrations.filter((m) => m.status === 'failed').length;
-  const finishedCount = migrations.filter((m) => m.status !== 'running' && m.status !== 'pending').length;
+  const handleDismissBatch = async (batchId: string) => {
+    try {
+      await dismissMigrationBatch(batchId);
+      toast.success(t('batch.toast.dismissed'));
+      setDismissOpen(false);
+      fetchData();
+    } catch (error) {
+      console.error('Failed to dismiss batch:', error);
+      toast.error(apiError(error, t('batch.toast.dismissFailed')));
+    }
+  };
+
+  // Tab counts are over individual non-batched migrations plus one unit per batch, so a batch of 50
+  // counts as one row in the list it heads, not 50.
+  const nonBatched = useMemo(() => migrations.filter((m) => !m.batch_id), [migrations]);
   const showLoadError = !loading && !!fetchError && migrations.length === 0;
-  const visible = filter === 'all' ? migrations : migrations.filter((m) => m.status === filter);
 
   // Consolidated batches: migrations started together share a batch_id. Group them (latest attempt
-  // per account, since a rerun lands in the same batch) so the operator can open the one-screen
-  // window for a batch of 50 instead of its 50 separate rows.
-  const batches = useMemo(() => {
+  // per account, since a rerun lands in the same batch) so the operator gets ONE collapsed row that
+  // opens the one-screen window for the whole batch, instead of its N separate rows.
+  const batches = useMemo<BatchAgg[]>(() => {
     const groups = new Map<string, Migration[]>();
     for (const m of migrations) {
       if (!m.batch_id) continue;
@@ -172,17 +320,46 @@ export default function Migrations() {
         let completed = 0;
         let failed = 0;
         let active = 0;
+        let warnings = 0;
         let createdAt = list[0]?.created_at ?? '';
         for (const m of list) if (m.created_at < createdAt) createdAt = m.created_at;
         for (const m of latest) {
           if (m.status === 'completed') completed++;
           else if (m.status === 'failed' || m.status === 'cancelled') failed++;
           else active++;
+          warnings += m.warnings ?? 0;
         }
-        return { id, total: latest.length, completed, failed, active, createdAt };
+        // Dismissed only when the whole batch is: a later rerun (no batch_dismissed_at) resurfaces it.
+        const dismissed = list.every((m) => !!m.batch_dismissed_at);
+        return { id, total: latest.length, completed, failed, active, warnings, createdAt, sourceId: list[0]?.source_server_id ?? '', targetId: list[0]?.target_server_id ?? '', dismissed };
       })
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [migrations]);
+
+  const dismissedCount = useMemo(() => batches.filter((b) => b.dismissed).length, [batches]);
+
+  // Count a batch (not each of its migrations) once, under the status its aggregate maps to.
+  const batchStatus = (b: BatchAgg): StatusFilter => (b.active > 0 ? 'running' : b.failed > 0 ? 'failed' : 'completed');
+  const runningCount = nonBatched.filter((m) => m.status === 'running').length + batches.filter((b) => b.active > 0).length;
+  const completedCount = nonBatched.filter((m) => m.status === 'completed').length + batches.filter((b) => batchStatus(b) === 'completed').length;
+  const failedCount = nonBatched.filter((m) => m.status === 'failed').length + batches.filter((b) => b.failed > 0).length;
+  const finishedCount = migrations.filter((m) => m.status !== 'running' && m.status !== 'pending').length;
+  const listCount = nonBatched.length + batches.filter((b) => showDismissed || !b.dismissed).length;
+
+  // Collapsed list: one entry per batch (hidden when dismissed unless revealed) mixed with the
+  // individual non-batched migrations, newest first, filtered by the active status tab.
+  type Entry = { kind: 'batch'; batch: BatchAgg; createdAt: string } | { kind: 'migration'; migration: Migration; createdAt: string };
+  const entries = useMemo<Entry[]>(() => {
+    const batchEntries: Entry[] = batches
+      .filter((b) => showDismissed || !b.dismissed)
+      .filter((b) => filter === 'all' || batchStatus(b) === filter || (filter === 'failed' && b.failed > 0))
+      .map((b) => ({ kind: 'batch', batch: b, createdAt: b.createdAt }));
+    const migEntries: Entry[] = nonBatched
+      .filter((m) => filter === 'all' || m.status === filter)
+      .map((m) => ({ kind: 'migration', migration: m, createdAt: m.created_at }));
+    return [...batchEntries, ...migEntries].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batches, nonBatched, filter, showDismissed]);
 
   const sourceName = (m: Migration | null) => (m ? servers[m.source_server_id]?.name ?? t('migrations.dialog.sourceServer') : '');
   const account = (name?: string) => <Mono className="font-medium text-slate-900 dark:text-slate-100">{name}</Mono>;
@@ -223,47 +400,7 @@ export default function Migrations() {
         </div>
       )}
 
-      {!loading && batches.length > 0 && (
-        <Card className="motion-safe:animate-rise stagger" style={{ '--i': 1 } as CSSProperties}>
-          <CardHeader>
-            <CardTitle>{t('batch.list.title')}</CardTitle>
-            <CardDescription>{t('batch.list.description')}</CardDescription>
-          </CardHeader>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {batches.map((b) => {
-              const done = b.active === 0;
-              return (
-                <button
-                  key={b.id}
-                  type="button"
-                  onClick={() => navigate(`/migrations/batch/${b.id}`)}
-                  className="group flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-start transition-colors hover:border-brand-300 hover:bg-brand-50/40 dark:border-white/[0.08] dark:bg-slate-900/40 dark:hover:border-brand-500/40 dark:hover:bg-brand-500/[0.06]"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <Squares2X2Icon className="h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400" aria-hidden="true" />
-                      <span className="font-medium text-slate-900 dark:text-slate-100">{t('batch.list.accounts', { count: b.total })}</span>
-                      {!done && (
-                        <Badge tone="brand" size="sm" dot pulse>
-                          {t('batch.list.live')}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
-                      <span className="text-emerald-600 dark:text-emerald-400">{t('batch.progress.completed', { count: b.completed })}</span>
-                      {b.active > 0 && <span className="text-brand-700 dark:text-brand-300">{t('batch.progress.running', { count: b.active })}</span>}
-                      {b.failed > 0 && <span className="text-rose-600 dark:text-rose-400">{t('batch.progress.failed', { count: b.failed })}</span>}
-                    </div>
-                  </div>
-                  <ArrowRightIcon className="flip-rtl h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5 rtl:group-hover:-translate-x-0.5 dark:text-slate-500" aria-hidden="true" />
-                </button>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
-      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': 2 } as CSSProperties}>
+      <Card flush className="motion-safe:animate-rise stagger" style={{ '--i': 1 } as CSSProperties}>
         <CardHeader
           divided
           actions={
@@ -274,13 +411,18 @@ export default function Migrations() {
                     {t('migrations.badge.running', { count: runningCount })}
                   </Badge>
                 )}
+                {dismissedCount > 0 && (
+                  <Button size="sm" variant="ghost" onClick={() => setShowDismissed((v) => !v)}>
+                    {showDismissed ? t('batch.list.hideDismissed') : t('batch.list.showDismissed', { count: dismissedCount })}
+                  </Button>
+                )}
                 <Tabs<StatusFilter>
                   variant="pills"
                   size="sm"
                   value={filter}
                   onChange={setFilter}
                   tabs={[
-                    { id: 'all', label: t('migrations.filter.all'), count: migrations.length },
+                    { id: 'all', label: t('migrations.filter.all'), count: listCount },
                     { id: 'running', label: t('migrations.filter.running'), count: runningCount },
                     { id: 'completed', label: t('migrations.filter.completed'), count: completedCount },
                     { id: 'failed', label: t('migrations.filter.failed'), count: failedCount },
@@ -324,16 +466,22 @@ export default function Migrations() {
               </Button>
             }
           />
-        ) : visible.length === 0 ? (
+        ) : entries.length === 0 ? (
           <EmptyState
             size="sm"
             illustration="search"
-            title={t(`migrations.empty.${filter}.title`)}
-            description={t('migrations.empty.filter.description')}
+            title={filter === 'all' ? t('batch.list.allHandled') : t(`migrations.empty.${filter}.title`)}
+            description={filter === 'all' ? t('batch.list.allHandledDesc') : t('migrations.empty.filter.description')}
             action={
-              <Button variant="secondary" size="sm" onClick={() => setFilter('all')}>
-                {t('common.showAll')}
-              </Button>
+              dismissedCount > 0 && !showDismissed ? (
+                <Button variant="secondary" size="sm" onClick={() => setShowDismissed(true)}>
+                  {t('batch.list.showDismissed', { count: dismissedCount })}
+                </Button>
+              ) : filter !== 'all' ? (
+                <Button variant="secondary" size="sm" onClick={() => setFilter('all')}>
+                  {t('common.showAll')}
+                </Button>
+              ) : undefined
             }
           />
         ) : (
@@ -358,31 +506,45 @@ export default function Migrations() {
               </TR>
             </THead>
             <TBody>
-              {visible.map((migration) => (
-                <MigrationRow
-                  key={migration.id}
-                  migration={migration}
-                  source={servers[migration.source_server_id]}
-                  target={servers[migration.target_server_id]}
-                  onView={() => navigate(`/migrations/${migration.id}`)}
-                  onCancel={() => {
-                    setToCancel(migration);
-                    setCancelOpen(true);
-                  }}
-                  onDelete={() => {
-                    setToDelete(migration);
-                    setDeleteOpen(true);
-                  }}
-                  onSuspendSource={() => {
-                    setToSuspend(migration);
-                    setSuspendOpen(true);
-                  }}
-                  onUnsuspendSource={() => {
-                    setToUnsuspend(migration);
-                    setUnsuspendOpen(true);
-                  }}
-                />
-              ))}
+              {entries.map((entry) =>
+                entry.kind === 'batch' ? (
+                  <BatchListRow
+                    key={`batch-${entry.batch.id}`}
+                    batch={entry.batch}
+                    source={servers[entry.batch.sourceId]}
+                    target={servers[entry.batch.targetId]}
+                    onOpen={() => navigate(`/migrations/batch/${entry.batch.id}`)}
+                    onDismiss={() => {
+                      setToDismiss(entry.batch.id);
+                      setDismissOpen(true);
+                    }}
+                  />
+                ) : (
+                  <MigrationRow
+                    key={entry.migration.id}
+                    migration={entry.migration}
+                    source={servers[entry.migration.source_server_id]}
+                    target={servers[entry.migration.target_server_id]}
+                    onView={() => navigate(`/migrations/${entry.migration.id}`)}
+                    onCancel={() => {
+                      setToCancel(entry.migration);
+                      setCancelOpen(true);
+                    }}
+                    onDelete={() => {
+                      setToDelete(entry.migration);
+                      setDeleteOpen(true);
+                    }}
+                    onSuspendSource={() => {
+                      setToSuspend(entry.migration);
+                      setSuspendOpen(true);
+                    }}
+                    onUnsuspendSource={() => {
+                      setToUnsuspend(entry.migration);
+                      setUnsuspendOpen(true);
+                    }}
+                  />
+                ),
+              )}
             </TBody>
           </Table>
         )}
@@ -443,6 +605,18 @@ export default function Migrations() {
         confirmLabel={t('migrations.dialog.unsuspend.confirm')}
         onConfirm={async () => {
           if (toUnsuspend) await handleUnsuspendSource(toUnsuspend);
+        }}
+      />
+
+      <ConfirmDialog
+        open={dismissOpen}
+        onClose={() => setDismissOpen(false)}
+        tone="brand"
+        title={t('batch.confirm.dismiss.title')}
+        message={t('batch.confirm.dismiss.message')}
+        confirmLabel={t('batch.confirm.dismiss.confirm')}
+        onConfirm={async () => {
+          if (toDismiss) await handleDismissBatch(toDismiss);
         }}
       />
     </div>
