@@ -40,6 +40,8 @@ export interface AccountsTableProps {
   /** Filtered + sorted accounts to render. */
   accounts: Account[];
   selectedUsernames: Set<string>;
+  /** Accounts that already have a migration in flight (this or another operator): not selectable. */
+  inProgressUsernames?: Set<string>;
   /** Whether the header checkbox should read as "all selected" (page logic decides). */
   allSelected: boolean;
   onToggle: (account: Account) => void;
@@ -58,6 +60,7 @@ export interface AccountsTableProps {
 export function AccountsTable({
   accounts,
   selectedUsernames,
+  inProgressUsernames,
   allSelected,
   onToggle,
   onToggleAll,
@@ -113,7 +116,8 @@ export function AccountsTable({
       </THead>
       <TBody>
         {accounts.map((account) => {
-          const selected = selectedUsernames.has(account.username);
+          const inProgress = inProgressUsernames?.has(account.username) ?? false;
+          const selected = selectedUsernames.has(account.username) && !inProgress;
           const dbCount = account.databases?.length ?? 0;
           const emailCount = account.email_accounts?.length ?? 0;
           // A DirectAdmin domain pointer is the account's real, customer-facing domain --
@@ -125,9 +129,21 @@ export function AccountsTable({
           const displayDomain = primaryPointer || account.domain;
           const name = displayDomain || account.username;
           return (
-            <TR key={account.username} clickable selected={selected} onClick={() => onToggle(account)}>
+            <TR
+              key={account.username}
+              clickable={!inProgress}
+              selected={selected}
+              onClick={inProgress ? undefined : () => onToggle(account)}
+              className={cn(inProgress && 'opacity-55')}
+            >
               <TD className="w-10 pe-0" onClick={(e) => e.stopPropagation()}>
-                <Checkbox checked={selected} onChange={() => onToggle(account)} aria-label={t('a11y.selectX', { name })} className="align-middle" />
+                <Checkbox
+                  checked={selected}
+                  disabled={inProgress}
+                  onChange={() => !inProgress && onToggle(account)}
+                  aria-label={t('a11y.selectX', { name })}
+                  className="align-middle"
+                />
               </TD>
               <TDPrimary>
                 <div className="flex items-center gap-2">
@@ -203,7 +219,13 @@ export function AccountsTable({
                 />
               </TD>
               <TD>
-                <StatusBadge status={account.suspended ? 'suspended' : 'active'} size="sm" />
+                {inProgress ? (
+                  <Badge tone="warning" size="sm" title={t('newmigration.table.inProgressHint')}>
+                    {t('newmigration.table.inProgress')}
+                  </Badge>
+                ) : (
+                  <StatusBadge status={account.suspended ? 'suspended' : 'active'} size="sm" />
+                )}
               </TD>
             </TR>
           );

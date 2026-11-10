@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, getExistingDomains, type ClusterServer, startMigration, getMigration, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, getExistingDomains, type ClusterServer, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
 import type { Server, Account, MigrationLog, ScanReport } from '../types';
 import {
   Badge,
@@ -146,6 +146,9 @@ export default function NewMigration() {
   const [targetFilterType, setTargetFilterType] = useState<string>('all');
   const [clusterSearchTerm, setClusterSearchTerm] = useState('');
   const [selectedAccounts, setSelectedAccounts] = useState<Account[]>([]);
+  // Usernames on the chosen source that already have a migration in flight (any operator/tab). The
+  // backend refuses a duplicate start outright; this just stops staff selecting one in the first place.
+  const [inProgressUsernames, setInProgressUsernames] = useState<Set<string>>(new Set());
   const [hostsEntry, setHostsEntry] = useState<string>('');
   const [warningLogs, setWarningLogs] = useState<MigrationLog[]>([]);
   const [warningCount, setWarningCount] = useState(0);
@@ -247,6 +250,36 @@ export default function NewMigration() {
       setAccounts([]);
     }
   }, [formData.source_server_id, formData.source_cluster_server_id, sourceNodeRequired, isEnhanceSource]);
+
+  // Track which accounts on this source are already mid-migration (started here or by a colleague on
+  // another machine), so they can't be picked for a second, conflicting run. Refreshed on a short
+  // interval while a source is selected so a run someone else just kicked off shows up without a reload.
+  useEffect(() => {
+    if (!formData.source_server_id) {
+      setInProgressUsernames(new Set());
+      return;
+    }
+    const active = new Set(['pending', 'running', 'awaiting_review']);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const migrations = await getMigrations();
+        if (cancelled) return;
+        const names = migrations
+          .filter((m) => m.source_server_id === formData.source_server_id && active.has(m.status))
+          .map((m) => m.account_username);
+        setInProgressUsernames(new Set(names));
+      } catch {
+        // best-effort: the backend guard is authoritative, this is only a selection hint
+      }
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [formData.source_server_id]);
 
   // Enhance source: load its cluster servers so the operator picks the node to read from.
   useEffect(() => {
@@ -353,14 +386,15 @@ export default function NewMigration() {
   }, [starting]);
 
   const handleSelectAllAccounts = () => {
-    if (selectedAccounts.length === filteredAccounts.length) {
+    if (selectableAccounts.length > 0 && selectedAccounts.length === selectableAccounts.length) {
       setSelectedAccounts([]);
     } else {
-      setSelectedAccounts([...filteredAccounts]);
+      setSelectedAccounts([...selectableAccounts]);
     }
   };
 
   const handleToggleAccount = (account: Account) => {
+    if (inProgressUsernames.has(account.username)) return; // already migrating -> not selectable
     if (selectedAccounts.find((a: Account) => a.username === account.username)) {
       setSelectedAccounts(selectedAccounts.filter((a: Account) => a.username !== account.username));
     } else {
@@ -416,9 +450,17 @@ export default function NewMigration() {
         batch_id: runBatchId || undefined,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const resp = (error as { response?: { status?: number; data?: { error?: string } } })?.response;
+      // 409 = another operator/tab already has this account migrating (backend guard). Show a clear
+      // localized reason instead of the raw "request failed" so staff know it's a conflict, not a bug.
+      const errorMessage =
+        resp?.status === 409
+          ? t('newmigration.error.alreadyInProgress')
+          : resp?.data?.error || (error instanceof Error ? error.message : String(error));
       updateStep(0, 'error', errorMessage);
       patchRun(username, (r) => ({ ...r, status: 'failed' }));
+      // Reflect the conflicting run in the picker so the row locks right away.
+      setInProgressUsernames((prev) => new Set(prev).add(username));
       return;
     }
 
@@ -838,7 +880,10 @@ export default function NewMigration() {
   const targetServer = servers.find((s: Server) => s.id === formData.target_server_id);
   const targetClusterNode = clusterServers.find((s: ClusterServer) => s.id === formData.target_cluster_server_id);
   const selectedUsernames = new Set(selectedAccounts.map((a: Account) => a.username));
-  const allFilteredSelected = filteredAccounts.length > 0 && selectedAccounts.length === filteredAccounts.length;
+  // "Select all" / "all selected" only ever touch accounts we're allowed to start (not the ones
+  // already migrating), so the header checkbox reads correctly when some rows are locked.
+  const selectableAccounts = filteredAccounts.filter((a: Account) => !inProgressUsernames.has(a.username));
+  const allFilteredSelected = selectableAccounts.length > 0 && selectedAccounts.length === selectableAccounts.length;
   // The run currently awaiting an operator decision on its malware scan findings (if any --
   // with several accounts migrating at once, more than one could need review; the rest just wait).
   const pendingReview = runs.find((r) => r.scanReview);
@@ -1179,6 +1224,7 @@ export default function NewMigration() {
               <AccountsTable
                 accounts={filteredAccounts}
                 selectedUsernames={selectedUsernames}
+                inProgressUsernames={inProgressUsernames}
                 allSelected={allFilteredSelected}
                 onToggle={handleToggleAccount}
                 onToggleAll={handleSelectAllAccounts}

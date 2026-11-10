@@ -886,6 +886,11 @@ func (h *Handler) startMigration(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		// Another operator (or tab) already has this account migrating: a conflict, not a failure.
+		if errors.Is(err, storage.ErrActiveMigrationExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

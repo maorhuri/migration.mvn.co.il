@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,12 @@ import (
 	"github.com/migration-tool/backend/internal/panels/common"
 	"github.com/migration-tool/backend/pkg/crypto"
 )
+
+// ErrActiveMigrationExists is returned by CreateMigration when the same account on the same source
+// server already has a migration in flight (pending/running/awaiting_review). It guards against two
+// operators (or two tabs) kicking off the same site at once, which would race on the source export,
+// the staging files and the target website.
+var ErrActiveMigrationExists = errors.New("a migration for this account is already in progress")
 
 // NullString is sql.NullString that marshals to a plain JSON string ("" when NULL)
 // and accepts a plain string (or null) when unmarshalling.
@@ -659,18 +666,34 @@ func (d *Database) CreateMigration(ctx context.Context, migration *Migration) er
 	migration.CreatedAt = time.Now()
 	migration.Status = "pending"
 
+	// Conditional insert: only create the row when no other migration for this (source, account)
+	// is still active. Doing the check and the insert in one statement keeps two near-simultaneous
+	// starts from both getting through -- a plain SELECT-then-INSERT would let them race. When the
+	// guard blocks the insert, 0 rows are affected and we return ErrActiveMigrationExists.
 	query := `
 		INSERT INTO migrations (id, source_server_id, target_server_id, account_username,
 			status, batch_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		SELECT $1, $2, $3, $4, $5, $6, $7
+		WHERE NOT EXISTS (
+			SELECT 1 FROM migrations
+			WHERE source_server_id = $2
+			  AND account_username = $4
+			  AND status IN ('pending', 'running', 'awaiting_review')
+		)
 	`
 
-	_, err := d.db.ExecContext(ctx, query,
+	res, err := d.db.ExecContext(ctx, query,
 		migration.ID, migration.SourceServerID, migration.TargetServerID,
 		migration.AccountUsername, migration.Status, migration.BatchID, migration.CreatedAt,
 	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrActiveMigrationExists
+	}
 
-	return err
+	return nil
 }
 
 // GetMigration retrieves a migration by ID

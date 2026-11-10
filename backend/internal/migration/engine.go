@@ -107,6 +107,11 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 		BatchID:         storage.NewNullString(req.BatchID),
 	}
 	if err := e.db.CreateMigration(ctx, migration); err != nil {
+		// Already-in-progress is a caller-facing conflict, not an internal failure: pass the sentinel
+		// through unwrapped so the handler can answer 409 with a clean message.
+		if errors.Is(err, storage.ErrActiveMigrationExists) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to create migration record: %w", err)
 	}
 	migrationID := migration.ID

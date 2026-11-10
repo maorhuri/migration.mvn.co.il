@@ -81,6 +81,8 @@ export const newmigration: PageDict = {
     'newmigration.table.status': 'סטטוס',
     'newmigration.table.username': 'שם משתמש',
     'newmigration.table.noDomain': 'ללא דומיין',
+    'newmigration.table.inProgress': 'במיגרציה',
+    'newmigration.table.inProgressHint': 'מתבצעת כרגע מיגרציה לחשבון הזה; לא ניתן לבחור אותו שוב',
     'newmigration.table.selectAll': 'בחר את כל החשבונות',
     'newmigration.table.wordpress': 'WordPress',
     'newmigration.table.ssl': 'SSL',
@@ -253,6 +255,7 @@ export const newmigration: PageDict = {
     'newmigration.toast.decisionFailed': 'שליחת ההחלטה נכשלה',
     'newmigration.error.failed': 'המיגרציה נכשלה',
     'newmigration.error.timeout': 'המיגרציה חרגה מהזמן המוקצב. בדוק את היומנים בשרת.',
+    'newmigration.error.alreadyInProgress': 'כבר מתבצעת מיגרציה לחשבון הזה',
   },
   en: {
     'newmigration.title': 'New migration',
@@ -328,6 +331,8 @@ export const newmigration: PageDict = {
     'newmigration.table.databases': 'Databases',
     'newmigration.table.mailboxes': 'Mailboxes',
     'newmigration.table.status': 'Status',
+    'newmigration.table.inProgress': 'Migrating',
+    'newmigration.table.inProgressHint': 'A migration for this account is already running; it can’t be picked again',
     'newmigration.table.username': 'Username',
     'newmigration.table.noDomain': 'no domain',
     'newmigration.table.selectAll': 'Select all accounts',
@@ -502,5 +507,6 @@ export const newmigration: PageDict = {
     'newmigration.toast.decisionFailed': 'Failed to submit the decision',
     'newmigration.error.failed': 'Migration failed',
     'newmigration.error.timeout': 'Migration timeout - please check the server logs',
+    'newmigration.error.alreadyInProgress': 'A migration for this account is already in progress',
   },
 };
