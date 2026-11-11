@@ -356,6 +356,10 @@ export default function MigrationDetail() {
       if (result.mail_skipped > 0) {
         toast(t('migrationdetail.toast.cloudflareMailSkipped', { count: result.mail_skipped }), { duration: 9000, icon: '✉️' });
       }
+      // apex/www that point at another server were NOT repointed: the site may be hosted elsewhere.
+      if (result.web_skipped > 0) {
+        toast(t('migrationdetail.toast.cloudflareWebSkipped', { count: result.web_skipped }), { duration: 12000, icon: '⚠️' });
+      }
       setCloudflareOpen(false);
       await fetchData();
     } catch (error) {

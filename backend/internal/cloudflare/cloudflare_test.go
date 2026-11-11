@@ -140,6 +140,99 @@ func TestUpdateARecordsNoChangeMakesNoCall(t *testing.T) {
 	}
 }
 
+func TestUpdateARecordsSkipsApexHostedElsewhere(t *testing.T) {
+	// The apex and www point at a DIFFERENT server (not the source, not the target): the site is
+	// hosted elsewhere, so they must be left untouched and reported, not repointed by name. Only
+	// the subdomain actually on the source IP gets repointed.
+	records := []DNSRecord{
+		{ID: "a-root", Type: "A", Name: "example.com", Content: "7.7.7.7"},      // apex: hosted elsewhere
+		{ID: "a-www", Type: "A", Name: "www.example.com", Content: "7.7.7.7"},   // www: hosted elsewhere
+		{ID: "aaaa-root", Type: "AAAA", Name: "example.com", Content: "::7"},    // apex AAAA: must NOT be deleted
+		{ID: "a-shop", Type: "A", Name: "shop.example.com", Content: "9.9.9.9"}, // on the source -> repoint
+	}
+
+	var gotBody batchRequest
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/dns_records/batch") {
+			called = true
+			data, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(data, &gotBody); err != nil {
+				t.Fatalf("bad batch body: %v", err)
+			}
+			writeOK(w, map[string]interface{}{})
+			return
+		}
+		t.Fatalf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	names := []string{"example.com", "www.example.com"}
+	res, err := c.UpdateARecords(context.Background(), "zone1", records, "1.2.3.4", "", "9.9.9.9", names)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatalf("the subdomain on the source IP should still trigger a batch call")
+	}
+	// Only shop (on the source) is patched.
+	if len(gotBody.Patches) != 1 || gotBody.Patches[0].ID != "a-shop" {
+		t.Fatalf("expected only a-shop patched, got %+v", gotBody.Patches)
+	}
+	// The apex AAAA must not be deleted — the site is hosted elsewhere.
+	if len(gotBody.Deletes) != 0 {
+		t.Fatalf("expected no deletes (apex hosted elsewhere), got %+v", gotBody.Deletes)
+	}
+	if len(res.Patched) != 1 {
+		t.Fatalf("expected 1 patched, got %d", len(res.Patched))
+	}
+	// apex and www A records are reported as skipped.
+	skipped := map[string]bool{}
+	for _, r := range res.SkippedName {
+		skipped[r.ID] = true
+	}
+	if !skipped["a-root"] || !skipped["a-www"] {
+		t.Fatalf("expected a-root and a-www in SkippedName, got %+v", res.SkippedName)
+	}
+	if len(res.SkippedName) != 2 {
+		t.Fatalf("expected exactly 2 skipped web records, got %d: %+v", len(res.SkippedName), res.SkippedName)
+	}
+}
+
+func TestUpdateARecordsFallbackByNameWhenOldIPUnknown(t *testing.T) {
+	// When the source IP could not be resolved (empty), there is no safe signal, so the apex/www
+	// are repointed by name as before (best effort).
+	records := []DNSRecord{
+		{ID: "a-root", Type: "A", Name: "example.com", Content: "7.7.7.7"},
+		{ID: "a-www", Type: "A", Name: "www.example.com", Content: "7.7.7.7"},
+	}
+	var gotBody batchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/dns_records/batch") {
+			data, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(data, &gotBody)
+			writeOK(w, map[string]interface{}{})
+			return
+		}
+		t.Fatalf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	names := []string{"example.com", "www.example.com"}
+	res, err := c.UpdateARecords(context.Background(), "zone1", records, "1.2.3.4", "", "", names)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotBody.Patches) != 2 {
+		t.Fatalf("expected both apex/www repointed by name when oldIP unknown, got %+v", gotBody.Patches)
+	}
+	if len(res.SkippedName) != 0 {
+		t.Fatalf("no records should be skipped in the fallback path, got %+v", res.SkippedName)
+	}
+}
+
 func TestAPIErrorOnSuccessFalse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

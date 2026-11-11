@@ -181,6 +181,7 @@ type CloudflareZoneResult struct {
 	Updated     []string `json:"updated,omitempty"`      // records changed, human lines
 	Deleted     []string `json:"deleted,omitempty"`      // AAAA records removed (no IPv6 target)
 	SkippedMail []string `json:"skipped_mail,omitempty"` // mail records left untouched because mail is external
+	SkippedWeb  []string `json:"skipped_web,omitempty"`  // apex/www left untouched because they point at another server (site hosted elsewhere)
 	Unchanged   int      `json:"unchanged"`              // records already correct
 	Verified    []string `json:"verified,omitempty"`     // re-read result per web record
 	Purged      bool     `json:"purged"`
@@ -200,6 +201,7 @@ type CloudflareDNSResult struct {
 	RecordsDeleted int                    `json:"records_deleted"`
 	Unchanged      int                    `json:"unchanged"`
 	MailSkipped    int                    `json:"mail_skipped"`
+	WebSkipped     int                    `json:"web_skipped"` // apex/www left untouched because the site is hosted on another server
 	// RecordsChanged = created + updated + deleted (kept for the frontend summary).
 	RecordsChanged int `json:"records_changed"`
 	ZonesUpdated   int `json:"zones_updated"`
@@ -494,6 +496,12 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 					zr.Deleted = append(zr.Deleted, line)
 					logFn("info", fmt.Sprintf("Cloudflare: removed %s so %s resolves to the new IPv4", line, r.Name))
 				}
+				for _, r := range upd.SkippedName {
+					line := fmt.Sprintf("%s %s -> %s", r.Type, r.Name, r.Content)
+					zr.SkippedWeb = append(zr.SkippedWeb, line)
+					out.WebSkipped++
+					logFn("warn", fmt.Sprintf("Cloudflare: left %s %s untouched — it points at %s, not the source server (%s); the site looks hosted elsewhere, so it was NOT repointed. Check it manually.", r.Type, r.Name, r.Content, oldIP))
+				}
 				out.RecordsUpdated += len(upd.Patched)
 				out.RecordsDeleted += len(upd.Deleted)
 				webChanged = len(upd.Patched)+len(upd.Deleted) > 0
@@ -527,6 +535,12 @@ func (e *Engine) applyZoneDNS(ctx context.Context, client *cloudflare.Client, zr
 			line := fmt.Sprintf("%s %s (was %s)", r.Type, r.Name, r.Content)
 			zr.Deleted = append(zr.Deleted, line)
 			logFn("info", fmt.Sprintf("Cloudflare: removed %s so %s resolves to the new IPv4 (no IPv6 target configured)", line, r.Name))
+		}
+		for _, r := range upd.SkippedName {
+			line := fmt.Sprintf("%s %s -> %s", r.Type, r.Name, r.Content)
+			zr.SkippedWeb = append(zr.SkippedWeb, line)
+			out.WebSkipped++
+			logFn("warn", fmt.Sprintf("Cloudflare: left %s %s untouched — it points at %s, not the source server (%s); the site looks hosted elsewhere, so it was NOT repointed. Check it manually.", r.Type, r.Name, r.Content, oldIP))
 		}
 		out.RecordsUpdated += len(upd.Patched)
 		out.RecordsDeleted += len(upd.Deleted)

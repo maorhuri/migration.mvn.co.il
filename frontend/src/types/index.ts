@@ -221,6 +221,8 @@ export interface CloudflareZoneResult {
   deleted?: string[];
   /** Mail records left untouched because mail is external, e.g. "skipping external mail: MX 10 -> aspmx.l.google.com ...". */
   skipped_mail?: string[];
+  /** apex/www left untouched because they point at another server (the site is hosted elsewhere), e.g. "A example.com -> 7.7.7.7". */
+  skipped_web?: string[];
   /** Records already correct. */
   unchanged: number;
   /** Re-read verification per web record. */
@@ -241,6 +243,8 @@ export interface CloudflareDNSResult {
   records_deleted: number;
   unchanged: number;
   mail_skipped: number;
+  /** apex/www left untouched because the site is hosted on another server. */
+  web_skipped: number;
   /** created + updated + deleted. */
   records_changed: number;
   zones_updated: number;

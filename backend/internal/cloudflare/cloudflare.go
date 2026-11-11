@@ -388,39 +388,71 @@ type batchDelete struct {
 
 // UpdateResult reports what UpdateARecords did for a zone.
 type UpdateResult struct {
-	Patched []DNSRecord // records whose content was changed (with their NEW content)
-	Deleted []DNSRecord // AAAA records removed because no IPv6 target was available
+	Patched     []DNSRecord // records whose content was changed (with their NEW content)
+	Deleted     []DNSRecord // AAAA records removed because no IPv6 target was available
+	SkippedName []DNSRecord // apex/www records left untouched because they point at neither the source nor the target (the site is hosted elsewhere)
 }
 
-// UpdateARecords repoints DNS records in one batch:
-//   - every A record whose name matches one of `names` (e.g. the root and www) is set to newIPv4;
-//   - every A record currently pointing at oldIPv4 (the source server) is set to newIPv4;
-//   - AAAA records on the same names are set to newIPv6 when it is non-empty, otherwise deleted
-//     so the name no longer resolves to the old (IPv6) server.
+// UpdateARecords repoints DNS records in one batch, verifying what @/www point at before touching
+// them so a domain whose site is actually hosted elsewhere is never repointed by name:
+//   - every A record currently pointing at oldIPv4 (the source server) is set to newIPv4 — this
+//     covers the apex, www and any subdomain that genuinely lived on the source;
+//   - an A record on one of `names` (apex/www) that points at NEITHER the source nor the target is
+//     left untouched and returned in SkippedName: the site is hosted on another server, so blindly
+//     repointing it by name would break it. Only when oldIPv4 is unknown (empty) is there no safe
+//     signal, and the apex/www are then repointed by name as a best effort;
+//   - AAAA records on `names` are set to newIPv6 (when non-empty) or deleted, but ONLY for a name
+//     confirmed to be on the source — otherwise the AAAA belongs to the site hosted elsewhere and
+//     is left alone, in step with its A record.
 //
 // `names` are fully-qualified record names (the zone apex and www.<zone>). records is the current
 // record set from ListDNSRecords. It returns what changed; an empty change set makes no API call.
 func (c *Client) UpdateARecords(ctx context.Context, zoneID string, records []DNSRecord, newIPv4, newIPv6, oldIPv4 string, names []string) (*UpdateResult, error) {
+	norm := func(n string) string { return strings.ToLower(strings.TrimSuffix(n, ".")) }
 	nameSet := map[string]bool{}
 	for _, n := range names {
-		nameSet[strings.ToLower(strings.TrimSuffix(n, "."))] = true
+		nameSet[norm(n)] = true
+	}
+
+	// A name among apex/www is "ours" to repoint only when we can confirm it was on the source
+	// server: its current A record points at oldIPv4. When oldIPv4 is unknown we cannot verify, so
+	// we fall back to treating every apex/www name as ours (best effort, old behaviour).
+	onSource := map[string]bool{}
+	if oldIPv4 == "" {
+		for n := range nameSet {
+			onSource[n] = true
+		}
+	} else {
+		for _, rec := range records {
+			if rec.Type == "A" && nameSet[norm(rec.Name)] && rec.Content == oldIPv4 {
+				onSource[norm(rec.Name)] = true
+			}
+		}
 	}
 
 	res := &UpdateResult{}
 	var req batchRequest
 	for _, rec := range records {
-		name := strings.ToLower(strings.TrimSuffix(rec.Name, "."))
+		name := norm(rec.Name)
 		matchName := nameSet[name]
 		switch rec.Type {
 		case "A":
-			if (matchName || (oldIPv4 != "" && rec.Content == oldIPv4)) && rec.Content != newIPv4 {
+			atOld := oldIPv4 != "" && rec.Content == oldIPv4
+			switch {
+			case rec.Content == newIPv4:
+				// already at the target
+			case atOld || (matchName && onSource[name]):
 				req.Patches = append(req.Patches, batchPatch{ID: rec.ID, Content: newIPv4})
 				updated := rec
 				updated.Content = newIPv4
 				res.Patched = append(res.Patched, updated)
+			case matchName:
+				// apex/www pointing at some other server: the site is hosted elsewhere -> do not
+				// repoint it by name; surface it so the operator can check.
+				res.SkippedName = append(res.SkippedName, rec)
 			}
 		case "AAAA":
-			if !matchName {
+			if !matchName || !onSource[name] {
 				continue
 			}
 			if newIPv6 != "" {
