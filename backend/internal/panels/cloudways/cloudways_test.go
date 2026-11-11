@@ -22,8 +22,6 @@ $table_prefix = 'wwv_';
 @@ENV
 @@PHP
 /etc/php/8.2/fpm/pool.d/fstzfvxqrz.conf
-@@DU
-24576
 @@APP vnuzywdfxb
 @@NGINX
 server_name woocommerce-1642668-6522422.cloudwaysapps.com www.million-kisot.co.il million-kisot.co.il;
@@ -41,8 +39,6 @@ $table_prefix = 'wp_';
 @@ENV
 @@PHP
 /etc/php/8.1/fpm/pool.d/vnuzywdfxb.conf
-@@DU
-512
 @@APP laravelapp
 @@NGINX
 server_name app-1642668-1.cloudwaysapps.com shop.example.com www.shop.example.com other.example.org;
@@ -55,7 +51,11 @@ DB_PASSWORD="q=x"
 DB_HOST=127.0.0.1
 DB_PORT=3307
 @@PHP
-@@DU
+@@DUALL
+fstzfvxqrz 24576
+vnuzywdfxb 512
+@@PHPPOOLS
+laravelapp-84
 @@END
 `
 
@@ -114,8 +114,10 @@ func TestParseDiscoveryAndChooseDomains(t *testing.T) {
 	if got := c.DB.mysqlAuth(); !strings.Contains(got, "-h '127.0.0.1' -P '3307'") {
 		t.Errorf("host:port auth wrong: %s", got)
 	}
-	if c.PHPVersion != "" || c.DiskMB != 0 {
-		t.Errorf("missing php/du must stay empty: %q %d", c.PHPVersion, c.DiskMB)
+	// No /etc/php pool.d conf for laravelapp, so PHP falls back to the running FPM pool
+	// (@@PHPPOOLS "laravelapp-84" => 8.4); it has no @@DUALL entry, so disk stays 0.
+	if c.PHPVersion != "8.4" || c.DiskMB != 0 {
+		t.Errorf("laravel php should fall back to the running pool (8.4), du stays 0: %q %d", c.PHPVersion, c.DiskMB)
 	}
 
 	acc := b.account()

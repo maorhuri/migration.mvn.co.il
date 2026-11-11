@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/migration-tool/backend/internal/panels/common"
@@ -153,9 +154,24 @@ for d in %s; do
   echo "@@WPCONFIG"; grep -hE "DB_NAME|DB_USER|DB_PASSWORD|DB_HOST|table_prefix" "$a/public_html/wp-config.php" 2>/dev/null
   echo "@@ENV"; grep -hE '^DB_(DATABASE|USERNAME|PASSWORD|HOST|PORT)=' "$a/public_html/.env" "$a/.env" 2>/dev/null
   echo "@@PHP"; ls /etc/php/*/fpm/pool.d/"$a".conf 2>/dev/null
-  echo "@@DU"; du -sm "$a/public_html" 2>/dev/null | cut -f1
 done
-echo "@@END"`, glob)
+# Disk usage: du of a multi-GB docroot takes seconds, so running them one after another made a
+# full-server scan take ~30s on a 15-app server. Fan them out in parallel (one backgrounded du per
+# app) and emit "<slug> <MB>" lines; parseDiscovery maps them back by slug.
+echo "@@DUALL"
+for d in %s; do
+  a="${d%%/}"
+  [ -d "$a/public_html" ] || continue
+  ( printf '%%s %%s\n' "$a" "$(du -sm "$a/public_html" 2>/dev/null | cut -f1)" ) &
+done
+wait
+# Newer Cloudways servers keep the per-app FPM pool config (conf/fpm-pool.conf) root-only and have
+# no /etc/php/<ver>/fpm/pool.d/<slug>.conf, so the per-app @@PHP probe above finds nothing. The
+# running pool process, however, is master-readable and its name encodes the version as "<slug>-<NN>"
+# (e.g. "auetbkcukm-83" => PHP 8.3). Capture them all once as a fallback mapping.
+echo "@@PHPPOOLS"
+ps -eo args 2>/dev/null | grep -oE 'php-fpm: pool [A-Za-z0-9_]+-[0-9]+' | sed -E 's/^php-fpm: pool //' | sort -u
+echo "@@END"`, glob, glob)
 }
 
 var (
@@ -173,6 +189,8 @@ func parseDiscovery(out string) ([]*App, error) {
 	var apps []*App
 	var cur *App
 	section := ""
+	poolVer := map[string]string{} // slug -> "X.Y", from the running php-fpm pools (@@PHPPOOLS)
+	diskMB := map[string]int64{}   // slug -> docroot MB, from the parallel du pass (@@DUALL)
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		switch {
@@ -183,6 +201,26 @@ func parseDiscovery(out string) ([]*App, error) {
 			continue
 		case strings.HasPrefix(line, "@@"):
 			section = strings.TrimPrefix(line, "@@")
+			continue
+		}
+		// @@PHPPOOLS / @@DUALL are server-wide lists, not tied to the current app.
+		if section == "PHPPOOLS" {
+			if s := strings.TrimSpace(line); s != "" {
+				if i := strings.LastIndex(s, "-"); i > 0 {
+					if v := phpDigitsToDots(s[i+1:]); v != "" {
+						poolVer[s[:i]] = v
+					}
+				}
+			}
+			continue
+		}
+		if section == "DUALL" {
+			// "<slug> <MB>"
+			if slug, mb, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
+				if n, err := strconv.ParseInt(strings.TrimSpace(mb), 10, 64); err == nil {
+					diskMB[slug] = n
+				}
+			}
 			continue
 		}
 		if cur == nil || strings.TrimSpace(line) == "" {
@@ -244,10 +282,6 @@ func parseDiscovery(out string) ([]*App, error) {
 			if m := phpPoolRe.FindStringSubmatch(line); m != nil && cur.PHPVersion == "" {
 				cur.PHPVersion = m[1]
 			}
-		case "DU":
-			if n, err := strconv.ParseInt(strings.TrimSpace(line), 10, 64); err == nil {
-				cur.DiskMB = n
-			}
 		}
 	}
 	for _, a := range apps {
@@ -255,8 +289,29 @@ func parseDiscovery(out string) ([]*App, error) {
 		if a.DB.Name == "" || a.DB.User == "" {
 			a.DB = dbCreds{} // half a credential set is no credential set
 		}
+		if a.PHPVersion == "" {
+			a.PHPVersion = poolVer[a.Slug] // fallback: the running FPM pool's version
+		}
+		if a.DiskMB == 0 {
+			a.DiskMB = diskMB[a.Slug]
+		}
 	}
 	return apps, nil
+}
+
+// phpDigitsToDots turns a Cloudways pool version suffix ("83", "74") into dotted form ("8.3", "7.4").
+// Returns "" for anything that is not 2-3 digits.
+func phpDigitsToDots(d string) string {
+	d = strings.TrimSpace(d)
+	if len(d) < 2 || len(d) > 3 {
+		return ""
+	}
+	for _, r := range d {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return d[:len(d)-1] + "." + d[len(d)-1:]
 }
 
 // vhostNames extracts the hostnames from one nginx "server_name a b c;" or apache
@@ -419,8 +474,26 @@ func (c *Cloudways) discover(ctx context.Context, slug string) ([]*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Each app's DB enrichment is an independent SSH/mysql round-trip, so fan them out over a
+	// bounded pool (RunCommand opens its own session per call and is safe for concurrent use). Each
+	// goroutine writes only its own *App; chooseDomains is pure and runs after.
+	const workers = 6
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
 	for _, a := range apps {
-		c.enrichFromDB(ctx, a)
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(a *App) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			c.enrichFromDB(ctx, a)
+		}(a)
+	}
+	wg.Wait()
+	for _, a := range apps {
 		chooseDomains(a)
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].Primary < apps[j].Primary })

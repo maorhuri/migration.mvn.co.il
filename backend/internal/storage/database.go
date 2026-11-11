@@ -938,6 +938,15 @@ func (d *Database) SaveServerAccounts(ctx context.Context, serverID string, acco
 	}
 	defer tx.Rollback()
 
+	// Serialize concurrent caches of the SAME server: two refreshes racing here would both DELETE
+	// (neither seeing the other's uncommitted rows under READ COMMITTED) then INSERT, and the
+	// (server_id, username) unique index would reject one on commit with a duplicate-key error,
+	// losing that refresh. A per-server transaction advisory lock makes the delete+insert atomic
+	// against other savers; it is released when this transaction ends.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", serverID); err != nil {
+		return err
+	}
+
 	// Delete existing accounts for this server
 	if _, err := tx.ExecContext(ctx, "DELETE FROM server_accounts WHERE server_id = $1", serverID); err != nil {
 		return err
