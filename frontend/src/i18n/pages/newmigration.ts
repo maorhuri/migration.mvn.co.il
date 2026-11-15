@@ -88,6 +88,8 @@ export const newmigration: PageDict = {
     'newmigration.table.ssl': 'SSL',
     'newmigration.table.cf': 'CF',
     'newmigration.table.cloudflare': 'הדומיין מתארח בחשבון ה-Cloudflare שלנו',
+    'newmigration.table.dnsOffSourceHint': 'מפנה כרגע ל-{ip} (דרך {via}) — לא לשרת המקור. ייתכן שהאתר כבר מתארח במקום אחר; בדוק לפני המיגרציה.',
+    'newmigration.table.dnsViaLookup': 'בדיקת DNS',
     'newmigration.table.viewItems': 'הצג {items} של {name}',
 
     // Selection tray
@@ -129,6 +131,8 @@ export const newmigration: PageDict = {
     'newmigration.sourceCluster.title': 'צומת המקור',
     'newmigration.sourceCluster.description': 'בחר את השרת באשכול שממנו מעבירים. רק האתרים של הצומת הזה ייקראו ויוצגו — לא כל האשכול.',
     'newmigration.source.continue': 'המשך ליעד',
+    'newmigration.lastRoute.title': 'מיגרציה מהירה — אותו מסלול כמו בפעם הקודמת',
+    'newmigration.lastRoute.use': 'המשך לבחירת חשבונות',
     'newmigration.sourceCluster.loadFailed': 'רשימת הצמתים לא נטענה: {error}',
     'newmigration.sourceCluster.retry': 'נסה שוב',
     'newmigration.nodes.search': 'חיפוש לפי שם, hostname או IP',
@@ -338,6 +342,8 @@ export const newmigration: PageDict = {
     'newmigration.table.ssl': 'SSL',
     'newmigration.table.cf': 'CF',
     'newmigration.table.cloudflare': 'Domain is in our Cloudflare account',
+    'newmigration.table.dnsOffSourceHint': 'Currently points at {ip} (via {via}) — not the source server. The site may already be hosted elsewhere; check before migrating.',
+    'newmigration.table.dnsViaLookup': 'DNS lookup',
     'newmigration.table.viewItems': 'View {items} for {name}',
 
     // Selection tray
@@ -379,6 +385,8 @@ export const newmigration: PageDict = {
     'newmigration.sourceCluster.title': 'Source node',
     'newmigration.sourceCluster.description': 'Pick the server in the cluster to migrate from. Only that node\'s websites are read and listed — never the whole cluster.',
     'newmigration.source.continue': 'Continue to target',
+    'newmigration.lastRoute.title': 'Quick migration — same route as last time',
+    'newmigration.lastRoute.use': 'Continue to accounts',
     'newmigration.sourceCluster.loadFailed': 'The node list could not be loaded: {error}',
     'newmigration.sourceCluster.retry': 'Retry',
     'newmigration.nodes.search': 'Search by name, hostname or IP',

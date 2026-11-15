@@ -153,6 +153,126 @@ func (e *Engine) cloudflareDomainsInAccount(ctx context.Context, token string, d
 	return result
 }
 
+// DomainDNS is where one domain's apex currently points, for the account picker's "is this still
+// on the source server?" indicator.
+type DomainDNS struct {
+	Domain   string `json:"domain"`
+	IP       string `json:"ip,omitempty"`  // current apex A content ("" if none / lookup failed)
+	Via      string `json:"via,omitempty"` // "cloudflare" (zone in our account) or "dns" (live lookup)
+	OnSource bool   `json:"on_source"`     // the IP equals the source server's IP
+}
+
+// DNSCheckResult reports, per domain, where its apex A currently points and whether that is still
+// the source server -- so staff can spot a domain that already points elsewhere before migrating.
+type DNSCheckResult struct {
+	SourceIP string               `json:"source_ip,omitempty"`
+	Results  map[string]DomainDNS `json:"results"`
+}
+
+// CheckDomainsDNS resolves, for each domain, the apex A it currently points at: from Cloudflare
+// when the domain's zone is in our account (so a proxied record still reveals the real origin),
+// otherwise a live DNS lookup. Each result is flagged OnSource when it matches the source server's
+// IP. Lookups run concurrently under a bounded pool and an overall timeout; a single failure just
+// leaves that domain's IP empty and never fails the whole call.
+func (e *Engine) CheckDomainsDNS(ctx context.Context, serverID string, domains []string) (*DNSCheckResult, error) {
+	server, err := e.db.GetServer(ctx, serverID)
+	if err != nil {
+		return nil, fmt.Errorf("server not found: %w", err)
+	}
+	sourceIP := resolveOldSourceIP(server.Host)
+	out := &DNSCheckResult{SourceIP: sourceIP, Results: map[string]DomainDNS{}}
+
+	seen := map[string]bool{}
+	var list []string
+	for _, d := range domains {
+		d = normalizeDomain(d)
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		list = append(list, d)
+	}
+	if len(list) == 0 {
+		return out, nil
+	}
+
+	// A Cloudflare client only if a token is configured; without it every domain falls back to DNS.
+	var client *cloudflare.Client
+	if token, _ := e.db.GetCloudflareToken(ctx); strings.TrimSpace(token) != "" {
+		client = e.cloudflareClient(ctx, token)
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	type res struct {
+		domain string
+		dd     DomainDNS
+	}
+	ch := make(chan res, len(list))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for _, d := range list {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ip, via := e.resolveApexA(cctx, client, d)
+			ch <- res{d, DomainDNS{Domain: d, IP: ip, Via: via, OnSource: ip != "" && sourceIP != "" && ip == sourceIP}}
+		}(d)
+	}
+	go func() { wg.Wait(); close(ch) }()
+	for r := range ch {
+		out.Results[r.domain] = r.dd
+	}
+	return out, nil
+}
+
+// resolveApexA returns the apex A a domain points at, preferring Cloudflare (so a proxied record
+// still reports the real origin, not an edge IP) and falling back to a live DNS lookup.
+func (e *Engine) resolveApexA(ctx context.Context, client *cloudflare.Client, domain string) (ip string, via string) {
+	if client != nil {
+		if zone, err := client.FindZoneForDomain(ctx, domain); err == nil && zone != nil {
+			if recs, err := client.ListDNSRecords(ctx, zone.ID); err == nil {
+				if ip := apexARecord(recs, domain); ip != "" {
+					return ip, "cloudflare"
+				}
+			}
+		}
+	}
+	if ip := lookupFirstIPv4(ctx, domain); ip != "" {
+		return ip, "dns"
+	}
+	return "", ""
+}
+
+// apexARecord returns the content of the A record whose name is exactly domain (the apex), or "".
+func apexARecord(recs []cloudflare.DNSRecord, domain string) string {
+	domain = normalizeDomain(domain)
+	for _, r := range recs {
+		if r.Type == "A" && normalizeDomain(r.Name) == domain {
+			return r.Content
+		}
+	}
+	return ""
+}
+
+// lookupFirstIPv4 resolves domain and returns its first IPv4 address, or "" on any failure.
+func lookupFirstIPv4(ctx context.Context, domain string) string {
+	var r net.Resolver
+	addrs, err := r.LookupHost(ctx, domain)
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
+			return ip.To4().String()
+		}
+	}
+	return ""
+}
+
 // domainInZoneSet reports whether domain is one of the zone apexes in zoneSet, or a subdomain of
 // one: it walks up the labels (shop.example.com -> example.com -> com) and matches the first apex
 // present, mirroring how the registrable domain is found elsewhere.

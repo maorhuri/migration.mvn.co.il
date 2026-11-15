@@ -4,6 +4,11 @@ import { Badge, Checkbox, Mono, StatusBadge, Table, TBody, TD, TDPrimary, TH, TH
 import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n';
 import type { Account } from '../../types';
+import type { DomainDNS } from '../../api/client';
+
+/** Normalize a domain the same way the backend does (lowercase, drop a leading "www."), so a row
+ * can look up its DNS status by key. */
+const normDomain = (d: string) => d.trim().toLowerCase().replace(/^www\./, '').replace(/^\.+|\.+$/g, '');
 
 interface CountPillProps {
   count: number;
@@ -51,6 +56,9 @@ export interface AccountsTableProps {
   onSort: (field: string) => void;
   onShowEmails: (account: Account) => void;
   onShowDatabases: (account: Account) => void;
+  /** Where each source domain's apex A currently points (keyed by normalized domain). A domain that
+   *  does not resolve to the source server is flagged on its row. */
+  dnsStatus?: Record<string, DomainDNS>;
 }
 
 /**
@@ -69,6 +77,7 @@ export function AccountsTable({
   onSort,
   onShowEmails,
   onShowDatabases,
+  dnsStatus,
 }: AccountsTableProps) {
   const t = useT();
   const headerCheckbox = useRef<HTMLInputElement | null>(null);
@@ -128,6 +137,11 @@ export function AccountsTable({
           const primaryPointer = account.pointers?.[0];
           const displayDomain = primaryPointer || account.domain;
           const name = displayDomain || account.username;
+          // Current apex A for this domain. Flag it only when it does NOT point at the source
+          // server (it may already be hosted elsewhere / moved) -- a domain correctly on the source
+          // shows nothing.
+          const dns = dnsStatus && displayDomain ? dnsStatus[normDomain(displayDomain)] : undefined;
+          const dnsOffSource = !!dns && !!dns.ip && !dns.on_source;
           return (
             <TR
               key={account.username}
@@ -170,6 +184,19 @@ export function AccountsTable({
                   {account.ssl_enabled && (
                     <Badge tone="success" size="sm">
                       {t('newmigration.table.ssl')}
+                    </Badge>
+                  )}
+                  {dnsOffSource && (
+                    <Badge
+                      tone="warning"
+                      size="sm"
+                      mono
+                      title={t('newmigration.table.dnsOffSourceHint', {
+                        ip: dns!.ip!,
+                        via: dns!.via === 'cloudflare' ? 'Cloudflare' : t('newmigration.table.dnsViaLookup'),
+                      })}
+                    >
+                      ⇠ {dns!.ip}
                     </Badge>
                   )}
                 </div>

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
+import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, BoltIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, getExistingDomains, type ClusterServer, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, getExistingDomains, dnsCheck, type ClusterServer, type DomainDNS, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
 import type { Server, Account, MigrationLog, ScanReport } from '../types';
 import {
   Badge,
@@ -46,6 +46,38 @@ const WIZARD_STEP_KEYS: { id: MigrationStep; key: string }[] = [
 ];
 
 const WIZARD_ORDER: MigrationStep[] = ['select_source', 'select_target', 'select_accounts', 'review', 'migrating'];
+
+// Last-used source->target route, remembered per operator (their own browser) so repeat migrations
+// along the same route skip re-picking the source and target. Every read/write is guarded: private
+// windows and cleared site-data make localStorage throw or return null, and the wizard must work
+// without it.
+const LAST_ROUTE_KEY = 'migration:lastRoute';
+type LastRoute = {
+  source_server_id: string;
+  source_cluster_server_id?: string;
+  target_server_id: string;
+  target_cluster_server_id?: string;
+};
+function readLastRoute(): LastRoute | null {
+  try {
+    const raw = localStorage.getItem(LAST_ROUTE_KEY);
+    if (!raw) return null;
+    const r = JSON.parse(raw) as Partial<LastRoute>;
+    if (r && typeof r.source_server_id === 'string' && r.source_server_id && typeof r.target_server_id === 'string' && r.target_server_id) {
+      return r as LastRoute;
+    }
+  } catch {
+    /* localStorage unavailable or malformed -> no quick route */
+  }
+  return null;
+}
+function writeLastRoute(r: LastRoute): void {
+  try {
+    localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
+  } catch {
+    /* ignore: a remembered route is a convenience, never required */
+  }
+}
 
 const INITIAL_MIGRATION_STEPS: MigrationStepStatus[] = [
   // Export phase (from source)
@@ -141,6 +173,12 @@ export default function NewMigration() {
   // Optional focus filter: show only the suspended-but-not-on-target accounts, to triage the ones
   // that were suspended yet never actually migrated.
   const [onlySuspendedUnmigrated, setOnlySuspendedUnmigrated] = useState(false);
+  // The source->target route of the operator's last started migration (from their browser): offered
+  // as a one-click shortcut on the source step so a repeat run skips re-picking source and target.
+  const [lastRoute] = useState<LastRoute | null>(() => readLastRoute());
+  // Where each source domain's apex A currently points (keyed by normalized domain). Used to flag a
+  // domain that no longer points at the source server (it may already be hosted elsewhere).
+  const [dnsStatus, setDnsStatus] = useState<Record<string, DomainDNS>>({});
   // Show only accounts whose domain is hosted in our Cloudflare account (off by default).
   const [onlyCloudflare, setOnlyCloudflare] = useState(false);
   const [existingDomains, setExistingDomains] = useState<string[]>([]);
@@ -354,6 +392,38 @@ export default function NewMigration() {
       cancelled = true;
     };
   }, [formData.target_server_id, formData.target_cluster_server_id, clusterServers.length]);
+
+  // Check where each source domain's apex A currently points, to flag any that no longer resolve to
+  // the source server (already hosted elsewhere). Runs once the account list is in; failures are
+  // non-fatal (the picker just shows no DNS flag).
+  useEffect(() => {
+    if (!formData.source_server_id || accounts.length === 0) {
+      setDnsStatus({});
+      return;
+    }
+    const domains = Array.from(
+      new Set(
+        accounts
+          .map((a: Account) => (a.pointers?.[0] || a.domain || '').trim().toLowerCase())
+          .filter((d) => d && d.includes('.')),
+      ),
+    );
+    if (domains.length === 0) {
+      setDnsStatus({});
+      return;
+    }
+    let cancelled = false;
+    dnsCheck(formData.source_server_id, domains)
+      .then((res) => {
+        if (!cancelled) setDnsStatus(res.results || {});
+      })
+      .catch(() => {
+        if (!cancelled) setDnsStatus({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts, formData.source_server_id]);
 
   // Load cluster servers when target server is selected
   useEffect(() => {
@@ -659,6 +729,13 @@ export default function NewMigration() {
     // More than one account: group them into a batch so they can be watched from one window.
     const runBatchId = selectedAccounts.length > 1 ? newBatchId() : null;
     setBatchId(runBatchId);
+    // Remember this route so the operator can repeat the same source->target in one click next time.
+    writeLastRoute({
+      source_server_id: formData.source_server_id,
+      source_cluster_server_id: formData.source_cluster_server_id || undefined,
+      target_server_id: formData.target_server_id,
+      target_cluster_server_id: formData.target_cluster_server_id || undefined,
+    });
     setCurrentStep('migrating');
     setStarting(true);
     setWarningLogs([]);
@@ -964,6 +1041,25 @@ export default function NewMigration() {
     </span>
   );
 
+  // Quick-repeat: the last route's source and target servers, if both still exist. Shown on the
+  // source step as a one-click shortcut that pre-fills source+target and jumps to account selection.
+  const lastRouteSource = lastRoute ? servers.find((s: Server) => s.id === lastRoute.source_server_id) : undefined;
+  const lastRouteTarget = lastRoute ? servers.find((s: Server) => s.id === lastRoute.target_server_id) : undefined;
+  const canUseLastRoute = !loading && !!lastRoute && !!lastRouteSource && !!lastRouteTarget;
+  const applyLastRoute = () => {
+    if (!lastRoute || !lastRouteSource || !lastRouteTarget) return;
+    setFormData((prev: typeof formData) => ({
+      ...prev,
+      source_server_id: lastRoute.source_server_id,
+      source_cluster_server_id: lastRoute.source_cluster_server_id || '',
+      target_server_id: lastRoute.target_server_id,
+      target_cluster_server_id: lastRoute.target_cluster_server_id || '',
+    }));
+    setSelectedAccounts([]);
+    setSearchTerm('');
+    setCurrentStep('select_accounts');
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader title={t('newmigration.title')} description={t('newmigration.description')} />
@@ -982,6 +1078,26 @@ export default function NewMigration() {
       {/* Step 1: Select Source Server */}
       {currentStep === 'select_source' && (
         <div key={currentStep} className="motion-safe:animate-rise">
+          {canUseLastRoute && (
+            <Card edge="brand" className="mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 font-medium text-slate-800 dark:text-slate-100">
+                    <BoltIcon className="h-5 w-5 text-brand-500" />
+                    {t('newmigration.lastRoute.title')}
+                  </div>
+                  <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                    <Mono>{lastRouteSource!.name}</Mono>
+                    <span className="mx-1.5 text-slate-400">→</span>
+                    <Mono>{lastRouteTarget!.name}</Mono>
+                  </div>
+                </div>
+                <Button variant="primary" rightIcon={<ArrowRightIcon className="flip-rtl" />} onClick={applyLastRoute}>
+                  {t('newmigration.lastRoute.use')}
+                </Button>
+              </div>
+            </Card>
+          )}
           <Card>
             <CardHeader
               actions={
@@ -1246,6 +1362,7 @@ export default function NewMigration() {
                 onSort={handleSort}
                 onShowEmails={setEmailModalAccount}
                 onShowDatabases={setDbModalAccount}
+                dnsStatus={dnsStatus}
               />
             )}
 

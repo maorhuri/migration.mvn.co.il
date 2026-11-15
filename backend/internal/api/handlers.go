@@ -64,6 +64,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.GET("/:id/info", h.getServerInfo)
 			servers.GET("/:id/cluster-servers", h.listClusterServers)
 			servers.GET("/:id/existing-domains", h.listExistingDomains)
+			servers.POST("/:id/dns-check", h.dnsCheck)
 			servers.DELETE("/:id/enhance/websites/:website_id", h.deleteEnhanceWebsite)
 		}
 
@@ -677,6 +678,26 @@ func (h *Handler) listExistingDomains(c *gin.Context) {
 		domains = []string{}
 	}
 	c.JSON(http.StatusOK, gin.H{"domains": domains})
+}
+
+// dnsCheck resolves, for the posted domains, where each apex A currently points (via Cloudflare
+// when the zone is in our account, else a live DNS lookup) and whether that is still this source
+// server's IP -- so the account picker can flag a domain already pointing elsewhere.
+func (h *Handler) dnsCheck(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Domains []string `json:"domains"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	res, err := h.engine.CheckDomainsDNS(c.Request.Context(), id, body.Domains)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 // deleteEnhanceWebsite deletes one website by ID on an Enhance target server -- manual cleanup

@@ -84,6 +84,22 @@ export const getExistingDomains = async (id: string, clusterServerId?: string): 
   return data.domains || [];
 };
 
+/** Per-domain current apex A for a source server's domains, and whether it still points at the source. */
+export interface DomainDNS {
+  domain: string;
+  ip?: string;
+  via?: 'cloudflare' | 'dns' | '';
+  on_source: boolean;
+}
+export interface DNSCheckResult {
+  source_ip?: string;
+  results: Record<string, DomainDNS>;
+}
+export const dnsCheck = async (id: string, domains: string[]): Promise<DNSCheckResult> => {
+  const { data } = await api.post(`/servers/${id}/dns-check`, { domains });
+  return { source_ip: data.source_ip, results: data.results || {} };
+};
+
 // Refresh server accounts (force reload from server)
 export const refreshServerAccounts = async (id: string, clusterServerId?: string): Promise<{ accounts: Account[]; total: number }> => {
   const { data } = await api.post(`/servers/${id}/accounts/refresh`, undefined, { params: clusterServerId ? { cluster_server_id: clusterServerId } : undefined });
