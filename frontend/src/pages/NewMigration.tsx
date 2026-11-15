@@ -131,11 +131,16 @@ export default function NewMigration() {
 
   const [currentStep, setCurrentStep] = useState<MigrationStep>('select_source');
   const [searchTerm, setSearchTerm] = useState('');
-  // Suspended source accounts were already migrated (the operator suspends after the IP switch): hidden by default.
-  const [showSuspended, setShowSuspended] = useState(false);
-  // Accounts already migrated to the chosen target (any domain/alias already hosted there):
-  // hidden by default, same as suspended source accounts.
+  // "Already migrated" means a website for the account actually exists on the chosen target --
+  // that is the only reliable signal, so only these are hidden by default. Suspension on the
+  // SOURCE is not proof of migration (an account can be suspended for other reasons, e.g.
+  // truckers-il.com was suspended yet never migrated), so it no longer hides anything: a suspended
+  // account with no website on the target stays in the list, flagged, instead of silently
+  // vanishing behind an "already migrated" assumption.
   const [showMigrated, setShowMigrated] = useState(false);
+  // Optional focus filter: show only the suspended-but-not-on-target accounts, to triage the ones
+  // that were suspended yet never actually migrated.
+  const [onlySuspendedUnmigrated, setOnlySuspendedUnmigrated] = useState(false);
   // Show only accounts whose domain is hosted in our Cloudflare account (off by default).
   const [onlyCloudflare, setOnlyCloudflare] = useState(false);
   const [existingDomains, setExistingDomains] = useState<string[]>([]);
@@ -782,7 +787,6 @@ export default function NewMigration() {
     }
   };
 
-  const suspendedCount = accounts.filter((acc: Account) => acc.suspended).length;
   const existingDomainsSet = new Set(existingDomains.map((d) => d.toLowerCase()));
   // A migrated account's website on the target is registered under its domain pointer when it
   // has one (the real, customer-facing domain), not acc.domain (often just the internal hosting
@@ -791,10 +795,18 @@ export default function NewMigration() {
     (!!acc.domain && existingDomainsSet.has(acc.domain.toLowerCase())) ||
     !!acc.pointers?.some((p) => existingDomainsSet.has(p.toLowerCase()));
   const migratedCount = existingDomainsSet.size > 0 ? accounts.filter(isAlreadyMigrated).length : 0;
+  // Suspended on the source but with NO website on the target = suspended yet never actually
+  // migrated. These look "done" but are not, so they stay visible and get counted/flagged. Only
+  // computed once the target's domains are known, to avoid false alarms before that list loads.
+  const suspendedNotMigratedCount =
+    existingDomainsSet.size > 0 ? accounts.filter((acc: Account) => acc.suspended && !isAlreadyMigrated(acc)).length : 0;
   const cloudflareCount = accounts.filter((acc: Account) => acc.has_cloudflare).length;
   const filteredAccounts = accounts
-    .filter((acc: Account) => showSuspended || !acc.suspended)
+    // "Already migrated" = a website for this account exists on the target. Suspension on the
+    // source is NOT proof of migration, so it no longer hides anything on its own -- a suspended
+    // account that is not on the target stays in the list (flagged by its suspended status badge).
     .filter((acc: Account) => showMigrated || !isAlreadyMigrated(acc))
+    .filter((acc: Account) => !onlySuspendedUnmigrated || (acc.suspended && !isAlreadyMigrated(acc)))
     .filter((acc: Account) => !onlyCloudflare || acc.has_cloudflare)
     .filter((acc: Account) =>
       acc.domain?.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -920,12 +932,13 @@ export default function NewMigration() {
     return { bytes, databases, mailboxes };
   }, [selectedAccounts]);
 
-  const suspendedToggle = suspendedCount > 0 && (
-    <span className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
-      <span>{showSuspended ? t('newmigration.tray.suspendedShown', { count: suspendedCount }) : t('newmigration.tray.suspendedHidden', { count: suspendedCount })}</span>
-      <span className="hidden sm:inline">{t('newmigration.tray.alreadyMigrated')}</span>
-      <Button size="sm" variant="ghost" onClick={() => setShowSuspended((v) => !v)}>
-        {showSuspended ? t('newmigration.tray.hide') : t('newmigration.tray.show')}
+  // Suspended on the source but not present on the target: suspended yet never actually migrated.
+  // They stay in the list (flagged) by default; this warns about them and offers a one-click focus.
+  const suspendedUnmigratedToggle = suspendedNotMigratedCount > 0 && (
+    <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+      <span>{t('newmigration.tray.suspendedUnmigrated', { count: suspendedNotMigratedCount })}</span>
+      <Button size="sm" variant="ghost" onClick={() => setOnlySuspendedUnmigrated((v) => !v)}>
+        {onlySuspendedUnmigrated ? t('newmigration.tray.cloudflareShowAll') : t('newmigration.tray.suspendedUnmigratedOnly')}
       </Button>
     </span>
   );
@@ -1243,7 +1256,7 @@ export default function NewMigration() {
                     ? t('newmigration.tray.shownOf', { count: filteredAccounts.length, total: accounts.length })
                     : t('newmigration.tray.shown', { count: filteredAccounts.length })}
                 </span>
-                {!isAgentlessSource && suspendedToggle}
+                {!isAgentlessSource && suspendedUnmigratedToggle}
                 {!isAgentlessSource && migratedToggle}
                 {!isAgentlessSource && cloudflareToggle}
                 {selectedAccounts.length === 0 && !isAgentlessSource && (
