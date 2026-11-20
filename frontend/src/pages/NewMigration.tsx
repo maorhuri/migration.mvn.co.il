@@ -364,21 +364,20 @@ export default function NewMigration() {
     if (isAgentlessSource && accounts.length === 1) setSelectedAccounts([accounts[0]]);
   }, [isAgentlessSource, accounts]);
 
-  // Domains already hosted on the chosen target: fetched once the target (and, when it has
-  // more than one node, the cluster server) is chosen, so the accounts step can hide them.
+  // Domains already hosted ANYWHERE on the chosen target's Enhance org (every node), fetched as soon
+  // as the target is chosen. Enhance enforces domain uniqueness across all nodes, so a domain that
+  // already exists on any node -- even one other than the selected target node, even unassigned --
+  // blocks creating the website and fails the migration at the create-website step. Checking the
+  // whole org (not just the selected node) lets the accounts step hide those up front, instead of
+  // letting staff queue a run that is doomed to fail with "already exists on a different server".
   useEffect(() => {
     if (!formData.target_server_id) {
       setExistingDomains([]);
       return;
     }
-    // A multi-node target needs the node chosen first; a single-node one auto-selects it.
-    if (clusterServers.length > 1 && !formData.target_cluster_server_id) {
-      setExistingDomains([]);
-      return;
-    }
     let cancelled = false;
     setLoadingExistingDomains(true);
-    getExistingDomains(formData.target_server_id, formData.target_cluster_server_id || undefined)
+    getExistingDomains(formData.target_server_id)
       .then((domains) => {
         if (!cancelled) setExistingDomains(domains);
       })
@@ -391,7 +390,7 @@ export default function NewMigration() {
     return () => {
       cancelled = true;
     };
-  }, [formData.target_server_id, formData.target_cluster_server_id, clusterServers.length]);
+  }, [formData.target_server_id]);
 
   // Check where each source domain's apex A currently points, to flag any that no longer resolve to
   // the source server (already hosted elsewhere). Runs once the account list is in; failures are
