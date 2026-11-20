@@ -39,6 +39,17 @@ type Engine struct {
 	cfMu        sync.Mutex
 	cfDomainIn  map[string]bool
 	cfCheckedAt time.Time
+
+	// Cached "domain -> appServerId" placement per Enhance target, so the start-time duplicate-domain
+	// preflight lists the org once per TTL instead of once per account (a batch starts many at once).
+	enhMu    sync.Mutex
+	enhPlace map[string]enhPlacement // keyed by target server id
+}
+
+// enhPlacement is one target Enhance org's domain->appServerId map with the time it was fetched.
+type enhPlacement struct {
+	byDomain map[string]string
+	at       time.Time
 }
 
 // NewEngine creates a new migration engine
@@ -48,6 +59,12 @@ func NewEngine(db *storage.Database, log *logger.Logger, workDir string) *Engine
 
 // ErrClusterServerRequired is returned when an Enhance target is used without an explicit cluster server.
 var ErrClusterServerRequired = errors.New("target cluster server must be selected for Enhance targets: refusing to create websites with default placement")
+
+// ErrDomainExistsElsewhere is returned when a migration is started for an account whose domain
+// already exists in the target Enhance org on a DIFFERENT server than the selected one. Enhance
+// enforces domain uniqueness org-wide, so creating the website would fail -- we refuse up front
+// instead of letting the run burn a minute and die at the create-website step.
+var ErrDomainExistsElsewhere = errors.New("domain already exists in Enhance on a different server")
 
 // MigrationRequest represents a migration request
 type MigrationRequest struct {
@@ -100,6 +117,14 @@ type MigrationResult struct {
 
 // StartMigration starts a new migration
 func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*MigrationResult, error) {
+	// Refuse up front when the account's domain already exists in the target Enhance org on a
+	// different server: the create-website step would fail anyway, so blocking here saves a doomed
+	// run. Best-effort: any uncertainty (not Enhance, Enhance unreachable, no cached domains) falls
+	// through to the normal flow, where createWebsite still guards the same case.
+	if err := e.preflightEnhanceDomainFree(ctx, req); err != nil {
+		return nil, err
+	}
+
 	migration := &storage.Migration{
 		SourceServerID:  req.SourceServerID,
 		TargetServerID:  req.TargetServerID,
@@ -172,6 +197,125 @@ func (e *Engine) StartMigration(ctx context.Context, req *MigrationRequest) (*Mi
 	go e.runMigration(context.Background(), migrationID, sourceServer, targetServer, req, migrationDir, nil)
 
 	return result, nil
+}
+
+// preflightEnhanceDomainFree returns ErrDomainExistsElsewhere when the account to migrate has a
+// domain that already exists in the target Enhance org on a server OTHER than the selected one
+// (Enhance enforces domain uniqueness org-wide, so createWebsite would fail). It is deliberately
+// best-effort: a non-Enhance target, an unreachable Enhance, or no cached domains for the account
+// all return nil so the migration proceeds normally -- createWebsite remains the hard backstop.
+func (e *Engine) preflightEnhanceDomainFree(ctx context.Context, req *MigrationRequest) error {
+	// Only Enhance targets have this constraint, and only once a node is chosen -- without one the
+	// ErrClusterServerRequired check downstream is the right error, so leave it to that.
+	if req.TargetClusterServerID == "" {
+		return nil
+	}
+	targetServer, err := e.db.GetServer(ctx, req.TargetServerID)
+	if err != nil || common.PanelType(targetServer.PanelType) != common.PanelTypeEnhance {
+		return nil
+	}
+
+	// Candidate domains this account will try to register on the target: the chosen target domain
+	// plus the cached account's primary domain, pointers and addon domains (any of them colliding
+	// in Enhance fails the run).
+	cands := e.accountRegisterDomains(ctx, req)
+	if len(cands) == 0 {
+		return nil
+	}
+
+	placement := e.enhanceDomainPlacement(ctx, targetServer)
+	if placement == nil {
+		return nil // cannot verify -> let the normal flow (and createWebsite's own check) handle it
+	}
+	for _, d := range cands {
+		// On the selected node it is a valid re-run (createWebsite reuses it); only a DIFFERENT
+		// server is a blocking collision.
+		if srv, ok := placement[d]; ok && srv != req.TargetClusterServerID {
+			return fmt.Errorf("%w: %s already exists in Enhance on another server (appServerId=%s); move or delete it there first", ErrDomainExistsElsewhere, d, srv)
+		}
+	}
+	return nil
+}
+
+// enhanceDomainPlacement returns the target Enhance org's domain->appServerId map (domains and
+// aliases, normalized), cached briefly so a batch of starts lists the org once rather than per
+// account. Returns nil when the org cannot be listed, so the caller skips the preflight.
+func (e *Engine) enhanceDomainPlacement(ctx context.Context, targetServer *storage.Server) map[string]string {
+	const ttl = 45 * time.Second
+	e.enhMu.Lock()
+	if p, ok := e.enhPlace[targetServer.ID]; ok && time.Since(p.at) < ttl {
+		e.enhMu.Unlock()
+		return p.byDomain
+	}
+	e.enhMu.Unlock()
+
+	apiKey, _ := e.db.GetServerAPIKey(ctx, targetServer.ID)
+	en := enhance.New()
+	if err := en.ConnectAPI(ctx, e.db.ToConnectionConfig(targetServer), apiKey); err != nil {
+		return nil
+	}
+	sites, err := en.ListWebsites(ctx, "")
+	if err != nil {
+		return nil
+	}
+	byDomain := make(map[string]string, len(sites))
+	for _, ws := range sites {
+		if d := normalizeDomain(ws.Domain.Domain); d != "" {
+			byDomain[d] = ws.AppServerID
+		}
+		for _, a := range ws.Aliases {
+			if d := normalizeDomain(a.Domain); d != "" {
+				byDomain[d] = ws.AppServerID
+			}
+		}
+	}
+	e.enhMu.Lock()
+	if e.enhPlace == nil {
+		e.enhPlace = map[string]enhPlacement{}
+	}
+	e.enhPlace[targetServer.ID] = enhPlacement{byDomain: byDomain, at: time.Now()}
+	e.enhMu.Unlock()
+	return byDomain
+}
+
+// accountRegisterDomains returns the normalized domains the account named in req would register on
+// the target: the explicit target domain plus the cached source account's primary domain, pointers
+// and addon domains. Missing cache or metadata simply yields fewer candidates.
+func (e *Engine) accountRegisterDomains(ctx context.Context, req *MigrationRequest) []string {
+	set := map[string]bool{}
+	add := func(d string) {
+		if d = normalizeDomain(d); d != "" {
+			set[d] = true
+		}
+	}
+	add(req.TargetDomain)
+	if accts, err := e.db.GetServerAccounts(ctx, req.SourceServerID); err == nil {
+		for _, a := range accts {
+			if a.Username != req.Username {
+				continue
+			}
+			add(a.Domain)
+			if len(a.Metadata) > 0 {
+				var md struct {
+					Pointers     []string `json:"pointers"`
+					AddonDomains []string `json:"addon_domains"`
+				}
+				if json.Unmarshal(a.Metadata, &md) == nil {
+					for _, p := range md.Pointers {
+						add(p)
+					}
+					for _, p := range md.AddonDomains {
+						add(p)
+					}
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for d := range set {
+		out = append(out, d)
+	}
+	return out
 }
 
 // runMigration executes the migration process. resumeExportData, when non-nil, is the export

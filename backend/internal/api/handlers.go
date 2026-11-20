@@ -912,6 +912,12 @@ func (h *Handler) startMigration(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
+		// The domain already exists in Enhance on a different server: creating it would fail, so we
+		// refused to start. A conflict the operator must resolve in Enhance, not an internal error.
+		if errors.Is(err, migration.ErrDomainExistsElsewhere) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

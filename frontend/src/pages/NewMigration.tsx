@@ -525,16 +525,24 @@ export default function NewMigration() {
       });
     } catch (error) {
       const resp = (error as { response?: { status?: number; data?: { error?: string } } })?.response;
-      // 409 = another operator/tab already has this account migrating (backend guard). Show a clear
-      // localized reason instead of the raw "request failed" so staff know it's a conflict, not a bug.
+      const serverMsg = resp?.data?.error || '';
+      // Two different 409s: the domain already exists in Enhance on another server (refused up front,
+      // not an in-flight run), or another operator/tab already has this account migrating. Show a
+      // clear localized reason for each instead of the raw "request failed".
+      const domainCollision = resp?.status === 409 && /exists in Enhance/i.test(serverMsg);
       const errorMessage =
         resp?.status === 409
-          ? t('newmigration.error.alreadyInProgress')
-          : resp?.data?.error || (error instanceof Error ? error.message : String(error));
+          ? domainCollision
+            ? t('newmigration.error.domainExistsElsewhere')
+            : t('newmigration.error.alreadyInProgress')
+          : serverMsg || (error instanceof Error ? error.message : String(error));
       updateStep(0, 'error', errorMessage);
       patchRun(username, (r) => ({ ...r, status: 'failed' }));
-      // Reflect the conflicting run in the picker so the row locks right away.
-      setInProgressUsernames((prev) => new Set(prev).add(username));
+      // Only the "already migrating" conflict is an in-flight run worth locking the row for; a domain
+      // collision is not.
+      if (resp?.status === 409 && !domainCollision) {
+        setInProgressUsernames((prev) => new Set(prev).add(username));
+      }
       return;
     }
 

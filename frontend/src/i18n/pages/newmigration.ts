@@ -258,6 +258,7 @@ export const newmigration: PageDict = {
     'newmigration.error.failed': 'המיגרציה נכשלה',
     'newmigration.error.timeout': 'המיגרציה חרגה מהזמן המוקצב. בדוק את היומנים בשרת.',
     'newmigration.error.alreadyInProgress': 'כבר מתבצעת מיגרציה לחשבון הזה',
+    'newmigration.error.domainExistsElsewhere': 'הדומיין כבר קיים ב-Enhance על שרת אחר — העבר או מחק אותו שם קודם',
   },
   en: {
     'newmigration.title': 'New migration',
@@ -512,5 +513,6 @@ export const newmigration: PageDict = {
     'newmigration.error.failed': 'Migration failed',
     'newmigration.error.timeout': 'Migration timeout - please check the server logs',
     'newmigration.error.alreadyInProgress': 'A migration for this account is already in progress',
+    'newmigration.error.domainExistsElsewhere': 'The domain already exists in Enhance on a different server — move or delete it there first',
   },
 };
