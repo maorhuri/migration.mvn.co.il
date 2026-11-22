@@ -267,14 +267,26 @@ func (e *Engine) resolveApexA(ctx context.Context, client *cloudflare.Client, do
 }
 
 // apexARecord returns the content of the A record whose name is exactly domain (the apex), or "".
+// apexARecord returns the origin IP the zone holds for domain: the exact A record if there is one,
+// otherwise a wildcard A record (e.g. *.example.com) that covers it. Preferring the zone's A record
+// over a live DNS lookup is what lets a proxied domain report its real origin instead of a
+// Cloudflare edge IP -- including subdomains served only by a wildcard, which have no exact record.
 func apexARecord(recs []cloudflare.DNSRecord, domain string) string {
 	domain = normalizeDomain(domain)
+	wildcard := ""
 	for _, r := range recs {
-		if r.Type == "A" && normalizeDomain(r.Name) == domain {
-			return r.Content
+		if r.Type != "A" {
+			continue
+		}
+		rawName := strings.ToLower(strings.TrimSuffix(r.Name, "."))
+		if normalizeDomain(rawName) == domain {
+			return r.Content // an exact record always wins
+		}
+		if base := strings.TrimPrefix(rawName, "*."); base != rawName && base != "" && strings.HasSuffix(domain, "."+base) {
+			wildcard = r.Content
 		}
 	}
-	return ""
+	return wildcard
 }
 
 // cloudflareCIDRs is Cloudflare's published IPv4 edge ranges (https://www.cloudflare.com/ips/).
