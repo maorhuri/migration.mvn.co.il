@@ -2028,6 +2028,32 @@ func sedEscapeRepl(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `/`, `\/`, `&`, `\&`).Replace(s)
 }
 
+// countMysqlErrors counts the "ERROR ...." lines the mysql client prints (to the merged output)
+// for statements it skipped under --force.
+func countMysqlErrors(out string) int {
+	n := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "ERROR ") {
+			n++
+		}
+	}
+	return n
+}
+
+// firstMysqlError returns the first skipped-statement error line, truncated for the log.
+func firstMysqlError(out string) string {
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		if strings.HasPrefix(ln, "ERROR ") {
+			if len(ln) > 140 {
+				ln = ln[:140] + "…"
+			}
+			return ln
+		}
+	}
+	return ""
+}
+
 func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB, actualUser, password, host string) (int, error) {
 	reader := "cat " + shq(remoteDump)
 	if strings.HasSuffix(remoteDump, ".gz") {
@@ -2077,7 +2103,13 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 	e.logf("info", "Loading the dump of %s into %s (host %s); the table count is logged every 30s until it finishes", sourceName, actualDB, hostLabel)
 	loadStart := time.Now()
 	stopPoll := e.pollTableCount(ctx, hostFlag, actualUser, password, actualDB)
-	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
+	// --force: continue past a single bad statement instead of aborting the whole import. A dump
+	// taken from a source with a corrupt unique index can carry duplicate rows (e.g. two wp_options
+	// with the same option_name), which otherwise kill the entire import on the first one and leave
+	// the site un-migratable. With --force that row is skipped and the rest loads; the skipped count
+	// is surfaced below so the result is transparent. A fatal connection drop (max_allowed_packet)
+	// still aborts and is handled as before.
+	cmd := fmt.Sprintf("set -o pipefail 2>/dev/null; %s | %s | mysql%s --force -u %s -p%s %s 2>&1", reader, filter, hostFlag, shq(actualUser), shq(password), shq(actualDB))
 	out, err := e.nodeRun(ctx, cmd)
 	stopPoll()
 	if err != nil {
@@ -2095,6 +2127,12 @@ func (e *Enhance) loadDump(ctx context.Context, remoteDump, sourceName, actualDB
 				actualDB, hostLabel, tail, limit, detail, tail)
 		}
 		return 0, fmt.Errorf("mysql import of %s failed on node (host %s): %s", actualDB, hostLabel, tail)
+	}
+
+	// --force let the load finish past any bad statements; report how many were skipped so a
+	// partially-loaded database is never silently treated as perfect.
+	if skipped := countMysqlErrors(out); skipped > 0 {
+		e.warnf("Database %s: %d statement(s) were skipped during import (loaded with --force so one bad row does not abort the whole database -- usually duplicate rows from a corrupt source unique index). The rest loaded; review the site. First error: %s", actualDB, skipped, firstMysqlError(out))
 	}
 
 	// Verify with the same host that worked for the import; MariaDB's client prints a
