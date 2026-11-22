@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, BoltIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
+import { ArrowDownTrayIcon, ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, BoltIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import toast from 'react-hot-toast';
 import { getServers, getServerAccounts, getClusterServers, getExistingDomains, dnsCheck, targetStatus, type ClusterServer, type DomainDNS, type TargetDomainStatus, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
 import type { Server, Account, MigrationLog, ScanReport } from '../types';
@@ -12,8 +12,10 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
+  Checkbox,
   EmptyState,
   Input,
+  Modal,
   Mono,
   PageHeader,
   SkeletonTable,
@@ -76,6 +78,35 @@ function writeLastRoute(r: LastRoute): void {
     localStorage.setItem(LAST_ROUTE_KEY, JSON.stringify(r));
   } catch {
     /* ignore: a remembered route is a convenience, never required */
+  }
+}
+
+// --- Account list export (CSV / TXT) ---------------------------------------------------------
+// The categories an operator can combine to pick which accounts to export; the exported set is the
+// UNION of the checked categories (so "suspended" + "not on source" exports accounts matching
+// either). 'all' covers everything.
+type ExportCat = 'all' | 'onTarget' | 'notOnTarget' | 'suspended' | 'offSource' | 'cloudflare';
+const EXPORT_CATS: ExportCat[] = ['all', 'onTarget', 'notOnTarget', 'suspended', 'offSource', 'cloudflare'];
+
+function csvCell(v: string | number | boolean | undefined): string {
+  const s = v === undefined || v === null ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// Trigger a client-side file download; guarded so it never throws in a restricted context.
+function downloadTextFile(name: string, content: string, mime: string): void {
+  try {
+    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    /* download unavailable in this context */
   }
 }
 
@@ -183,6 +214,10 @@ export default function NewMigration() {
   // fetched lazily only while that focus is active.
   const [targetStatusMap, setTargetStatusMap] = useState<Record<string, TargetDomainStatus>>({});
   const [loadingTargetStatus, setLoadingTargetStatus] = useState(false);
+  // Export dialog: which categories to include (union) and the file format.
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportCats, setExportCats] = useState<Set<ExportCat>>(new Set<ExportCat>(['all']));
+  const [exportFormat, setExportFormat] = useState<'csv' | 'txt'>('csv');
   // Show only accounts whose domain is hosted in our Cloudflare account (off by default).
   const [onlyCloudflare, setOnlyCloudflare] = useState(false);
   const [existingDomains, setExistingDomains] = useState<string[]>([]);
@@ -1114,6 +1149,66 @@ export default function NewMigration() {
     setCurrentStep('select_accounts');
   };
 
+  // --- Export: the accounts matching the chosen categories (union), and the file builder. --------
+  const normDom = (d: string) => d.trim().toLowerCase().replace(/^www\./, '').replace(/^\.+|\.+$/g, '');
+  const accountDomain = (a: Account) => a.pointers?.[0] || a.domain || '';
+  const exportMatches = (a: Account, cat: ExportCat): boolean => {
+    switch (cat) {
+      case 'all':
+        return true;
+      case 'onTarget':
+        return isAlreadyMigrated(a);
+      case 'notOnTarget':
+        return !isAlreadyMigrated(a);
+      case 'suspended':
+        return !!a.suspended;
+      case 'offSource': {
+        const d = dnsStatus[normDom(accountDomain(a))];
+        return !!d && !!d.ip && !d.on_source;
+      }
+      case 'cloudflare':
+        return !!a.has_cloudflare;
+      default:
+        return false;
+    }
+  };
+  const exportAccounts = exportCats.size === 0 ? [] : accounts.filter((a: Account) => [...exportCats].some((c) => exportMatches(a, c)));
+  const handleExport = () => {
+    if (exportAccounts.length === 0) return;
+    const base = `migration-accounts-${new Date().toISOString().slice(0, 10)}`;
+    if (exportFormat === 'txt') {
+      const lines = exportAccounts.map((a: Account) => accountDomain(a) || a.username).filter(Boolean);
+      downloadTextFile(`${base}.txt`, lines.join('\n') + '\n', 'text/plain');
+    } else {
+      const header = ['domain', 'username', 'suspended', 'cloudflare', 'on_target', 'node', 'serves_from_node', 'dns_ip', 'dns_on_source', 'php_version', 'disk', 'db_size'];
+      const rows = exportAccounts.map((a: Account) => {
+        const dom = accountDomain(a);
+        const ts = targetStatusMap[normDom(dom)];
+        const dn = dnsStatus[normDom(dom)];
+        return [
+          dom,
+          a.username || '',
+          a.suspended ? 'yes' : 'no',
+          a.has_cloudflare ? 'yes' : 'no',
+          isAlreadyMigrated(a) ? 'yes' : 'no',
+          ts?.app_server_name || '',
+          ts ? (ts.serves_from_node ? 'yes' : 'no') : '',
+          dn?.ip || '',
+          dn?.ip ? (dn.on_source ? 'yes' : 'no') : '',
+          a.php_version || '',
+          a.disk_used || '',
+          a.db_size || '',
+        ]
+          .map(csvCell)
+          .join(',');
+      });
+      // Prepend a BOM so Excel opens the UTF-8 (Hebrew) content correctly.
+      const csv = '﻿' + [header.join(','), ...rows].join('\n') + '\n';
+      downloadTextFile(`${base}.csv`, csv, 'text/csv');
+    }
+    setExportOpen(false);
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader title={t('newmigration.title')} description={t('newmigration.description')} />
@@ -1345,6 +1440,9 @@ export default function NewMigration() {
                   )}
                   <Button size="sm" variant="secondary" leftIcon={<ArrowPathIcon />} onClick={handleRefreshAccounts} loading={refreshingAccounts} disabled={loadingAccounts} title={t('newmigration.accounts.refreshTitle')}>
                     {t('newmigration.accounts.refresh')}
+                  </Button>
+                  <Button size="sm" variant="secondary" leftIcon={<ArrowDownTrayIcon />} onClick={() => setExportOpen(true)} disabled={loadingAccounts || accounts.length === 0} title={t('newmigration.export.title')}>
+                    {t('newmigration.export.button')}
                   </Button>
                   <Button size="sm" variant="ghost" leftIcon={<ArrowLeftIcon className="flip-rtl" />} onClick={() => setCurrentStep('select_target')}>
                     {t('common.back')}
@@ -1601,6 +1699,62 @@ export default function NewMigration() {
 
       <EmailAccountsModal account={emailModalAccount} onClose={() => setEmailModalAccount(null)} />
       <DatabasesModal account={dbModalAccount} onClose={() => setDbModalAccount(null)} />
+
+      <Modal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title={t('newmigration.export.title')}
+        description={t('newmigration.export.description')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setExportOpen(false)}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="primary" leftIcon={<ArrowDownTrayIcon />} onClick={handleExport} disabled={exportAccounts.length === 0}>
+              {t('newmigration.export.download', { count: exportAccounts.length, format: exportFormat.toUpperCase() })}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-200">{t('newmigration.export.categories')}</div>
+            <div className="space-y-1.5">
+              {EXPORT_CATS.map((cat) => {
+                const count = accounts.filter((a: Account) => exportMatches(a, cat)).length;
+                return (
+                  <label key={cat} className="flex cursor-pointer items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                    <Checkbox
+                      checked={exportCats.has(cat)}
+                      onChange={() =>
+                        setExportCats((prev) => {
+                          const n = new Set(prev);
+                          if (n.has(cat)) n.delete(cat);
+                          else n.add(cat);
+                          return n;
+                        })
+                      }
+                    />
+                    <span>{t(`newmigration.export.cat.${cat}`)}</span>
+                    <span className="text-xs text-slate-400 dark:text-slate-500">({count})</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-200">{t('newmigration.export.format')}</div>
+            <div className="flex gap-2">
+              {(['csv', 'txt'] as const).map((f) => (
+                <Button key={f} size="sm" variant={exportFormat === f ? 'primary' : 'secondary'} onClick={() => setExportFormat(f)}>
+                  {f.toUpperCase()}
+                </Button>
+              ))}
+            </div>
+            <div className="mt-1.5 text-xs text-slate-400 dark:text-slate-500">{exportFormat === 'txt' ? t('newmigration.export.txtHint') : t('newmigration.export.csvHint')}</div>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
