@@ -145,7 +145,9 @@ export function AccountsTable({
           // server (it may already be hosted elsewhere / moved) -- a domain correctly on the source
           // shows nothing.
           const dns = dnsStatus && displayDomain ? dnsStatus[normDomain(displayDomain)] : undefined;
-          const dnsOffSource = !!dns && !!dns.ip && !dns.on_source;
+          // Flag only a real IP that is neither the source (or a node in the source cluster) nor a
+          // Cloudflare edge (proxied: origin unknown from DNS, so not evidence of "hosted elsewhere").
+          const dnsOffSource = !!dns && !!dns.ip && !dns.on_source && !dns.proxied;
           // "Already on target" focus: where this domain lives on the target and whether the node
           // actually serves it live.
           const tgt = targetStatus && displayDomain ? targetStatus[normDomain(displayDomain)] : undefined;

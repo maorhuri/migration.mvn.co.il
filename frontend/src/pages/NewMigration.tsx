@@ -1164,7 +1164,7 @@ export default function NewMigration() {
         return !!a.suspended;
       case 'offSource': {
         const d = dnsStatus[normDom(accountDomain(a))];
-        return !!d && !!d.ip && !d.on_source;
+        return !!d && !!d.ip && !d.on_source && !d.proxied;
       }
       case 'cloudflare':
         return !!a.has_cloudflare;

@@ -90,6 +90,8 @@ export interface DomainDNS {
   ip?: string;
   via?: 'cloudflare' | 'dns' | '';
   on_source: boolean;
+  /** The IP is a Cloudflare edge IP (the domain is proxied) — its real origin can't be read from DNS. */
+  proxied?: boolean;
 }
 export interface DNSCheckResult {
   source_ip?: string;

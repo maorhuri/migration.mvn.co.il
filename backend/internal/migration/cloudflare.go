@@ -159,7 +159,8 @@ type DomainDNS struct {
 	Domain   string `json:"domain"`
 	IP       string `json:"ip,omitempty"`  // current apex A content ("" if none / lookup failed)
 	Via      string `json:"via,omitempty"` // "cloudflare" (zone in our account) or "dns" (live lookup)
-	OnSource bool   `json:"on_source"`     // the IP equals the source server's IP
+	OnSource bool   `json:"on_source"`     // the IP belongs to the source server (or, for an Enhance source, any node in its cluster)
+	Proxied  bool   `json:"proxied"`       // the IP is a Cloudflare edge IP: the domain is proxied and its real origin cannot be read from DNS
 }
 
 // DNSCheckResult reports, per domain, where its apex A currently points and whether that is still
@@ -179,7 +180,25 @@ func (e *Engine) CheckDomainsDNS(ctx context.Context, serverID string, domains [
 	if err != nil {
 		return nil, fmt.Errorf("server not found: %w", err)
 	}
+	// The set of IPs that count as "on the source". For a single-server source that's just its IP;
+	// for an Enhance cluster source the websites live on the cluster's nodes, each with its own IP,
+	// so a domain served by ANY node is still on the source -- comparing only to the console IP would
+	// wrongly flag every cluster-hosted site as "hosted elsewhere".
 	sourceIP := resolveOldSourceIP(server.Host)
+	sourceIPs := map[string]bool{}
+	if sourceIP != "" {
+		sourceIPs[sourceIP] = true
+	}
+	if common.PanelType(server.PanelType) == common.PanelTypeEnhance {
+		apiKey, _ := e.db.GetServerAPIKey(ctx, server.ID)
+		if nodes, nerr := e.GetEnhanceClusterServers(ctx, server, apiKey); nerr == nil {
+			for _, n := range nodes {
+				if n.IP != "" {
+					sourceIPs[n.IP] = true
+				}
+			}
+		}
+	}
 	out := &DNSCheckResult{SourceIP: sourceIP, Results: map[string]DomainDNS{}}
 
 	seen := map[string]bool{}
@@ -219,7 +238,7 @@ func (e *Engine) CheckDomainsDNS(ctx context.Context, serverID string, domains [
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			ip, via := e.resolveApexA(cctx, client, d)
-			ch <- res{d, DomainDNS{Domain: d, IP: ip, Via: via, OnSource: ip != "" && sourceIP != "" && ip == sourceIP}}
+			ch <- res{d, DomainDNS{Domain: d, IP: ip, Via: via, OnSource: ip != "" && sourceIPs[ip], Proxied: isCloudflareIP(ip)}}
 		}(d)
 	}
 	go func() { wg.Wait(); close(ch) }()
@@ -256,6 +275,39 @@ func apexARecord(recs []cloudflare.DNSRecord, domain string) string {
 		}
 	}
 	return ""
+}
+
+// cloudflareCIDRs is Cloudflare's published IPv4 edge ranges (https://www.cloudflare.com/ips/).
+// A proxied domain resolves into one of these, which hides its real origin, so such an IP must not
+// be read as "hosted on server X".
+var cloudflareCIDRs = func() []*net.IPNet {
+	ranges := []string{
+		"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+		"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+		"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+		"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	}
+	nets := make([]*net.IPNet, 0, len(ranges))
+	for _, r := range ranges {
+		if _, n, err := net.ParseCIDR(r); err == nil {
+			nets = append(nets, n)
+		}
+	}
+	return nets
+}()
+
+// isCloudflareIP reports whether ip is one of Cloudflare's edge IPs (a proxied domain).
+func isCloudflareIP(ip string) bool {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return false
+	}
+	for _, n := range cloudflareCIDRs {
+		if n.Contains(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupFirstIPv4 resolves domain and returns its first IPv4 address, or "" on any failure.
