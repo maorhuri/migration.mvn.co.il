@@ -5,16 +5,25 @@ import (
 	"strings"
 )
 
-// mysqldump aborts the whole dump on the first table it cannot read -- typically a table whose
-// InnoDB tablespace is missing or corrupt on the source ("Couldn't execute 'show create table
-// `x`': Got error 194 "Tablespace is missing for a table""), or one that vanished mid-dump. Its
-// error names the statement it was running, which names the table.
-var brokenDumpTableRe = regexp.MustCompile("(?i)Couldn't execute '[^']*?`([^`]+)`")
+// mysqldump aborts the whole dump on the first table it cannot read. The cause varies:
+//   - a missing/corrupt InnoDB tablespace ("Couldn't execute 'show create table `x`': Got error
+//     194 ...Tablespace is missing..."), or a table that vanished mid-dump -- the error names the
+//     statement it was running, which names the table;
+//   - a corrupt index or a crashed MyISAM table ("Error 1034: Index for table 'x' is corrupt..."
+//     / "Error 145: Table 'x' is marked as crashed...") -- mysqldump then appends "when dumping
+//     table `x` at row: N", which names the table for ANY such per-table failure.
+// These two regexes, tried in order, pull the table name out of either form.
+var brokenDumpTableRes = []*regexp.Regexp{
+	regexp.MustCompile("(?i)Couldn't execute '[^']*?`([^`]+)`"),
+	regexp.MustCompile("(?i)when dumping table `([^`]+)`"),
+}
 
 // BrokenDumpTable returns the table mysqldump could not read, from its error output, or "".
 func BrokenDumpTable(out string) string {
-	if m := brokenDumpTableRe.FindStringSubmatch(out); m != nil {
-		return m[1]
+	for _, re := range brokenDumpTableRes {
+		if m := re.FindStringSubmatch(out); m != nil {
+			return m[1]
+		}
 	}
 	return ""
 }
