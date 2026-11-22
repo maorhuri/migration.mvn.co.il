@@ -90,6 +90,13 @@ export const newmigration: PageDict = {
     'newmigration.table.cloudflare': 'הדומיין מתארח בחשבון ה-Cloudflare שלנו',
     'newmigration.table.dnsOffSourceHint': 'מפנה כרגע ל-{ip} (דרך {via}) — לא לשרת המקור. ייתכן שהאתר כבר מתארח במקום אחר; בדוק לפני המיגרציה.',
     'newmigration.table.dnsViaLookup': 'בדיקת DNS',
+    'newmigration.table.onNode': 'בשרת: {node}',
+    'newmigration.table.onNodeHint': 'האתר כבר קיים ב-Enhance על הנוד הזה',
+    'newmigration.table.onNodeUnknown': 'שרת לא ידוע',
+    'newmigration.table.servesLive': 'עולה מהשרת ✓',
+    'newmigration.table.servesFromNodeHint': 'הנוד מגיש את האתר בפועל (HTTP {code})',
+    'newmigration.table.notServing': 'לא עולה מהשרת',
+    'newmigration.table.notServingHint': 'הנוד לא מגיש את האתר — ייתכן שהוא לא חי שם (רשומת אתר בלבד)',
     'newmigration.table.viewItems': 'הצג {items} של {name}',
 
     // Selection tray
@@ -102,6 +109,7 @@ export const newmigration: PageDict = {
     'newmigration.tray.suspendedUnmigrated_one': '⚠️ חשבון מושהה אחד שאינו קיים ביעד — מוצג, ודא אם באמת עבר',
     'newmigration.tray.suspendedUnmigrated_other': '⚠️ {count} חשבונות מושהים שאינם קיימים ביעד — מוצגים, ודא אם באמת עברו',
     'newmigration.tray.suspendedUnmigratedOnly': 'הצג רק אלה',
+    'newmigration.tray.checkingTarget': 'בודק ביעד…',
     'newmigration.tray.onTargetHidden_one': 'אתר אחד שכבר קיים ביעד מוסתר',
     'newmigration.tray.onTargetHidden_other': '{count} שכבר קיימים ביעד מוסתרים',
     'newmigration.tray.onTargetShown_one': 'אתר אחד שכבר קיים ביעד מוצג',
@@ -345,6 +353,13 @@ export const newmigration: PageDict = {
     'newmigration.table.cloudflare': 'Domain is in our Cloudflare account',
     'newmigration.table.dnsOffSourceHint': 'Currently points at {ip} (via {via}) — not the source server. The site may already be hosted elsewhere; check before migrating.',
     'newmigration.table.dnsViaLookup': 'DNS lookup',
+    'newmigration.table.onNode': 'On node: {node}',
+    'newmigration.table.onNodeHint': 'The website already exists in Enhance on this node',
+    'newmigration.table.onNodeUnknown': 'Unknown node',
+    'newmigration.table.servesLive': 'Serves from node ✓',
+    'newmigration.table.servesFromNodeHint': 'The node actually serves the site (HTTP {code})',
+    'newmigration.table.notServing': 'Not serving from node',
+    'newmigration.table.notServingHint': 'The node does not serve the site — it may not be live there (website record only)',
     'newmigration.table.viewItems': 'View {items} for {name}',
 
     // Selection tray
@@ -357,6 +372,7 @@ export const newmigration: PageDict = {
     'newmigration.tray.suspendedUnmigrated_one': '⚠️ 1 suspended account not on the target — shown, verify it migrated',
     'newmigration.tray.suspendedUnmigrated_other': '⚠️ {count} suspended accounts not on the target — shown, verify they migrated',
     'newmigration.tray.suspendedUnmigratedOnly': 'Show only these',
+    'newmigration.tray.checkingTarget': 'Checking target…',
     'newmigration.tray.onTargetHidden_one': '{count} already on the target hidden',
     'newmigration.tray.onTargetHidden_other': '{count} already on the target hidden',
     'newmigration.tray.onTargetShown_one': '{count} already on the target shown',

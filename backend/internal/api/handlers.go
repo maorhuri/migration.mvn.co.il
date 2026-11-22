@@ -65,6 +65,7 @@ func (h *Handler) SetupRoutes(r *gin.Engine) {
 			servers.GET("/:id/cluster-servers", h.listClusterServers)
 			servers.GET("/:id/existing-domains", h.listExistingDomains)
 			servers.POST("/:id/dns-check", h.dnsCheck)
+			servers.POST("/:id/target-status", h.targetStatus)
 			servers.DELETE("/:id/enhance/websites/:website_id", h.deleteEnhanceWebsite)
 		}
 
@@ -693,6 +694,26 @@ func (h *Handler) dnsCheck(c *gin.Context) {
 		return
 	}
 	res, err := h.engine.CheckDomainsDNS(c.Request.Context(), id, body.Domains)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// targetStatus reports, for the posted domains, the website that already exists for each on this
+// Enhance target: which node it is on, its status, and whether that node actually serves it live.
+// Used by the "already on target" focus view in the New Migration picker.
+func (h *Handler) targetStatus(c *gin.Context) {
+	id := c.Param("id")
+	var body struct {
+		Domains []string `json:"domains"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	res, err := h.engine.TargetDomainStatuses(c.Request.Context(), id, body.Domains)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

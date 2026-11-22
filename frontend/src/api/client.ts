@@ -100,6 +100,27 @@ export const dnsCheck = async (id: string, domains: string[]): Promise<DNSCheckR
   return { source_ip: data.source_ip, results: data.results || {} };
 };
 
+/** For a domain already on the Enhance target: which node it is on, its status, and whether that node
+ *  actually serves it live (fetched straight to the node, bypassing DNS/Cloudflare). */
+export interface TargetDomainStatus {
+  domain: string;
+  on_target: boolean;
+  app_server_id?: string;
+  app_server_name?: string;
+  website_id?: string;
+  website_status?: string;
+  node_ip?: string;
+  http_code?: number;
+  serves_from_node: boolean;
+}
+export interface TargetStatusResult {
+  results: Record<string, TargetDomainStatus>;
+}
+export const targetStatus = async (id: string, domains: string[]): Promise<TargetStatusResult> => {
+  const { data } = await api.post(`/servers/${id}/target-status`, { domains });
+  return { results: data.results || {} };
+};
+
 // Refresh server accounts (force reload from server)
 export const refreshServerAccounts = async (id: string, clusterServerId?: string): Promise<{ accounts: Account[]; total: number }> => {
   const { data } = await api.post(`/servers/${id}/accounts/refresh`, undefined, { params: clusterServerId ? { cluster_server_id: clusterServerId } : undefined });

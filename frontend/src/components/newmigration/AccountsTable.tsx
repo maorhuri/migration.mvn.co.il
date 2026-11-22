@@ -4,7 +4,7 @@ import { Badge, Checkbox, Mono, StatusBadge, Table, TBody, TD, TDPrimary, TH, TH
 import { cn } from '../../lib/cn';
 import { useT } from '../../lib/i18n';
 import type { Account } from '../../types';
-import type { DomainDNS } from '../../api/client';
+import type { DomainDNS, TargetDomainStatus } from '../../api/client';
 
 /** Normalize a domain the same way the backend does (lowercase, drop a leading "www."), so a row
  * can look up its DNS status by key. */
@@ -59,6 +59,9 @@ export interface AccountsTableProps {
   /** Where each source domain's apex A currently points (keyed by normalized domain). A domain that
    *  does not resolve to the source server is flagged on its row. */
   dnsStatus?: Record<string, DomainDNS>;
+  /** Target-side status per domain (keyed by normalized domain), shown in the "already on target"
+   *  focus view: which node holds the website and whether it serves live. Undefined = not in focus. */
+  targetStatus?: Record<string, TargetDomainStatus>;
 }
 
 /**
@@ -78,6 +81,7 @@ export function AccountsTable({
   onShowEmails,
   onShowDatabases,
   dnsStatus,
+  targetStatus,
 }: AccountsTableProps) {
   const t = useT();
   const headerCheckbox = useRef<HTMLInputElement | null>(null);
@@ -142,6 +146,9 @@ export function AccountsTable({
           // shows nothing.
           const dns = dnsStatus && displayDomain ? dnsStatus[normDomain(displayDomain)] : undefined;
           const dnsOffSource = !!dns && !!dns.ip && !dns.on_source;
+          // "Already on target" focus: where this domain lives on the target and whether the node
+          // actually serves it live.
+          const tgt = targetStatus && displayDomain ? targetStatus[normDomain(displayDomain)] : undefined;
           return (
             <TR
               key={account.username}
@@ -209,6 +216,31 @@ export function AccountsTable({
                     </>
                   )}
                 </div>
+                {tgt && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    {tgt.app_server_name ? (
+                      <Badge tone="violet" size="sm" title={t('newmigration.table.onNodeHint')}>
+                        {t('newmigration.table.onNode', { node: tgt.app_server_name })}
+                      </Badge>
+                    ) : (
+                      <Badge tone="neutral" size="sm">
+                        {t('newmigration.table.onNodeUnknown')}
+                      </Badge>
+                    )}
+                    {tgt.serves_from_node ? (
+                      <Badge tone="success" size="sm" title={t('newmigration.table.servesFromNodeHint', { code: String(tgt.http_code ?? 0) })}>
+                        {t('newmigration.table.servesLive')}
+                      </Badge>
+                    ) : (
+                      <Badge tone="warning" size="sm" title={t('newmigration.table.notServingHint')}>
+                        {t('newmigration.table.notServing')}
+                      </Badge>
+                    )}
+                    {tgt.website_status && tgt.website_status.toLowerCase() !== 'active' && (
+                      <span className="text-xs text-slate-500 dark:text-slate-400">{tgt.website_status}</span>
+                    )}
+                  </div>
+                )}
               </TDPrimary>
               <TD align="center">
                 {account.php_version ? (

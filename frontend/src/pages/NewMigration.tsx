@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeftIcon, ArrowPathIcon, ArrowRightIcon, BoltIcon, MagnifyingGlassIcon } from '@heroicons/react/16/solid';
 import toast from 'react-hot-toast';
-import { getServers, getServerAccounts, getClusterServers, getExistingDomains, dnsCheck, type ClusterServer, type DomainDNS, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
+import { getServers, getServerAccounts, getClusterServers, getExistingDomains, dnsCheck, targetStatus, type ClusterServer, type DomainDNS, type TargetDomainStatus, startMigration, getMigration, getMigrations, getMigrationLogs, refreshServerAccounts, submitScanDecision } from '../api/client';
 import type { Server, Account, MigrationLog, ScanReport } from '../types';
 import {
   Badge,
@@ -179,6 +179,10 @@ export default function NewMigration() {
   // Where each source domain's apex A currently points (keyed by normalized domain). Used to flag a
   // domain that no longer points at the source server (it may already be hosted elsewhere).
   const [dnsStatus, setDnsStatus] = useState<Record<string, DomainDNS>>({});
+  // For the "already on target" focus view: per-domain target status (which node, live serve check),
+  // fetched lazily only while that focus is active.
+  const [targetStatusMap, setTargetStatusMap] = useState<Record<string, TargetDomainStatus>>({});
+  const [loadingTargetStatus, setLoadingTargetStatus] = useState(false);
   // Show only accounts whose domain is hosted in our Cloudflare account (off by default).
   const [onlyCloudflare, setOnlyCloudflare] = useState(false);
   const [existingDomains, setExistingDomains] = useState<string[]>([]);
@@ -423,6 +427,47 @@ export default function NewMigration() {
       cancelled = true;
     };
   }, [accounts, formData.source_server_id]);
+
+  // While the "already on target" focus is active, fetch each on-target domain's status on the
+  // target (which node holds it, and whether that node actually serves it live). Lazy: only runs
+  // while the focus is on, so the extra Enhance + live-fetch work is not paid otherwise.
+  useEffect(() => {
+    if (!showMigrated || !formData.target_server_id) {
+      setTargetStatusMap({});
+      return;
+    }
+    const exDomains = new Set(existingDomains.map((d) => d.toLowerCase()));
+    const onTarget = (a: Account) =>
+      (!!a.domain && exDomains.has(a.domain.toLowerCase())) ||
+      !!a.pointers?.some((p) => exDomains.has(p.toLowerCase()));
+    const domains = Array.from(
+      new Set(
+        accounts
+          .filter(onTarget)
+          .map((a: Account) => (a.pointers?.[0] || a.domain || '').trim().toLowerCase())
+          .filter((d) => d && d.includes('.')),
+      ),
+    );
+    if (domains.length === 0) {
+      setTargetStatusMap({});
+      return;
+    }
+    let cancelled = false;
+    setLoadingTargetStatus(true);
+    targetStatus(formData.target_server_id, domains)
+      .then((res) => {
+        if (!cancelled) setTargetStatusMap(res.results || {});
+      })
+      .catch(() => {
+        if (!cancelled) setTargetStatusMap({});
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTargetStatus(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showMigrated, formData.target_server_id, accounts, existingDomains]);
 
   // Load cluster servers when target server is selected
   useEffect(() => {
@@ -886,10 +931,11 @@ export default function NewMigration() {
     existingDomainsSet.size > 0 ? accounts.filter((acc: Account) => acc.suspended && !isAlreadyMigrated(acc)).length : 0;
   const cloudflareCount = accounts.filter((acc: Account) => acc.has_cloudflare).length;
   const filteredAccounts = accounts
-    // "Already migrated" = a website for this account exists on the target. Suspension on the
-    // source is NOT proof of migration, so it no longer hides anything on its own -- a suspended
-    // account that is not on the target stays in the list (flagged by its suspended status badge).
-    .filter((acc: Account) => showMigrated || !isAlreadyMigrated(acc))
+    // "Already on target" = a website for this account exists on the target Enhance org. By default
+    // these are hidden; the toggle turns it into an EXCLUSIVE focus -- show ONLY those accounts --
+    // so staff can review them (which node, Cloudflare, live) on their own. Suspension on the source
+    // is NOT proof of migration, so it never hides anything on its own.
+    .filter((acc: Account) => (showMigrated ? isAlreadyMigrated(acc) : !isAlreadyMigrated(acc)))
     .filter((acc: Account) => !onlySuspendedUnmigrated || (acc.suspended && !isAlreadyMigrated(acc)))
     .filter((acc: Account) => !onlyCloudflare || acc.has_cloudflare)
     .filter((acc: Account) =>
@@ -1033,8 +1079,9 @@ export default function NewMigration() {
     <span className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
       <span>{showMigrated ? t('newmigration.tray.onTargetShown', { count: migratedCount }) : t('newmigration.tray.onTargetHidden', { count: migratedCount })}</span>
       <Button size="sm" variant="ghost" onClick={() => setShowMigrated((v) => !v)} disabled={loadingExistingDomains}>
-        {showMigrated ? t('newmigration.tray.hide') : t('newmigration.tray.show')}
+        {showMigrated ? t('newmigration.tray.cloudflareShowAll') : t('newmigration.tray.suspendedUnmigratedOnly')}
       </Button>
+      {showMigrated && loadingTargetStatus && <span className="text-slate-400">· {t('newmigration.tray.checkingTarget')}</span>}
     </span>
   );
 
@@ -1370,6 +1417,7 @@ export default function NewMigration() {
                 onShowEmails={setEmailModalAccount}
                 onShowDatabases={setDbModalAccount}
                 dnsStatus={dnsStatus}
+                targetStatus={showMigrated ? targetStatusMap : undefined}
               />
             )}
 
